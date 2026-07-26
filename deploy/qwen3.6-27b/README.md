@@ -54,12 +54,20 @@ An already verified model is never downloaded again.
 
 ## 3. Start, stop, and inspect logs
 
-The defaults work without a `.env` file. To make local overrides explicit:
+The defaults work without a `.env` file. Set overrides only in your shell or Compose environment when changing the model file or alias:
 
 ```bash
-cp .env.example .env
 docker compose config
 docker compose up -d
+```
+
+The server automatically unloads the model and its KV cache after 30 seconds
+without an inference request, releasing VRAM. The next Qwen request reloads it
+automatically. The container remains running so n8n can wake the model without
+Docker-control permissions. Override the delay when needed:
+
+```bash
+SLEEP_IDLE_SECONDS=300 docker compose up -d --force-recreate llama
 ```
 
 Common lifecycle commands:
@@ -142,7 +150,7 @@ tag:
    `ggml-org/llama.cpp` GitHub Container Registry package.
 2. Pull its immutable digest and run both `--version` and `--help`.
 3. Confirm every configured argument still exists, then update the complete
-   tag-and-digest reference in `compose.yaml` and `.env.example`.
+   tag-and-digest reference in `compose.yaml`.
 4. Run `docker compose config`, recreate the service, and run
    `./scripts/test-server.sh`.
 
@@ -152,7 +160,7 @@ Never replace the pinned reference with `latest` or an unversioned
 ## Replacing the model
 
 Place the replacement GGUF in `models/`, verify its publisher-provided
-SHA-256, and set `MODEL_FILE` and `MODEL_ALIAS` in `.env`. The supplied
+SHA-256, and set `MODEL_FILE` and `MODEL_ALIAS` in the Compose environment. The supplied
 download script intentionally remains locked to the documented Qwen3.6 file
 and checksum. Re-run the full test because quantization and context size
 change VRAM use.

@@ -1,0 +1,56 @@
+name: transfers-e2e
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: transfers_e2e
+      POSTGRES_USER: transfers_e2e
+      POSTGRES_PASSWORD: transfers_e2e_password
+    volumes:
+      - ../../database:/database:ro
+      - ../../database/migrate.sql:/docker-entrypoint-initdb.d/010-migrate.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username transfers_e2e --dbname transfers_e2e"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  mock-services:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["node", "mock/server.mjs"]
+    volumes:
+      - ./:/app:ro
+    ports:
+      - "127.0.0.1:18081:18081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18081/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  n8n:
+    image: n8nio/n8n:2.16.1@sha256:ad20607cdd24bac004ec44804b6b8ded9a2fbf92ed46c4496bf007762c883af2
+    environment:
+      N8N_ENCRYPTION_KEY: e2e-only-not-a-secret-encryption-key
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+      GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
+      RAPIDAPI_KEY: e2e-only-key
+      RAPIDAPI_BASE_URL: http://mock-services:18081/rapid
+      QWEN_CHAT_COMPLETIONS_URL: http://mock-services:18081/qwen/valid
+      DISCORD_TRANSFERS_WEBHOOK_URL: http://mock-services:18081/discord/receive
+      DISCORD_ERRORS_WEBHOOK_URL: http://mock-services:18081/discord/receive
+    volumes:
+      - ../../workflow:/workflows:ro
+      - n8n_e2e_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-services:
+        condition: service_healthy
+
+volumes:
+  n8n_e2e_data:

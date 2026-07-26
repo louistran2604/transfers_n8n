@@ -20,6 +20,8 @@ services:
       - /models/${MODEL_FILE:-Qwen3.6-27B-UD-IQ3_XXS.gguf}
       - --alias
       - ${MODEL_ALIAS:-qwen3.6-27b}
+      - --sleep-idle-seconds
+      - ${SLEEP_IDLE_SECONDS:-30}
       - --ctx-size
       - "8192"
       - --gpu-layers

@@ -4,12 +4,11 @@ This Compose project runs PostgreSQL 16 for the football-transfer monitor. It ex
 
 ## 1. Configure local credentials
 
-```bash
-cd ~/projects/transfers_n8n/deploy/support
-cp .env.example .env
-```
+Use the existing ignored `deploy/support/.env`. If it is missing, create it
+locally with `POSTGRES_USER` and `POSTGRES_PASSWORD`; this repository
+intentionally has no `.env.example`.
 
-Replace only `POSTGRES_PASSWORD` in `.env` with a long random password. Do not commit or print that file.
+Use a long random password. Do not commit or print that file.
 
 ## 2. Start PostgreSQL
 
@@ -27,6 +26,8 @@ If the network already exists, Docker reports that fact; continue with the next 
 docker compose --profile maintenance run --rm transfers-db-migrate
 docker compose exec -T transfers-postgres \
   sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/001_dedup_restart_safety.sql'
+docker compose exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/002_workflow_safety.sql'
 ```
 
 The schema is initialized automatically only for a new database volume. Run the maintenance command after pulling future migrations.

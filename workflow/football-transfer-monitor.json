@@ -1,0 +1,1126 @@
+{
+  "id": "football-transfer-monitor",
+  "name": "Football Transfer Monitor",
+  "nodes": [
+    {
+      "id": "every-six-hours",
+      "name": "Every six hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1120,
+        -140
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0,6,12,18 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "manual-run",
+      "name": "Manual run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        40
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "manual-sample-run",
+      "name": "Manual sample run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        220
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "recover-interrupted-deliveries",
+      "name": "Recover interrupted deliveries",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        -40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "recover-interrupted-sample-deliveries",
+      "name": "Recover interrupted sample deliveries",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "create-run-context",
+      "name": "Create run context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: $execution.mode, started_at: now.toISOString() })], logical_run_key: start.toISOString() } }];"
+      }
+    },
+    {
+      "id": "create-sample-run-context",
+      "name": "Create sample run context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: now.toISOString(), sample: true })], logical_run_key: start.toISOString() } }];"
+      }
+    },
+    {
+      "id": "register-workflow-run",
+      "name": "Register workflow run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        -40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH next_attempt AS (\n  SELECT COALESCE(max(attempt_number), 0) + 1 AS attempt_number\n  FROM workflow_runs WHERE workflow_name = 'football-transfer-monitor' AND logical_run_key = $2\n)\nINSERT INTO workflow_runs (workflow_name, external_execution_id, logical_run_key, attempt_number, status, metadata)\nVALUES ('football-transfer-monitor', $1, $2, (SELECT attempt_number FROM next_attempt), 'running', $3::jsonb)\nON CONFLICT (workflow_name, external_execution_id) DO UPDATE\nSET metadata = EXCLUDED.metadata\nRETURNING id::text AS workflow_run_id, external_execution_id, logical_run_key;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "register-sample-workflow-run",
+      "name": "Register sample workflow run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH next_attempt AS (\n  SELECT COALESCE(max(attempt_number), 0) + 1 AS attempt_number\n  FROM workflow_runs WHERE workflow_name = 'football-transfer-monitor' AND logical_run_key = $2\n)\nINSERT INTO workflow_runs (workflow_name, external_execution_id, logical_run_key, attempt_number, status, metadata)\nVALUES ('football-transfer-monitor', $1, $2, (SELECT attempt_number FROM next_attempt), 'running', $3::jsonb)\nON CONFLICT (workflow_name, external_execution_id) DO UPDATE\nSET metadata = EXCLUDED.metadata\nRETURNING id::text AS workflow_run_id, external_execution_id, logical_run_key;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "load-generated-sources",
+      "name": "Load generated sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const sources = [{\"platform\":\"x\",\"external_account_id\":\"242077026\",\"username\":\"AdamCrafton_\",\"display_name\":\"Adam Crafton\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"318586985\",\"username\":\"reluctantnicko\",\"display_name\":\"Alan Nixon\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"597503733\",\"username\":\"AlfredoPedulla\",\"display_name\":\"Alfredo Pedullà\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"202519434\",\"username\":\"AndyMitten\",\"display_name\":\"Andy Mitten\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"68435162\",\"username\":\"AranchaMOBILE\",\"display_name\":\"Arancha Rodríguez\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"74133268\",\"username\":\"CharDuncker\",\"display_name\":\"Charlotte Duncker\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"922928582866980864\",\"username\":\"charlotteharpur\",\"display_name\":\"Charlotte Harpur\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"20789358\",\"username\":\"CraigNorwood\",\"display_name\":\"Craig Norwood\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"4653929363\",\"username\":\"Dan_KP\",\"display_name\":\"Dan Kilpatrick\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"46875124\",\"username\":\"David_Ornstein\",\"display_name\":\"David Ornstein\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":2,\"reliability_score\":0.95},{\"platform\":\"x\",\"external_account_id\":\"407837161\",\"username\":\"em_sandy\",\"display_name\":\"Emma Sanders\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"330262748\",\"username\":\"FabrizioRomano\",\"display_name\":\"Fabrizio Romano\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":2,\"reliability_score\":0.95},{\"platform\":\"x\",\"external_account_id\":\"165573691\",\"username\":\"gastonedul\",\"display_name\":\"Gastón Edul\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"251690031\",\"username\":\"DiMarzio\",\"display_name\":\"Gianluca Di Marzio\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"741219268210085888\",\"username\":\"GuillermoRai_\",\"display_name\":\"Guillermo Rai\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"37896651\",\"username\":\"henrywinter\",\"display_name\":\"Henry Winter\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"460538823\",\"username\":\"TelegraphDucker\",\"display_name\":\"James Ducker\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"265653022\",\"username\":\"JamesPearceLFC\",\"display_name\":\"James Pearce\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"60932186\",\"username\":\"JPercyTelegraph\",\"display_name\":\"John Percy\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"151090430\",\"username\":\"jfelixdiaz\",\"display_name\":\"José Félix Díaz\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"131806324\",\"username\":\"JLSanchez78\",\"display_name\":\"José Luis Sánchez\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"327331784\",\"username\":\"kerry_hau\",\"display_name\":\"Kerry Hau\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"85340592\",\"username\":\"lauriewhitwell\",\"display_name\":\"Laurie Whitwell\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"20383794\",\"username\":\"lee_ryder\",\"display_name\":\"Lee Ryder\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"263086537\",\"username\":\"Tanziloic\",\"display_name\":\"Loïc Tanzi\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"256584608\",\"username\":\"MarioCortegana\",\"display_name\":\"Mario Cortegana\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"21741194\",\"username\":\"mjcritchley\",\"display_name\":\"Mark Critchley\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"130918844\",\"username\":\"Matt_Law_DT\",\"display_name\":\"Matt Law\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"1502257215180259331\",\"username\":\"MelchorRuizCope\",\"display_name\":\"Melchor Ruiz\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"149482213\",\"username\":\"MelissaReddy_\",\"display_name\":\"Melissa Reddy\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"28308062\",\"username\":\"mcgrathmike\",\"display_name\":\"Mike McGrath\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"125470054\",\"username\":\"miguelitocope\",\"display_name\":\"Miguel Ángel Díaz\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"53763904\",\"username\":\"MikeVerweij\",\"display_name\":\"Mike Verweij\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"299780743\",\"username\":\"mohamedbouhafsi\",\"display_name\":\"Mohamed Bouhafsi\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"167353331\",\"username\":\"moillorens\",\"display_name\":\"Moisés Llorens\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"283720126\",\"username\":\"NathSalt1\",\"display_name\":\"Nathan Salt\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"137719594\",\"username\":\"hirstclass\",\"display_name\":\"Paul Hirst\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"334023867\",\"username\":\"_pauljoyce\",\"display_name\":\"Paul Joyce\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"118816141\",\"username\":\"honigstein\",\"display_name\":\"Rafael Honigstein\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"195026051\",\"username\":\"Ramon_AlvarezMM\",\"display_name\":\"Ramón Álvarez de Mon\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"74728730\",\"username\":\"RobDawsonESPN\",\"display_name\":\"Rob Dawson\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"278616610\",\"username\":\"romeoagresti\",\"display_name\":\"Romeo Agresti\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"30720839\",\"username\":\"SamLee\",\"display_name\":\"Sam Lee\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"193221420\",\"username\":\"SamiMokbel_BBC\",\"display_name\":\"Sami Mokbel\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"266103717\",\"username\":\"SebasGiovanelli\",\"display_name\":\"Sebastián Giovanelli\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"160950109\",\"username\":\"Sergivalentin_\",\"display_name\":\"Sergio Valentín\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"108957853\",\"username\":\"sidlowe\",\"display_name\":\"Sid Lowe\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"19569290\",\"username\":\"SimonPeach\",\"display_name\":\"Simon Peach\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"274057120\",\"username\":\"sistoney67\",\"display_name\":\"Simon Stone\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"430106072\",\"username\":\"StevenRailston\",\"display_name\":\"Stephen Railston\",\"account_type\":\"individual\",\"is_official\":false,\"priority_rank\":4,\"reliability_score\":0.7},{\"platform\":\"x\",\"external_account_id\":\"14872237\",\"username\":\"realmadrid\",\"display_name\":\"Real Madrid\",\"account_type\":\"organization\",\"is_official\":true,\"priority_rank\":1,\"reliability_score\":1},{\"platform\":\"x\",\"external_account_id\":\"558797310\",\"username\":\"ManUtd\",\"display_name\":\"Manchester United\",\"account_type\":\"organization\",\"is_official\":true,\"priority_rank\":1,\"reliability_score\":1},{\"platform\":\"x\",\"external_account_id\":\"265902729\",\"username\":\"BBCSport\",\"display_name\":\"BBC Sport\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"970939705629069312\",\"username\":\"TheAthleticFC\",\"display_name\":\"The Athletic Football\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"2219897472\",\"username\":\"TeleFootball\",\"display_name\":\"Telegraph Football\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"10933912\",\"username\":\"TimesSport\",\"display_name\":\"Times Sport\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"5894372\",\"username\":\"SkySport\",\"display_name\":\"Sky Sport Italia\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"323222806\",\"username\":\"SkySportDE\",\"display_name\":\"Sky Sport Germany\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"104105131\",\"username\":\"RMCsport\",\"display_name\":\"RMC Sport\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"182501483\",\"username\":\"partidazocope\",\"display_name\":\"El Partidazo de COPE\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"43910684\",\"username\":\"La_SER\",\"display_name\":\"Cadena SER\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"15095537\",\"username\":\"marca\",\"display_name\":\"MARCA\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"26809005\",\"username\":\"goal\",\"display_name\":\"GOAL\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"18091004\",\"username\":\"ESPNFC\",\"display_name\":\"ESPN FC\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"20678866\",\"username\":\"MENnewsdesk\",\"display_name\":\"Manchester Evening News\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"106053\",\"username\":\"SPORT1\",\"display_name\":\"SPORT1\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"2767509598\",\"username\":\"kicker\",\"display_name\":\"kicker\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"2381887483\",\"username\":\"RNBVB\",\"display_name\":\"Ruhr Nachrichten BVB\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"795545319408881664\",\"username\":\"derwesten\",\"display_name\":\"Der Westen\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"2834511\",\"username\":\"derspiegel\",\"display_name\":\"DER SPIEGEL\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"2902821\",\"username\":\"telegraaf\",\"display_name\":\"De Telegraaf\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"158732105\",\"username\":\"VI_nl\",\"display_name\":\"Voetbal International\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"17595890\",\"username\":\"ojogo\",\"display_name\":\"O Jogo\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"16451028\",\"username\":\"RTPNoticias\",\"display_name\":\"RTP Notícias\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"38142665\",\"username\":\"le_Parisien\",\"display_name\":\"Le Parisien\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"595719169\",\"username\":\"telefoot_TF1\",\"display_name\":\"Téléfoot\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8},{\"platform\":\"x\",\"external_account_id\":\"576241232\",\"username\":\"beINSPORTS\",\"display_name\":\"beIN SPORTS\",\"account_type\":\"organization\",\"is_official\":false,\"priority_rank\":3,\"reliability_score\":0.8}];\nreturn sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score] } }));"
+      }
+    },
+    {
+      "id": "upsert-source-accounts",
+      "name": "Upsert source accounts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        -40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO source_accounts (\n  platform, external_account_id, username, display_name, account_type,\n  is_official, priority_rank, reliability_score\n) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (platform, external_account_id) DO UPDATE\nSET username = EXCLUDED.username,\n    display_name = EXCLUDED.display_name,\n    account_type = EXCLUDED.account_type,\n    is_official = EXCLUDED.is_official,\n    priority_rank = EXCLUDED.priority_rank,\n    reliability_score = EXCLUDED.reliability_score,\n    is_active = true\nRETURNING id::text AS source_account_id, platform, external_account_id, username,\n  display_name, account_type, is_official, priority_rank, reliability_score;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "load-sample-source",
+      "name": "Load sample source",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = { platform: 'x', external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton', account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.70 };\nreturn [{ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score] } }];"
+      }
+    },
+    {
+      "id": "upsert-sample-source-account",
+      "name": "Upsert sample source account",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO source_accounts (\n  platform, external_account_id, username, display_name, account_type,\n  is_official, priority_rank, reliability_score\n) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nON CONFLICT (platform, external_account_id) DO UPDATE\nSET username = EXCLUDED.username,\n    display_name = EXCLUDED.display_name,\n    account_type = EXCLUDED.account_type,\n    is_official = EXCLUDED.is_official,\n    priority_rank = EXCLUDED.priority_rank,\n    reliability_score = EXCLUDED.reliability_score,\n    is_active = true\nRETURNING id::text AS source_account_id, platform, external_account_id, username,\n  display_name, account_type, is_official, priority_rank, reliability_score;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "build-rapidapi-request",
+      "name": "Build RapidAPI request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));"
+      }
+    },
+    {
+      "id": "collect-20-x-posts",
+      "name": "Collect 20 X posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        320,
+        -40
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.RAPIDAPI_BASE_URL || \"https://twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com\") + $json.requestPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-rapidapi-host",
+              "value": "twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "={{ $env.RAPIDAPI_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "load-sample-collected-x-posts",
+      "name": "Load sample collected X posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score) };\nconst createdAt = new Date().toUTCString();\nconst tweet = (id, text) => ({ rest_id: id, legacy: { id_str: id, full_text: text, created_at: createdAt } });\nreturn [{ json: { source, body: { data: { entries: [\n  tweet('999000000000000001', 'TEST DATA: Alex Example has agreed to join Test United from Test FC for EUR 25 million. Medical scheduled.'),\n  tweet('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),\n  tweet('999000000000000003', 'RT @example: TEST DATA: this pure retweet must be ignored.'),\n] } } } }];"
+      }
+    },
+    {
+      "id": "parse-rapidapi-posts",
+      "name": "Parse RapidAPI posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const inputs = $input.all();\nconst requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];\nreturn inputs.flatMap((item, index) => {\n  const requestIndex = item.pairedItem?.item ?? index;\n  const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;\n  if (!request?.source) throw new Error('Missing RapidAPI request metadata for response item ' + index);\n  const response = item.json.body ?? item.json;\n  const found = [], walked = new Set(), seen = new Set();\n  const walk = (value) => {\n    if (!value || typeof value !== 'object' || walked.has(value)) return;\n    walked.add(value);\n    const text = value?.note_tweet?.note_tweet_results?.result?.text ?? value?.legacy?.full_text ?? value?.legacy?.text;\n    const id = String(value?.rest_id ?? value?.legacy?.id_str ?? value?.id_str ?? '');\n    if (/^\\d+$/.test(id) && text) found.push(value);\n    Object.values(value).forEach(walk);\n  };\n  walk(response);\n  return found.flatMap((tweet) => {\n    const external_post_id = String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');\n    const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;\n    if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];\n    const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);\n    if (Number.isNaN(date.valueOf())) return [];\n    seen.add(external_post_id);\n    const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;\n    return [{ json: {\n      params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],\n    } }];\n  });\n});"
+      }
+    },
+    {
+      "id": "persist-raw-posts",
+      "name": "Persist raw posts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        760,
+        -40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH source AS (\n  SELECT id FROM source_accounts WHERE platform = 'x' AND external_account_id = $1\n), raw AS (\n  INSERT INTO raw_posts (\n    source_account_id, platform, external_post_id, post_url, content, posted_at, raw_payload\n  ) VALUES ((SELECT id FROM source), 'x', $2, $3, $4, $5::timestamptz, $6::jsonb)\n  ON CONFLICT (platform, external_post_id) DO UPDATE\n  SET collected_at = CURRENT_TIMESTAMP, raw_payload = EXCLUDED.raw_payload\n  RETURNING id\n)\nSELECT raw.id::text AS raw_post_id, $1::text AS external_account_id, $2::text AS external_post_id,\n  $3::text AS post_url, $4::text AS content, $5::text AS posted_at,\n  $7::text AS username, $8::text AS display_name, $9::smallint AS priority_rank,\n  $10::numeric AS reliability_score, $11::boolean AS is_official\nFROM raw;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "build-qwen-request",
+      "name": "Build Qwen request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prompt = \"You extract football-transfer information from one X post. Return only a JSON object that conforms exactly to the supplied JSON Schema.\\n\\nRules:\\n\\n1. Decide whether the post is about a player transfer, loan, contract renewal, failed/rejected move, or advanced negotiation. If it is not, return `{\\\"transfer_related\\\":false,\\\"reports\\\":[]}`.\\n2. Do not invent facts. Use `null` for unknown nullable values, `unknown` for an explicitly required state that is unclear, and `not_reported` when medical/agreement information is absent.\\n3. Amounts are numeric base units only. For example, `45000000`, never `€45m`, `45 million`, or an amount expressed in millions. Currency must be an uppercase ISO 4217 code when known.\\n4. Dates must be ISO calendar dates (`YYYY-MM-DD`), never relative words. Convert a stated contract duration to months only when exact.\\n5. Classify using this precedence if a post contains multiple outcomes: `contract_renewal`, `rejected_failed`, `loan`, `official_confirmed`, `advanced_negotiations`, then `rumor`.\\n6. Use `loan` for a loan move even where the post says it is agreed or official. Use `contract_renewal` for extensions/new contracts. Use `rejected_failed` only for a rejected, collapsed, or failed move. Use `official_confirmed` only when a club or reliable report states completion/official confirmation. Use `advanced_negotiations` for close talks, verbal agreement, or final-stage negotiation. Otherwise use `rumor`.\\n7. Direct and quoted posts are valid evidence. Do not add journalist identity, URL, platform, source timestamp, source tier, priority, or reliability: those are supplied outside your response.\\n8. A post may contain more than one transfer report. Each item must still contain every schema field. Confidence reflects only how clearly the post supports that extracted report.\\n\";\nconst schema = {\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Football transfer extraction response\",\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"transfer_related\",\"reports\"],\"properties\":{\"transfer_related\":{\"type\":\"boolean\"},\"reports\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"player_name\",\"player_identity_hint\",\"current_club_name\",\"destination_club_name\",\"classification\",\"move_type\",\"fee_amount\",\"fee_currency\",\"add_ons_amount\",\"add_ons_currency\",\"release_clause_amount\",\"release_clause_currency\",\"contract_length_months\",\"contract_expires_on\",\"loan_ends_on\",\"has_option_to_buy\",\"has_obligation_to_buy\",\"sell_on_percentage\",\"medical_status\",\"agreement_status\",\"confidence\"],\"properties\":{\"player_name\":{\"type\":\"string\",\"minLength\":1},\"player_identity_hint\":{\"type\":[\"string\",\"null\"]},\"current_club_name\":{\"type\":[\"string\",\"null\"]},\"destination_club_name\":{\"type\":[\"string\",\"null\"]},\"classification\":{\"type\":\"string\",\"enum\":[\"official_confirmed\",\"advanced_negotiations\",\"rumor\",\"rejected_failed\",\"contract_renewal\",\"loan\"]},\"move_type\":{\"type\":\"string\",\"enum\":[\"permanent\",\"loan\",\"unknown\"]},\"fee_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"fee_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"add_ons_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"add_ons_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"release_clause_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"release_clause_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"contract_length_months\":{\"type\":[\"integer\",\"null\"],\"minimum\":1},\"contract_expires_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"loan_ends_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"has_option_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"has_obligation_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"sell_on_percentage\":{\"type\":[\"number\",\"null\"],\"minimum\":0,\"maximum\":100},\"medical_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"scheduled\",\"passed\",\"failed\",\"pending\",\"unknown\"]},\"agreement_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"reached\",\"close\",\"negotiating\",\"rejected\",\"unknown\"]},\"confidence\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1}}}}}};\nconst llamaSchema = JSON.parse(JSON.stringify(schema));\ndelete llamaSchema.properties.reports.items.properties.player_name.minLength;\nreturn $input.all().map((item) => ({ json: {\n  raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,\n  source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), is_official: item.json.is_official },\n  body: { model: 'qwen3.6-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }\n} }));"
+      }
+    },
+    {
+      "id": "extract-with-qwen",
+      "name": "Extract with Qwen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.QWEN_CHAT_COMPLETIONS_URL || \"http://llama:8080/v1/chat/completions\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "validate-qwen-response",
+      "name": "Validate Qwen response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const requests = $('Build Qwen request').all();\nconst required = [\"player_name\",\"player_identity_hint\",\"current_club_name\",\"destination_club_name\",\"classification\",\"move_type\",\"fee_amount\",\"fee_currency\",\"add_ons_amount\",\"add_ons_currency\",\"release_clause_amount\",\"release_clause_currency\",\"contract_length_months\",\"contract_expires_on\",\"loan_ends_on\",\"has_option_to_buy\",\"has_obligation_to_buy\",\"sell_on_percentage\",\"medical_status\",\"agreement_status\",\"confidence\"];\nconst classes = [\"official_confirmed\",\"advanced_negotiations\",\"rumor\",\"rejected_failed\",\"contract_renewal\",\"loan\"];\nreturn $input.all().flatMap((item, index) => {\n  const requestIndex = item.pairedItem?.item ?? index;\n  const request = requests[requestIndex]?.json;\n  if (!request?.raw_post_id) throw new Error('Missing Qwen request metadata for response item ' + index);\n  const response = item.json.body ?? item.json;\n  const content = response?.choices?.[0]?.message?.content;\n  let parsed;\n  try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }\n  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);\n  if (!valid) {\n    return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];\n  }\n  if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];\n  return parsed.reports.map((report) => ({ json: { valid: true, ignored: false, report: { ...report, raw_post_id: request.raw_post_id, post_url: request.post_url, posted_at: request.posted_at, source: request.source } } }));\n});"
+      }
+    },
+    {
+      "id": "qwen-response-valid",
+      "name": "Qwen response valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1640,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "record-qwen-validation-failure",
+      "name": "Record Qwen validation failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        160
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH raw AS (\n  UPDATE raw_posts SET processing_state = 'failed'\n  WHERE id = $1::bigint\n  RETURNING id\n), failure AS (\n  INSERT INTO failures (operation_name, error_fingerprint, error_class, error_message, details)\n  VALUES ('qwen_extract', $2, 'ValidationError', $3, $4::jsonb)\n  ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE\n  SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,\n      error_message = EXCLUDED.error_message, details = EXCLUDED.details\n  RETURNING id\n)\nINSERT INTO retry_states (resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at, last_failure_id)\nVALUES ('raw_post', $5, 'qwen_extract', 'retrying', 1, CURRENT_TIMESTAMP + ($6::integer * interval '1 millisecond'), (SELECT id FROM failure))\nON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE\nSET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELSE 'retrying' END,\n    attempt_count = retry_states.attempt_count + 1,\n    next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,\n    last_failure_id = EXCLUDED.last_failure_id\nRETURNING id::text AS retry_state_id, state, attempt_count;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "transfer-related",
+      "name": "Transfer related",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1860,
+        -100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ !$json.ignored }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "mark-non-transfer-ignored",
+      "name": "Mark non-transfer ignored",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1860,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "merge-extracted-reports",
+      "name": "Merge extracted reports",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const normalize = (value) => String(value ?? '').normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\\s+/g, ' ');\nconst key = (report) => [report.player_identity_hint || report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');\nconst precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };\nconst compareSource = (left, right) => (left.source.priority_rank - right.source.priority_rank) || (right.source.reliability_score - left.source.reliability_score) || String(left.posted_at).localeCompare(String(right.posted_at));\nconst sha256 = (value) => {\n  const input = unescape(encodeURIComponent(JSON.stringify(value)));\n  const bytes = Array.from(input, (character) => character.charCodeAt(0));\n  const bitLength = bytes.length * 8;\n  bytes.push(0x80);\n  while (bytes.length % 64 !== 56) bytes.push(0);\n  for (let index = 7; index >= 0; index -= 1) bytes.push(Math.floor(bitLength / 2 ** (index * 8)) & 0xff);\n  const constants = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];\n  const hash = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];\n  const rotateRight = (number, amount) => (number >>> amount) | (number << (32 - amount));\n  for (let offset = 0; offset < bytes.length; offset += 64) {\n    const words = new Array(64);\n    for (let index = 0; index < 16; index += 1) words[index] = (bytes[offset + index * 4] << 24) | (bytes[offset + index * 4 + 1] << 16) | (bytes[offset + index * 4 + 2] << 8) | bytes[offset + index * 4 + 3];\n    for (let index = 16; index < 64; index += 1) {\n      const small0 = rotateRight(words[index - 15], 7) ^ rotateRight(words[index - 15], 18) ^ (words[index - 15] >>> 3);\n      const small1 = rotateRight(words[index - 2], 17) ^ rotateRight(words[index - 2], 19) ^ (words[index - 2] >>> 10);\n      words[index] = (words[index - 16] + small0 + words[index - 7] + small1) | 0;\n    }\n    let [a, b, c, d, e, f, g, h] = hash;\n    for (let index = 0; index < 64; index += 1) {\n      const large1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);\n      const choice = (e & f) ^ (~e & g);\n      const temporary1 = (h + large1 + choice + constants[index] + words[index]) | 0;\n      const large0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);\n      const majority = (a & b) ^ (a & c) ^ (b & c);\n      const temporary2 = (large0 + majority) | 0;\n      [h, g, f, e, d, c, b, a] = [g, f, e, (d + temporary1) | 0, c, b, a, (temporary1 + temporary2) | 0];\n    }\n    hash[0] = (hash[0] + a) | 0; hash[1] = (hash[1] + b) | 0; hash[2] = (hash[2] + c) | 0; hash[3] = (hash[3] + d) | 0;\n    hash[4] = (hash[4] + e) | 0; hash[5] = (hash[5] + f) | 0; hash[6] = (hash[6] + g) | 0; hash[7] = (hash[7] + h) | 0;\n  }\n  return hash.map((number) => (number >>> 0).toString(16).padStart(8, '0')).join('');\n};\nconst groups = new Map();\nfor (const item of $input.all()) {\n  const report = item.json.report;\n  if (!report) continue;\n  const groupKey = key(report);\n  groups.set(groupKey, [...(groups.get(groupKey) ?? []), report]);\n}\nconst outputs = [];\nfor (const reports of groups.values()) {\n  reports.sort(compareSource);\n  const best = reports[0];\n  const merged = { ...best };\n  const conflicts = {};\n  for (const field of Object.keys(best)) {\n    if (['raw_post_id', 'post_url', 'posted_at', 'source'].includes(field)) continue;\n    const values = reports.map((report) => report[field]).filter((value) => value !== null && value !== undefined && value !== '');\n    if (values.length) merged[field] = values[0];\n    if (new Set(values.map((value) => JSON.stringify(value))).size > 1) conflicts[field] = values;\n  }\n  merged.classification = reports.map((report) => report.classification).sort((a, b) => precedence[b] - precedence[a])[0];\n  merged.confidence = Math.max(...reports.map((report) => report.confidence));\n  merged.dedupe_key = key(merged);\n  merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];\n  merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);\n  const snapshot = Object.fromEntries([\"player_name\",\"player_identity_hint\",\"current_club_name\",\"destination_club_name\",\"classification\",\"move_type\",\"fee_amount\",\"fee_currency\",\"add_ons_amount\",\"add_ons_currency\",\"release_clause_amount\",\"release_clause_currency\",\"contract_length_months\",\"contract_expires_on\",\"loan_ends_on\",\"has_option_to_buy\",\"has_obligation_to_buy\",\"sell_on_percentage\",\"medical_status\",\"agreement_status\",\"confidence\"].map((field) => [field, merged[field] ?? null]));\n  snapshot.dedupe_key = merged.dedupe_key;\n  const payload = {\n    ...snapshot,\n    player_identity_key: normalize(merged.player_identity_hint || merged.player_name).replace(/\\s/g, '-'),\n    normalized_player_name: normalize(merged.player_name),\n    first_reported_at: merged.first_reported_at,\n    last_reported_at: merged.last_reported_at,\n    normalized_data: { conflicts },\n    preferred_raw_post_id: String(best.raw_post_id),\n    sources: reports.map((report) => ({ raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source })),\n    snapshot,\n    content_sha256: sha256(snapshot),\n  };\n  outputs.push({ json: { params: [JSON.stringify(payload)] } });\n}\nreturn outputs;"
+      }
+    },
+    {
+      "id": "persist-merged-reports-and-revisions",
+      "name": "Persist merged reports and revisions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH input AS (SELECT $1::jsonb AS payload),\nplayer AS (\n  INSERT INTO players (identity_key, display_name, normalized_name)\n  SELECT payload->>'player_identity_key', payload->>'player_name', payload->>'normalized_player_name' FROM input\n  ON CONFLICT (identity_key) DO UPDATE SET display_name = EXCLUDED.display_name\n  RETURNING id\n),\nreport AS (\n  INSERT INTO transfer_reports (\n    dedupe_key, player_id, reported_player_name, current_club_name, destination_club_name,\n    classification, move_type, fee_amount, fee_currency, add_ons_amount, add_ons_currency,\n    release_clause_amount, release_clause_currency, contract_length_months, contract_expires_on,\n    loan_ends_on, has_option_to_buy, has_obligation_to_buy, sell_on_percentage, medical_status,\n    agreement_status, confidence, first_reported_at, last_reported_at, normalized_data\n  )\n  SELECT payload->>'dedupe_key', (SELECT id FROM player), payload->>'player_name',\n    NULLIF(payload->>'current_club_name', ''), NULLIF(payload->>'destination_club_name', ''),\n    payload->>'classification', payload->>'move_type',\n    NULLIF(payload->>'fee_amount', '')::numeric, NULLIF(payload->>'fee_currency', ''),\n    NULLIF(payload->>'add_ons_amount', '')::numeric, NULLIF(payload->>'add_ons_currency', ''),\n    NULLIF(payload->>'release_clause_amount', '')::numeric, NULLIF(payload->>'release_clause_currency', ''),\n    NULLIF(payload->>'contract_length_months', '')::integer, NULLIF(payload->>'contract_expires_on', '')::date,\n    NULLIF(payload->>'loan_ends_on', '')::date, NULLIF(payload->>'has_option_to_buy', '')::boolean,\n    NULLIF(payload->>'has_obligation_to_buy', '')::boolean, NULLIF(payload->>'sell_on_percentage', '')::numeric,\n    payload->>'medical_status', payload->>'agreement_status', (payload->>'confidence')::numeric,\n    (payload->>'first_reported_at')::timestamptz, (payload->>'last_reported_at')::timestamptz,\n    COALESCE(payload->'normalized_data', '{}'::jsonb)\n  FROM input\n  ON CONFLICT (dedupe_key) DO UPDATE\n  SET player_id = EXCLUDED.player_id, reported_player_name = EXCLUDED.reported_player_name,\n      current_club_name = COALESCE(EXCLUDED.current_club_name, transfer_reports.current_club_name),\n      destination_club_name = COALESCE(EXCLUDED.destination_club_name, transfer_reports.destination_club_name),\n      classification = EXCLUDED.classification, move_type = EXCLUDED.move_type,\n      fee_amount = COALESCE(EXCLUDED.fee_amount, transfer_reports.fee_amount),\n      fee_currency = COALESCE(EXCLUDED.fee_currency, transfer_reports.fee_currency),\n      add_ons_amount = COALESCE(EXCLUDED.add_ons_amount, transfer_reports.add_ons_amount),\n      add_ons_currency = COALESCE(EXCLUDED.add_ons_currency, transfer_reports.add_ons_currency),\n      release_clause_amount = COALESCE(EXCLUDED.release_clause_amount, transfer_reports.release_clause_amount),\n      release_clause_currency = COALESCE(EXCLUDED.release_clause_currency, transfer_reports.release_clause_currency),\n      contract_length_months = COALESCE(EXCLUDED.contract_length_months, transfer_reports.contract_length_months),\n      contract_expires_on = COALESCE(EXCLUDED.contract_expires_on, transfer_reports.contract_expires_on),\n      loan_ends_on = COALESCE(EXCLUDED.loan_ends_on, transfer_reports.loan_ends_on),\n      has_option_to_buy = COALESCE(EXCLUDED.has_option_to_buy, transfer_reports.has_option_to_buy),\n      has_obligation_to_buy = COALESCE(EXCLUDED.has_obligation_to_buy, transfer_reports.has_obligation_to_buy),\n      sell_on_percentage = COALESCE(EXCLUDED.sell_on_percentage, transfer_reports.sell_on_percentage),\n      medical_status = EXCLUDED.medical_status, agreement_status = EXCLUDED.agreement_status,\n      confidence = GREATEST(transfer_reports.confidence, EXCLUDED.confidence),\n      first_reported_at = LEAST(transfer_reports.first_reported_at, EXCLUDED.first_reported_at),\n      last_reported_at = GREATEST(transfer_reports.last_reported_at, EXCLUDED.last_reported_at),\n      normalized_data = EXCLUDED.normalized_data\n  RETURNING id\n),\nunprefer AS (\n  UPDATE transfer_report_sources SET is_preferred = false\n  WHERE transfer_report_id = (SELECT id FROM report)\n),\nsources AS (\n  INSERT INTO transfer_report_sources (transfer_report_id, raw_post_id, source_observed_at, extracted_data, is_preferred)\n  SELECT (SELECT id FROM report), (source->>'raw_post_id')::bigint,\n    (source->>'posted_at')::timestamptz, source,\n    (source->>'raw_post_id') = (SELECT payload->>'preferred_raw_post_id' FROM input)\n  FROM input, jsonb_array_elements(input.payload->'sources') AS source\n  ON CONFLICT (transfer_report_id, raw_post_id) DO UPDATE\n  SET source_observed_at = EXCLUDED.source_observed_at,\n      extracted_data = EXCLUDED.extracted_data,\n      is_preferred = EXCLUDED.is_preferred\n),\nmark_merged AS (\n  UPDATE raw_posts SET processing_state = 'merged', classified_at = CURRENT_TIMESTAMP\n  WHERE id IN (\n    SELECT (source->>'raw_post_id')::bigint\n    FROM input, jsonb_array_elements(input.payload->'sources') AS source\n  )\n),\nrevision AS (\n  INSERT INTO transfer_report_revisions (transfer_report_id, revision_number, content_sha256, snapshot)\n  SELECT (SELECT id FROM report),\n    COALESCE((SELECT max(revision_number) + 1 FROM transfer_report_revisions WHERE transfer_report_id = (SELECT id FROM report)), 1),\n    payload->>'content_sha256', payload->'snapshot'\n  FROM input\n  WHERE NOT EXISTS (\n    SELECT 1 FROM transfer_report_revisions\n    WHERE transfer_report_id = (SELECT id FROM report) AND content_sha256 = input.payload->>'content_sha256'\n  )\n  ON CONFLICT (transfer_report_id, content_sha256) DO NOTHING\n  RETURNING id\n)\nSELECT (SELECT id::text FROM report) AS transfer_report_id,\n  (SELECT id::text FROM revision) AS revision_id;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "find-undelivered-revisions",
+      "name": "Find undelivered revisions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH pending_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n    s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n    p.post_url, p.posted_at,\n    dd.idempotency_key AS pending_idempotency_key,\n    dd.window_started_at AS pending_window_started_at,\n    dd.window_ended_at AS pending_window_ended_at\n  FROM digest_deliveries dd\n  JOIN digest_items di ON di.digest_delivery_id = dd.id\n  JOIN transfer_report_revisions r ON r.id = di.transfer_report_revision_id\n  JOIN transfer_reports tr ON tr.id = r.transfer_report_id\n  JOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\n  JOIN raw_posts p ON p.id = trs.raw_post_id\n  JOIN source_accounts s ON s.id = p.source_account_id\n  WHERE dd.status = 'pending'\n),\nfresh_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n  s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n  p.post_url, p.posted_at,\n  NULL::text AS pending_idempotency_key,\n  NULL::timestamptz AS pending_window_started_at,\n  NULL::timestamptz AS pending_window_ended_at\nFROM transfer_report_revisions r\nJOIN transfer_reports tr ON tr.id = r.transfer_report_id\nJOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\nJOIN raw_posts p ON p.id = trs.raw_post_id\nJOIN source_accounts s ON s.id = p.source_account_id\nLEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id\nWHERE di.id IS NULL AND NOT EXISTS (SELECT 1 FROM pending_candidates)\n)\nSELECT * FROM pending_candidates\nUNION ALL\nSELECT * FROM fresh_candidates\nORDER BY priority_rank ASC, posted_at DESC\nLIMIT 100;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "build-bounded-discord-digest",
+      "name": "Build bounded Discord digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };\nconst truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';\nconst amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();\nconst reports = $input.all().map((item) => {\n  const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;\n  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;\n  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), display_name: item.json.source_name } };\n}).filter(Boolean).sort((a, b) => (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));\nconst pending = reports.find((report) => report.pending_idempotency_key);\nconst candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;\nconst selected = [...candidateReports.slice(0, 15), ...candidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];\nlet total = 45;\nconst fields = [];\nfor (const report of selected) {\n  const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);\n  const details = [\n    [report.current_club_name, report.destination_club_name].filter(Boolean).join(' → ') || 'Club details not reported',\n    report.player_identity_hint ? 'Identity: ' + report.player_identity_hint : null,\n    'Classification: ' + report.classification.replaceAll('_', ' '),\n    report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,\n    amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null,\n    amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,\n    amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,\n    report.contract_length_months !== null && report.contract_length_months !== undefined ? 'Contract length: ' + report.contract_length_months + ' months' : null,\n    report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,\n    report.loan_ends_on ? 'Loan ends: ' + report.loan_ends_on : null,\n    report.has_option_to_buy !== null && report.has_option_to_buy !== undefined ? 'Option to buy: ' + (report.has_option_to_buy ? 'Yes' : 'No') : null,\n    report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? 'Obligation to buy: ' + (report.has_obligation_to_buy ? 'Yes' : 'No') : null,\n    report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? 'Sell-on: ' + report.sell_on_percentage + '%' : null,\n    report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,\n    report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,\n    'Confidence: ' + Math.round(report.confidence * 100) + '%',\n    report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name,\n  ];\n  const value = truncate(details.filter(Boolean).join('\\n'), 1024);\n  if (fields.length >= 25 || total + name.length + value.length > 6000) continue;\n  total += name.length + value.length;\n  fields.push({ name, value, inline: false, revision_id: report.revision_id });\n}\nconst now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nconst end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);\nconst payload = { allowed_mentions: { parse: [] }, embeds: [{ title: 'Football transfer digest', color: 1948592, fields: fields.map(({ revision_id, ...field }) => field), footer: { text: String(fields.length) + ' new material report' + (fields.length === 1 ? '' : 's') } }] };\nreturn fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: payload })] } }] : [];"
+      }
+    },
+    {
+      "id": "reserve-digest-before-delivery",
+      "name": "Reserve digest before delivery",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH input AS (SELECT $1::jsonb AS payload),\ndelivery AS (\n  INSERT INTO digest_deliveries (\n    idempotency_key, channel_key, window_started_at, window_ended_at,\n    status, attempt_count, first_attempted_at, last_attempted_at\n  )\n  SELECT payload->>'idempotency_key', 'transfers', (payload->>'window_started_at')::timestamptz, (payload->>'window_ended_at')::timestamptz,\n    'sending', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP\n  FROM input\n  ON CONFLICT (idempotency_key) DO UPDATE\n  SET status = 'sending', attempt_count = digest_deliveries.attempt_count + 1,\n      first_attempted_at = COALESCE(digest_deliveries.first_attempted_at, CURRENT_TIMESTAMP),\n      last_attempted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP\n  WHERE digest_deliveries.status = 'pending'\n  RETURNING id, status\n),\nclaimed AS (\n  INSERT INTO digest_items (digest_delivery_id, transfer_report_revision_id, position)\n  SELECT (SELECT id FROM delivery), revision_id::bigint, position::smallint\n  FROM input, jsonb_array_elements_text(input.payload->'revision_ids') WITH ORDINALITY AS selected(revision_id, position)\n  WHERE (SELECT status FROM delivery) = 'sending'\n  ON CONFLICT (transfer_report_revision_id) DO NOTHING\n  RETURNING id\n)\nSELECT id::text AS digest_delivery_id, status FROM delivery\nWHERE EXISTS (SELECT 1 FROM claimed)\n   OR EXISTS (SELECT 1 FROM digest_items WHERE digest_delivery_id = delivery.id);",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "digest-reserved",
+      "name": "Digest reserved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3180,
+        -180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ !!$json.digest_delivery_id }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "build-discord-delivery-request",
+      "name": "Build Discord delivery request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3400,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const digest = $('Build bounded Discord digest').first().json.params[0];\nconst payload = typeof digest === 'string' ? JSON.parse(digest) : digest;\nreturn [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload.discord_payload } }];"
+      }
+    },
+    {
+      "id": "send-discord-digest-once",
+      "name": "Send Discord digest once",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3620,
+        -260
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_TRANSFERS_WEBHOOK_URL + \"?wait=true\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "prepare-delivery-finalization",
+      "name": "Prepare delivery finalization",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const request = $('Build Discord delivery request').first().json;\nconst response = $json.body ?? $json;\nconst status = Number($json.statusCode ?? $json.status ?? 0);\nconst workflowRunId = $('Register workflow run').isExecuted\n  ? $('Register workflow run').first().json.workflow_run_id\n  : $('Register sample workflow run').first().json.workflow_run_id;\nreturn [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];"
+      }
+    },
+    {
+      "id": "finalize-delivery-and-run",
+      "name": "Finalize delivery and run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        4060,
+        -260
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE digest_deliveries\nSET status = CASE\n      WHEN $2::integer BETWEEN 200 AND 299 THEN 'sent'\n      WHEN $2::integer = 0 THEN 'unknown'\n      ELSE 'failed'\n    END,\n    discord_message_id = CASE WHEN $2::integer BETWEEN 200 AND 299 THEN $3 ELSE NULL END,\n    response_payload = $4::jsonb,\n    sent_at = CASE WHEN $2::integer BETWEEN 200 AND 299 THEN CURRENT_TIMESTAMP ELSE NULL END\nWHERE id = $1::bigint\nRETURNING id::text AS digest_delivery_id, status, discord_message_id;\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every six hours": {
+      "main": [
+        [
+          {
+            "node": "Recover interrupted deliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual run": {
+      "main": [
+        [
+          {
+            "node": "Recover interrupted deliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual sample run": {
+      "main": [
+        [
+          {
+            "node": "Recover interrupted sample deliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover interrupted deliveries": {
+      "main": [
+        [
+          {
+            "node": "Create run context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover interrupted sample deliveries": {
+      "main": [
+        [
+          {
+            "node": "Create sample run context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create run context": {
+      "main": [
+        [
+          {
+            "node": "Register workflow run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create sample run context": {
+      "main": [
+        [
+          {
+            "node": "Register sample workflow run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register workflow run": {
+      "main": [
+        [
+          {
+            "node": "Load generated sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register sample workflow run": {
+      "main": [
+        [
+          {
+            "node": "Load sample source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load generated sources": {
+      "main": [
+        [
+          {
+            "node": "Upsert source accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load sample source": {
+      "main": [
+        [
+          {
+            "node": "Upsert sample source account",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert source accounts": {
+      "main": [
+        [
+          {
+            "node": "Build RapidAPI request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert sample source account": {
+      "main": [
+        [
+          {
+            "node": "Load sample collected X posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build RapidAPI request": {
+      "main": [
+        [
+          {
+            "node": "Collect 20 X posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect 20 X posts": {
+      "main": [
+        [
+          {
+            "node": "Parse RapidAPI posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load sample collected X posts": {
+      "main": [
+        [
+          {
+            "node": "Parse RapidAPI posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse RapidAPI posts": {
+      "main": [
+        [
+          {
+            "node": "Persist raw posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist raw posts": {
+      "main": [
+        [
+          {
+            "node": "Build Qwen request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Qwen request": {
+      "main": [
+        [
+          {
+            "node": "Extract with Qwen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract with Qwen": {
+      "main": [
+        [
+          {
+            "node": "Validate Qwen response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Qwen response": {
+      "main": [
+        [
+          {
+            "node": "Qwen response valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qwen response valid": {
+      "main": [
+        [
+          {
+            "node": "Transfer related",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Qwen validation failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transfer related": {
+      "main": [
+        [
+          {
+            "node": "Merge extracted reports",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark non-transfer ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge extracted reports": {
+      "main": [
+        [
+          {
+            "node": "Persist merged reports and revisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist merged reports and revisions": {
+      "main": [
+        [
+          {
+            "node": "Find undelivered revisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find undelivered revisions": {
+      "main": [
+        [
+          {
+            "node": "Build bounded Discord digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build bounded Discord digest": {
+      "main": [
+        [
+          {
+            "node": "Reserve digest before delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve digest before delivery": {
+      "main": [
+        [
+          {
+            "node": "Digest reserved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Digest reserved": {
+      "main": [
+        [
+          {
+            "node": "Build Discord delivery request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Discord delivery request": {
+      "main": [
+        [
+          {
+            "node": "Send Discord digest once",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Discord digest once": {
+      "main": [
+        [
+          {
+            "node": "Prepare delivery finalization",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare delivery finalization": {
+      "main": [
+        [
+          {
+            "node": "Finalize delivery and run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Ho_Chi_Minh",
+    "errorWorkflow": "Football Transfer Monitor Errors"
+  },
+  "versionId": "2.16.1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "generated-without-secrets"
+  },
+  "tags": []
+}

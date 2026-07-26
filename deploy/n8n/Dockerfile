@@ -1,1 +1,1 @@
-FROM n8nio/n8n:latest
+FROM n8nio/n8n:2.16.1@sha256:ad20607cdd24bac004ec44804b6b8ded9a2fbf92ed46c4496bf007762c883af2

@@ -1,0 +1,126 @@
+{
+  "id": "football-transfer-monitor-errors",
+  "name": "Football Transfer Monitor Errors",
+  "nodes": [
+    {
+      "id": "workflow-error-trigger",
+      "name": "Workflow error trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "prepare-failure-record",
+      "name": "Prepare failure record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const execution = $json.execution ?? {};\nconst error = $json.execution?.error ?? $json.error ?? {};\nconst fingerprint = String(execution.id ?? 'unknown') + '|' + String(error.message ?? 'Unknown workflow error');\nreturn [{ json: { params: [String(execution.id ?? ''), 'workflow_error', fingerprint, error.name ?? 'WorkflowError', error.message ?? 'Unknown workflow error', JSON.stringify($json)] } }];"
+      }
+    },
+    {
+      "id": "upsert-workflow-failure",
+      "name": "Upsert workflow failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nINSERT INTO failures (operation_name, error_fingerprint, error_class, error_message, details)\nVALUES ($2, $3, $4, $5, $6::jsonb)\nON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE\nSET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,\n    error_message = EXCLUDED.error_message, details = EXCLUDED.details\nRETURNING id::text AS failure_id;",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "send-error-webhook",
+      "name": "Send error webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_ERRORS_WEBHOOK_URL + \"?wait=true\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: \"Football Transfer Monitor failed. Check n8n execution logs.\" }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true
+    }
+  ],
+  "pinData": {},
+  "active": false,
+  "connections": {
+    "Workflow error trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare failure record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare failure record": {
+      "main": [
+        [
+          {
+            "node": "Upsert workflow failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert workflow failure": {
+      "main": [
+        [
+          {
+            "node": "Send error webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Ho_Chi_Minh"
+  },
+  "versionId": "2.16.1",
+  "tags": []
+}

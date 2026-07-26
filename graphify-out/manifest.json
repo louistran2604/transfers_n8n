@@ -1,4 +1,24 @@
 {
+  "database/migrate.sql": {
+    "mtime": 1785053555.0191581,
+    "ast_hash": "42f463d1d7a8fda6ffb0c0eb34fb6ee7",
+    "semantic_hash": "42f463d1d7a8fda6ffb0c0eb34fb6ee7"
+  },
+  "database/migrations/001_initial_schema.sql": {
+    "mtime": 1785056460.1717787,
+    "ast_hash": "508e20de9f63c9f82bd19ff0cdecda5e",
+    "semantic_hash": "508e20de9f63c9f82bd19ff0cdecda5e"
+  },
+  "database/tests/001_dedup_restart_safety.sql": {
+    "mtime": 1785053698.2189202,
+    "ast_hash": "a3fd64268a1903e14558c24789eb1c53",
+    "semantic_hash": "a3fd64268a1903e14558c24789eb1c53"
+  },
+  "database/tests/002_workflow_safety.sql": {
+    "mtime": 1785059120.324113,
+    "ast_hash": "cb802d555c7af0fe0daef9b8bd7bc321",
+    "semantic_hash": "cb802d555c7af0fe0daef9b8bd7bc321"
+  },
   "deploy/qwen3.6-27b/scripts/download-model.sh": {
     "mtime": 1785038096.0029852,
     "ast_hash": "769582acf694b4cd39893460f45e0d07",
@@ -19,30 +39,95 @@
     "ast_hash": "b77771c0c0fe41a26d29c672cca9285c",
     "semantic_hash": "b77771c0c0fe41a26d29c672cca9285c"
   },
-  "README.md": {
-    "mtime": 1785047275.4126852,
-    "ast_hash": "ed8b9f8104aa97d712218f371fb8ff63",
-    "semantic_hash": "ed8b9f8104aa97d712218f371fb8ff63"
+  "tests/e2e/mock/server.mjs": {
+    "mtime": 1785059240.0410764,
+    "ast_hash": "10e977ff427937386d7827b6a6d823f5",
+    "semantic_hash": "10e977ff427937386d7827b6a6d823f5"
   },
-  "current_state.md": {
-    "mtime": 1785051478.2228029,
-    "ast_hash": "985acf1e6e1088693a702ac50d3d020f",
-    "semantic_hash": "985acf1e6e1088693a702ac50d3d020f"
+  "tests/e2e/run.sh": {
+    "mtime": 1785059501.8917453,
+    "ast_hash": "c7a0e73c94ded871e06b6d92ce5a09cf",
+    "semantic_hash": "c7a0e73c94ded871e06b6d92ce5a09cf"
+  },
+  "tests/e2e/scenario.mjs": {
+    "mtime": 1785059203.4968665,
+    "ast_hash": "2c6a9cd5af4143bbe5785bd549d43220",
+    "semantic_hash": "2c6a9cd5af4143bbe5785bd549d43220"
+  },
+  "tests/unit/workflow-lib.test.mjs": {
+    "mtime": 1785077335.7855985,
+    "ast_hash": "0ff5ff0a1cc35084e671bdeb5d115a6a",
+    "semantic_hash": "0ff5ff0a1cc35084e671bdeb5d115a6a"
+  },
+  "workflow/build-workflows.mjs": {
+    "mtime": 1785077335.6935956,
+    "ast_hash": "610ee69a0610e96d8754809943cf060e",
+    "semantic_hash": "610ee69a0610e96d8754809943cf060e"
+  },
+  "workflow/football-transfer-monitor-errors.json": {
+    "mtime": 1785077457.7746375,
+    "ast_hash": "9bc4105ca952ad4abfffaa5f4b55edbb",
+    "semantic_hash": "9bc4105ca952ad4abfffaa5f4b55edbb"
+  },
+  "workflow/football-transfer-monitor.json": {
+    "mtime": 1785077457.7746375,
+    "ast_hash": "a6f12d4489b4a60141e69bbe52212150",
+    "semantic_hash": "a6f12d4489b4a60141e69bbe52212150"
+  },
+  "workflow/lib.mjs": {
+    "mtime": 1785077335.6055927,
+    "ast_hash": "9c00a51957df91e64e4e9f7888151ac3",
+    "semantic_hash": "9c00a51957df91e64e4e9f7888151ac3"
+  },
+  "workflow/qwen-response-schema.json": {
+    "mtime": 1785075707.237825,
+    "ast_hash": "0ad7212eb17a192b2131f50808ad5a4a",
+    "semantic_hash": "0ad7212eb17a192b2131f50808ad5a4a"
+  },
+  "Collect_20_X_posts.json": {
+    "mtime": 1785065722.1867635,
+    "ast_hash": "352344f88f277f7637635c0caed0c4d5",
+    "semantic_hash": "352344f88f277f7637635c0caed0c4d5"
+  },
+  "README.md": {
+    "mtime": 1785077441.7631073,
+    "ast_hash": "01b34718c14000e6cb9e831bcc464409",
+    "semantic_hash": "01b34718c14000e6cb9e831bcc464409"
+  },
+  "database/README.md": {
+    "mtime": 1785077472.470124,
+    "ast_hash": "c27a2136d8fdc704975d40be10e5b9eb",
+    "semantic_hash": "c27a2136d8fdc704975d40be10e5b9eb"
+  },
+  "deploy/n8n/README.md": {
+    "mtime": 1785062056.8025692,
+    "ast_hash": "e1c77f10ba6c4c37cfe5495b67d15afe",
+    "semantic_hash": "e1c77f10ba6c4c37cfe5495b67d15afe"
   },
   "deploy/n8n/compose.yaml": {
-    "mtime": 1785045012.5318487,
-    "ast_hash": "c0f6917d3f88282343da23432f81e87e",
-    "semantic_hash": "c0f6917d3f88282343da23432f81e87e"
+    "mtime": 1785065224.039164,
+    "ast_hash": "acc88551b7ac00792a9e1c7ced427836",
+    "semantic_hash": "acc88551b7ac00792a9e1c7ced427836"
   },
   "deploy/qwen3.6-27b/README.md": {
-    "mtime": 1785044319.02395,
-    "ast_hash": "5ab6e898edf6f54265416d400bfa85e1",
-    "semantic_hash": "5ab6e898edf6f54265416d400bfa85e1"
+    "mtime": 1785075652.8560238,
+    "ast_hash": "ffc070c8d996c2362d8a9efb5832ec99",
+    "semantic_hash": "ffc070c8d996c2362d8a9efb5832ec99"
   },
   "deploy/qwen3.6-27b/compose.yaml": {
-    "mtime": 1785038914.9468317,
-    "ast_hash": "e47009630205cd1067b71282bc1ffb5c",
-    "semantic_hash": "e47009630205cd1067b71282bc1ffb5c"
+    "mtime": 1785075652.7710211,
+    "ast_hash": "80ecbb7bb60f5b57f84f6d1e7f7fbece",
+    "semantic_hash": "80ecbb7bb60f5b57f84f6d1e7f7fbece"
+  },
+  "deploy/support/README.md": {
+    "mtime": 1785077472.559127,
+    "ast_hash": "22281db3354ff6f99871ddae667063a7",
+    "semantic_hash": "22281db3354ff6f99871ddae667063a7"
+  },
+  "deploy/support/compose.yaml": {
+    "mtime": 1785053555.3271685,
+    "ast_hash": "48a115b5694687c5d8749c9bd274882e",
+    "semantic_hash": "48a115b5694687c5d8749c9bd274882e"
   },
   "docs/journalist_list.md": {
     "mtime": 1785048258.0171719,
@@ -55,13 +140,28 @@
     "semantic_hash": "327895a5d202dfb4d6df0f10c62cd4c7"
   },
   "docs/rapidapi_user_request.txt": {
-    "mtime": 1785034293.1457684,
-    "ast_hash": "2575985149bdabb3d2ce72b44bf0f29d",
-    "semantic_hash": "2575985149bdabb3d2ce72b44bf0f29d"
+    "mtime": 1785059318.837685,
+    "ast_hash": "bb48ee81955373937567a28db9e4615d",
+    "semantic_hash": "bb48ee81955373937567a28db9e4615d"
   },
-  "transfermarkt_fields.pdf": {
-    "mtime": 1785031195.1557717,
-    "ast_hash": "05a15f56d515f7eee669a22914d24434",
-    "semantic_hash": "05a15f56d515f7eee669a22914d24434"
+  "tests/README.md": {
+    "mtime": 1785059300.1330657,
+    "ast_hash": "107a062b42bae378616f0e95171cd9d5",
+    "semantic_hash": "107a062b42bae378616f0e95171cd9d5"
+  },
+  "tests/e2e/compose.yaml": {
+    "mtime": 1785059239.9540734,
+    "ast_hash": "df7e4de351f7a35b956903f037f53a1c",
+    "semantic_hash": "df7e4de351f7a35b956903f037f53a1c"
+  },
+  "workflow/README.md": {
+    "mtime": 1785059299.9630601,
+    "ast_hash": "ce3aa6ff9c72fd071e67563cfd065db2",
+    "semantic_hash": "ce3aa6ff9c72fd071e67563cfd065db2"
+  },
+  "workflow/qwen-system-prompt.md": {
+    "mtime": 1785058632.4989583,
+    "ast_hash": "3882e934d858cc939565a14605931da8",
+    "semantic_hash": "3882e934d858cc939565a14605931da8"
   }
 }

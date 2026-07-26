@@ -14,10 +14,9 @@ This directory contains the PostgreSQL 16 persistence layer for the football-tra
 
 ## Initialize and migrate
 
-Run these commands from `deploy/support/` after creating its local `.env` file:
+Run these commands from `deploy/support/` after confirming its ignored local `.env` contains `POSTGRES_USER` and `POSTGRES_PASSWORD`:
 
 ```bash
-cp .env.example .env
 docker network create transfers_net
 docker compose up -d transfers-postgres
 docker compose --profile maintenance run --rm transfers-db-migrate
@@ -30,9 +29,11 @@ The first database start runs `migrate.sql` automatically. The maintenance comma
 ```bash
 docker compose exec -T transfers-postgres \
   sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/001_dedup_restart_safety.sql'
+docker compose exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/002_workflow_safety.sql'
 ```
 
-The test starts a transaction and rolls it back. It leaves no fixture data behind.
+Both tests start a transaction and roll it back. They leave no fixture data behind. The second test covers repeated conflict-safe source/report writes, material revision uniqueness, retry-state increment, workflow replay attempts, and `sending` to `unknown` recovery.
 
 ## Digest safety
 

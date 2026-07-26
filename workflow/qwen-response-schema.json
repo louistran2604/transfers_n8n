@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Football transfer extraction response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["transfer_related", "reports"],
+  "properties": {
+    "transfer_related": { "type": "boolean" },
+    "reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "player_name",
+          "player_identity_hint",
+          "current_club_name",
+          "destination_club_name",
+          "classification",
+          "move_type",
+          "fee_amount",
+          "fee_currency",
+          "add_ons_amount",
+          "add_ons_currency",
+          "release_clause_amount",
+          "release_clause_currency",
+          "contract_length_months",
+          "contract_expires_on",
+          "loan_ends_on",
+          "has_option_to_buy",
+          "has_obligation_to_buy",
+          "sell_on_percentage",
+          "medical_status",
+          "agreement_status",
+          "confidence"
+        ],
+        "properties": {
+          "player_name": { "type": "string", "minLength": 1 },
+          "player_identity_hint": { "type": ["string", "null"] },
+          "current_club_name": { "type": ["string", "null"] },
+          "destination_club_name": { "type": ["string", "null"] },
+          "classification": {
+            "type": "string",
+            "enum": ["official_confirmed", "advanced_negotiations", "rumor", "rejected_failed", "contract_renewal", "loan"]
+          },
+          "move_type": { "type": "string", "enum": ["permanent", "loan", "unknown"] },
+          "fee_amount": { "type": ["number", "null"], "minimum": 0 },
+          "fee_currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
+          "add_ons_amount": { "type": ["number", "null"], "minimum": 0 },
+          "add_ons_currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
+          "release_clause_amount": { "type": ["number", "null"], "minimum": 0 },
+          "release_clause_currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
+          "contract_length_months": { "type": ["integer", "null"], "minimum": 1 },
+          "contract_expires_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+          "loan_ends_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+          "has_option_to_buy": { "type": ["boolean", "null"] },
+          "has_obligation_to_buy": { "type": ["boolean", "null"] },
+          "sell_on_percentage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+          "medical_status": {
+            "type": "string",
+            "enum": ["not_reported", "scheduled", "passed", "failed", "pending", "unknown"]
+          },
+          "agreement_status": {
+            "type": "string",
+            "enum": ["not_reported", "reached", "close", "negotiating", "rejected", "unknown"]
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}
