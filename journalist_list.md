@@ -1,4 +1,4 @@
-Indivituals:
+## Individuals:
 
 | Name                 | X username         | X URL                                                  | User ID               |
 | -------------------- | ------------------ | ------------------------------------------------------ | --------------------- |
@@ -53,7 +53,7 @@ Indivituals:
 | Simon Stone          | `@sistoney67`      | [x.com/sistoney67](https://x.com/sistoney67)           | `274057120`           |
 | Stephen Railston     | `@StevenRailston`  | [x.com/StevenRailston](https://x.com/StevenRailston)   | `430106072`           |
 
-Organizations:
+## Organizations:
 
 | Organization            | X username       | X URL                                              | User ID              |
 | ----------------------- | ---------------- | -------------------------------------------------- | -------------------- |
