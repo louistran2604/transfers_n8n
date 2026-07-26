@@ -1,7 +1,6 @@
 .env
 .env.*
 !.env.example
-
 *.gguf
 models/
 node_modules/

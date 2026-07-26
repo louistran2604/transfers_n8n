@@ -343,7 +343,8 @@ given an env file. Variables listed under a service's `environment:` section
 are then injected into that container.
 
 Each independently run Compose project can have its own local `.env`.
-The n8n secrets belong in `deploy/n8n/.env`.
+The n8n secrets belong in `deploy/n8n/.env`; PostgreSQL credentials belong in
+`deploy/support/.env`.
 
 There is no need for a root `.env.example` for runtime operation. The user
 chose not to create one. A template may be added later only if documenting
@@ -362,7 +363,13 @@ transfers_n8n/
 │   ├── rapidapi_sample.json
 │   ├── rapidapi_user_request.txt
 │   └── rapidapi_user_sample.json
-├── database/                         currently empty
+├── database/
+│   ├── README.md
+│   ├── migrate.sql
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql
+│   └── tests/
+│       └── 001_dedup_restart_safety.sql
 ├── workflow/                         currently empty
 ├── services/
 │   └── transfermarkt-scraper/        currently empty
@@ -379,11 +386,15 @@ transfers_n8n/
     │   ├── compose.yaml
     │   ├── models/                   ignored
     │   └── scripts/
-    └── support/                      currently empty
+    └── support/
+        ├── .env.example
+        ├── .gitignore
+        ├── README.md
+        └── compose.yaml
 ```
 
-Git does not track empty directories, so the empty planned directories do not
-appear on GitHub yet.
+`workflow/` and `services/transfermarkt-scraper/` are still planned empty
+directories and therefore do not appear on GitHub yet.
 
 ## 11. What each current file does
 
@@ -424,17 +435,29 @@ appear on GitHub yet.
 | `deploy/qwen3.6-27b/scripts/download-model.sh` | Downloads the selected GGUF into `models/` with resume support, verifies its fixed SHA-256 checksum, and refuses to replace an invalid existing model automatically. |
 | `deploy/qwen3.6-27b/scripts/test-server.sh` | Runs the model-service acceptance tests: Compose validation, GPU access, health, safe port binding, Docker-network access, GPU offload, VRAM use, OpenAI-compatible inference, structured transfer JSON, and restart recovery. |
 
+### PostgreSQL persistence files
+
+| File | Purpose |
+| --- | --- |
+| `database/migrations/001_initial_schema.sql` | Creates the PostgreSQL 16 schema, constraints, indexes, timestamp triggers, and all persistence tables. |
+| `database/migrate.sql` | Uses a PostgreSQL advisory lock and `app_schema_migrations` to apply migrations once. It is run automatically for a new volume and manually for later migrations. |
+| `database/tests/001_dedup_restart_safety.sql` | Replays raw-post, report, source, digest, and retry writes inside a transaction, verifies no duplicates, then rolls back. |
+| `database/README.md` | Documents the data model, migration command, SQL test command, and conservative Discord delivery recovery rule. |
+| `deploy/support/compose.yaml` | Defines `transfers-postgres` and the one-shot `transfers-db-migrate` maintenance service on `transfers_net`. |
+| `deploy/support/.env.example` | Safe template for the local PostgreSQL username and password. It contains no real credentials. |
+| `deploy/support/README.md` | Documents setup, migration, SQL testing, n8n connection values, and safe shutdown. |
+
 ### Important local files that Git ignores
 
 | Path | Purpose |
 | --- | --- |
 | `deploy/n8n/.env` | Holds the real RapidAPI key, Discord webhook URLs, and n8n runner token used by the n8n Compose project. |
+| `deploy/support/.env` | Holds the real PostgreSQL username and password for the support Compose project. It is ignored by both root and local rules. |
 | `deploy/n8n/docker-compose.yml.backup` | Local backup of an earlier Compose file. It is not part of the active deployment and is ignored through `*.backup`. |
 | `deploy/qwen3.6-27b/models/` | Stores the large downloaded GGUF model and partial downloads. Model binaries must stay out of Git. |
 
-The empty `database/`, `workflow/`, `services/transfermarkt-scraper/`, and
-`deploy/support/` directories are placeholders for components that have not
-been implemented.
+The empty `workflow/` and `services/transfermarkt-scraper/` directories remain
+placeholders for components that have not been implemented.
 
 ## 12. Git and GitHub state
 
@@ -444,17 +467,22 @@ repositories were found.
 Current commits:
 
 ```text
+c21324b Added what each file does in current_state.md
+18ee94c Added current_state.md
 4e73ae1 Organized docs
 b9a901b Change section headers to Markdown format
 6640863 Add project README
-ea8c5b4 Set up football transfer monitoring project
 ```
 
-At the time this handoff was written:
+At the time this handoff was updated:
 
-- local `main` matched `origin/main`;
-- the tracked working tree was clean;
+- local `main` matched `origin/main` before the new persistence-layer work;
+- `current_state.md`, the persistence-layer files, and Graphify output have
+  local changes not yet committed;
+- `.gitignore` also has an existing local modification that this work did not
+  change;
 - `deploy/n8n/.env` was ignored;
+- `deploy/support/.env` was confirmed ignored;
 - `deploy/n8n/docker-compose.yml.backup` was ignored;
 - `deploy/qwen3.6-27b/models/` was ignored.
 
@@ -494,9 +522,12 @@ Configured secret names:
 - `DISCORD_TRANSFERS_WEBHOOK_URL`;
 - `DISCORD_ERRORS_WEBHOOK_URL`;
 - `N8N_RUNNERS_AUTH_TOKEN`.
+- `POSTGRES_USER`;
+- `POSTGRES_PASSWORD`.
 
 The real n8n `.env` is ignored by both the root ignore rules and
-`deploy/n8n/.gitignore`.
+`deploy/n8n/.gitignore`. The PostgreSQL `.env` is ignored by the root rules
+and `deploy/support/.gitignore`.
 
 Credential scans performed during setup found no literal Discord webhook,
 RapidAPI key, or runner-token values in commit-eligible files.
@@ -513,28 +544,59 @@ Security history:
 Do not place secrets directly in workflow JSON, Compose files, shell scripts,
 documentation, Git history, or Discord messages.
 
-## 14. PostgreSQL decision
+## 14. PostgreSQL persistence
 
-PostgreSQL 16 was selected for persistence.
+PostgreSQL 16 persistence is implemented.
 
-It should run as a separate supporting service under `deploy/support/` and
-join `transfers_net` with hostname `transfers-postgres`.
+`deploy/support/compose.yaml` defines the `transfers-postgres` service. It
+uses database name `transfers_net`, the external `transfers_net` network,
+hostname `transfers-postgres`, a named persistent volume, and a health check.
+It exposes no host port; n8n will connect at `transfers-postgres:5432` over the
+private Docker network.
 
-The schema has not been created. It must support:
+The database is initialized from `database/migrate.sql` for a new volume. The
+same command can be repeated through the `transfers-db-migrate` maintenance
+service. It takes a PostgreSQL advisory lock and records applied versions in
+`app_schema_migrations`.
 
-- source accounts and reliability;
-- raw collected posts;
-- normalized transfer reports;
-- many sources per merged transfer;
-- player and Transfermarkt profile data;
-- transfer, youth-club, and injury histories;
-- digest delivery records;
-- idempotency/deduplication keys;
-- workflow run logs and failures; and
-- retry-safe processing states.
+The schema stores:
 
-Database writes should use unique constraints and transactions so rerunning a
-workflow execution cannot create duplicates or resend a digest.
+- source accounts and raw X posts, with account and post IDs stored as `text`;
+- merged transfer reports, every supporting raw-post source, and one optional
+  preferred source per report;
+- player records, Transfermarkt profiles, transfer history, youth history, and
+  injury history;
+- report revisions, digest deliveries and items, workflow runs, failures, and
+  retry states; and
+- timestamps, foreign keys, checks, indexes, and idempotency constraints.
+
+The main deduplication rules are a unique X post ID per platform, one report
+per deterministic report `dedupe_key`, one raw post per report source, one
+preferred source per report, and one digest delivery per report revision.
+Workflow writes must use transactions and the documented `ON CONFLICT` upsert
+pattern.
+
+Discord delivery is deliberately conservative. If a worker stops after sending
+the HTTP request but before storing Discord's response, the delivery must move
+to `unknown` and must not be retried automatically. PostgreSQL cannot prove
+whether Discord accepted an interrupted request; this rule prevents duplicate
+digests.
+
+Verification completed on 2026-07-26:
+
+1. `docker compose config --quiet` passed using the safe example environment.
+2. A fresh PostgreSQL 16 container initialized the schema and became healthy.
+3. The migration service ran again after initialization and skipped the
+   already-recorded migration.
+4. `001_dedup_restart_safety.sql` passed twice, including after an actual
+   database restart. Its fixture transaction rolled back with no test reports
+   left behind.
+5. The test-only PostgreSQL container and named volume were removed. No
+   PostgreSQL container or database volume is currently running.
+
+For real setup, copy `deploy/support/.env.example` to the ignored local
+`deploy/support/.env`, replace the password, then start the service as
+documented in `deploy/support/README.md`.
 
 ## 15. Planned Playwright scraper
 
@@ -583,11 +645,11 @@ RapidAPI subscription.
 
 The following major components remain:
 
-1. Design the PostgreSQL 16 schema and supporting Compose service.
-2. Build and test the Playwright Transfermarkt scraper.
-3. Define the Qwen extraction prompt and strict JSON schema.
-4. Build the complete n8n workflow and export importable JSON.
-5. Run end-to-end tests for deduplication, restart safety, rate limits,
+1. Build and test the Playwright Transfermarkt scraper.
+2. Define the Qwen extraction prompt and strict JSON schema.
+3. Build the complete n8n workflow and export importable JSON.
+4. Run end-to-end tests for database-backed deduplication, restart safety,
+   rate limits,
    retries, Discord formatting, and failure notifications.
 
 Also resolve these smaller inconsistencies:
@@ -601,18 +663,18 @@ Also resolve these smaller inconsistencies:
 
 ## 18. Recommended next session
 
-Start with PostgreSQL and the supporting Compose project because the workflow's
-deduplication and restart safety depend on the schema.
+Start with the Playwright Transfermarkt scraper. The PostgreSQL schema is ready
+to receive its profiles and histories, and the scraper can use the documented
+idempotent `source_entry_key` values for repeated fetches.
 
 Suggested first request for the next chat:
 
 ```text
-Read current_state.md and inspect the repository. Plan the PostgreSQL 16
-schema and deploy/support/compose.yaml for this football transfer workflow.
-Do not edit until you show me the plan and I approve it. Preserve all existing
-files, use transfers_net, keep secrets in an ignored local .env, and design
-unique constraints for restart-safe deduplication.
+Read current_state.md and inspect the repository. Plan the Playwright
+Transfermarkt scraper service and its deployment for this football transfer
+workflow. Do not edit until you show me the plan and I approve it. Use the
+existing PostgreSQL persistence layer, respect Transfermarkt access controls,
+and keep all credentials in ignored local .env files.
 ```
 
-After PostgreSQL, build the scraper, then the n8n workflow. This order avoids
-redesigning the workflow after its persistence model is known.
+After the scraper, define the extraction prompt and build the n8n workflow.
