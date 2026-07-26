@@ -7,10 +7,10 @@ This directory contains the PostgreSQL 16 persistence layer for the football-tra
 - `source_accounts` and `raw_posts` store the configured X sources and their original posts. X account and post IDs are `text`, never numeric types.
 - `transfer_reports` holds one merged report per deterministic `dedupe_key`. `transfer_report_sources` retains every supporting raw post and permits at most one preferred source.
 - `transfer_report_revisions` records each digestable version. A revision can appear in only one `digest_items` row, so a retry cannot resend it.
-- `players`, `transfermarkt_profiles`, and the three history tables store the selected Transfermarkt data. Scraper entries use stable `source_entry_key` values for idempotent upserts.
+- `players` stores the normalized player identity used to link and deduplicate news reports.
 - `workflow_runs`, `failures`, and `retry_states` record execution, failure, and retry state without duplicating retries.
 
-`dedupe_key` and history `source_entry_key` values are application-generated stable identifiers. The workflow must use the same value when replaying a post or scraper response.
+`dedupe_key` values are application-generated stable identifiers. The workflow must use the same value when replaying a post.
 
 ## Initialize and migrate
 

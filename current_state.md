@@ -20,16 +20,14 @@ The finished system must:
 2. detect transfer-related reports and classify them;
 3. extract normalized transfer terms and source metadata;
 4. merge duplicate reports while retaining every useful source;
-5. enrich players through a separate Playwright Transfermarkt scraper;
-6. persist processed reports so restarts cannot resend old news;
-7. send a readable Discord digest; and
-8. include retries, rate-limit handling, validation, logs, and failure alerts.
+5. persist processed reports so restarts cannot resend old news;
+6. send a readable Discord digest; and
+7. include retries, rate-limit handling, validation, logs, and failure alerts.
 
 The final deliverables are:
 
 - workflow architecture and node-by-node design;
 - importable n8n workflow JSON;
-- Playwright scraper service and code;
 - PostgreSQL schema;
 - environment-variable documentation;
 - setup and test instructions; and
@@ -112,58 +110,11 @@ same report again after a workflow retry or n8n restart.
 - Normal digest maximum: 15 stories.
 - May expand to 18 only for official/confirmed reports or high-trust advanced
   negotiations.
-- Digest must include transfer details, player data, source links, and a
+- Digest must include transfer details, source links, and a
   confidence level.
 - A separate Discord webhook is used for failures.
 
-## 4. Transfermarkt data selection
-
-The user supplied `transfermarkt_fields.pdf` and reduced the desired fields to
-the following set.
-
-### Identity
-
-- name;
-- birth date;
-- age, derived from birth date rather than stored separately;
-- birthplace;
-- nationalities;
-- height;
-- positions; and
-- preferred foot.
-
-### Current club
-
-- current club;
-- squad number;
-- joined date;
-- contract expiry;
-- current market value; and
-- market-value date.
-
-### History
-
-- transfer date;
-- source club;
-- destination club;
-- market value at the time of transfer;
-- reported fee;
-- transfer type; and
-- youth clubs.
-
-### Availability
-
-- current injury;
-- injury history.
-
-Avoid duplicate fields. Birth date is stored once and age is calculated.
-Current market value and historical transfer-time market value are separate
-facts and may both be stored.
-
-The scraper must use Playwright as a separate service. It must not bypass
-CAPTCHAs, access controls, or anti-bot protections.
-
-## 5. News sources and RapidAPI
+## 4. News sources and RapidAPI
 
 `docs/journalist_list.md` currently contains:
 
@@ -204,7 +155,7 @@ Known issue: the David Ornstein sample request uses a numeric ID that does not
 match the ID currently listed for `@David_Ornstein`. Treat request files as
 examples only and generate live requests from `docs/journalist_list.md`.
 
-## 6. Model service
+## 5. Model service
 
 The language model is:
 
@@ -257,7 +208,7 @@ Known documentation issue: `deploy/qwen3.6-27b/README.md` mentions copying
 environment file. Fix the README reference later or add a service-local
 template only if one becomes useful.
 
-## 7. n8n service
+## 6. n8n service
 
 The n8n deployment lives in `deploy/n8n/`.
 
@@ -294,9 +245,7 @@ Current runtime check:
 - `n8n_bill` and `transfers-llama` are the two containers attached to
   `transfers_net`;
 - n8n should reach the model at `http://llama:8080`;
-- the future scraper should use
-  `http://transfermarkt-scraper:3000`;
-- the future database should use
+- the database uses
   `transfers-postgres:5432`.
 
 Known deployment issue: both n8n Dockerfiles use floating `latest` image tags.
@@ -307,7 +256,7 @@ Known minor issue: `version: "3.8"` in the n8n Compose file is obsolete in
 modern Docker Compose and may produce a warning. It does not currently prevent
 startup.
 
-## 8. Shared Docker network
+## 7. Shared Docker network
 
 The external Docker network is named:
 
@@ -323,8 +272,7 @@ Current and planned DNS names:
 
 ```text
 llama:8080                    current Qwen service
-transfermarkt-scraper:3000   planned Playwright service
-transfers-postgres:5432      planned PostgreSQL service
+transfers-postgres:5432      PostgreSQL service
 ```
 
 The host endpoint `127.0.0.1:8081` is for host-side model tests. n8n must use
@@ -335,7 +283,7 @@ The network currently exists and has two attached containers:
 - `n8n_bill`;
 - `transfers-llama`.
 
-## 9. Environment-file behaviour
+## 8. Environment-file behaviour
 
 A Compose `.env` file is loaded for variable substitution only when the
 Compose command is run from the appropriate project context or explicitly
@@ -350,13 +298,12 @@ There is no need for a root `.env.example` for runtime operation. The user
 chose not to create one. A template may be added later only if documenting
 required variables for another machine becomes useful.
 
-## 10. Repository layout
+## 9. Repository layout
 
 ```text
 transfers_n8n/
 ├── README.md
 ├── current_state.md
-├── transfermarkt_fields.pdf
 ├── docs/
 │   ├── journalist_list.md
 │   ├── rapidapi_request.txt
@@ -371,8 +318,6 @@ transfers_n8n/
 │   └── tests/
 │       └── 001_dedup_restart_safety.sql
 ├── workflow/                         currently empty
-├── services/
-│   └── transfermarkt-scraper/        currently empty
 └── deploy/
     ├── n8n/
     │   ├── .env                      ignored
@@ -393,10 +338,10 @@ transfers_n8n/
         └── compose.yaml
 ```
 
-`workflow/` and `services/transfermarkt-scraper/` are still planned empty
-directories and therefore do not appear on GitHub yet.
+`workflow/` is still a planned empty directory and therefore does not appear
+on GitHub yet.
 
-## 11. What each current file does
+## 10. What each current file does
 
 ### Project-level files
 
@@ -405,7 +350,6 @@ directories and therefore do not appear on GitHub yet.
 | `.gitignore` | Prevents secrets, model files, dependencies, database data, test output, logs, backups, and local `.codex` metadata from being committed. Its rules apply throughout the repository. |
 | `README.md` | Short public introduction to the project, its intended workflow, current status, basic service layout, and security rules. Its layout section still needs updating after the source files moved into `docs/`. |
 | `current_state.md` | Detailed private-safe handoff document for continuing the project in another Codex chat. It records decisions and status but contains no credential values. |
-| `transfermarkt_fields.pdf` | User-supplied screenshots of available Transfermarkt player fields. It is reference material for designing the scraper, not input consumed by the running services. |
 
 ### Source and API reference files
 
@@ -456,10 +400,10 @@ directories and therefore do not appear on GitHub yet.
 | `deploy/n8n/docker-compose.yml.backup` | Local backup of an earlier Compose file. It is not part of the active deployment and is ignored through `*.backup`. |
 | `deploy/qwen3.6-27b/models/` | Stores the large downloaded GGUF model and partial downloads. Model binaries must stay out of Git. |
 
-The empty `workflow/` and `services/transfermarkt-scraper/` directories remain
-placeholders for components that have not been implemented.
+The empty `workflow/` directory remains a placeholder for the importable
+workflow that has not been implemented.
 
-## 12. Git and GitHub state
+## 11. Git and GitHub state
 
 The repository was initialized once at the project root. No nested Git
 repositories were found.
@@ -502,7 +446,6 @@ The root `.gitignore` excludes:
 models/
 node_modules/
 postgres-data/
-playwright-report/
 test-results/
 *.log
 *.backup
@@ -512,7 +455,7 @@ test-results/
 It currently contains an exception for `.env.example`, although no root
 `.env.example` exists.
 
-## 13. Secret and credential state
+## 12. Secret and credential state
 
 Never print or commit actual secret values.
 
@@ -544,7 +487,7 @@ Security history:
 Do not place secrets directly in workflow JSON, Compose files, shell scripts,
 documentation, Git history, or Discord messages.
 
-## 14. PostgreSQL persistence
+## 13. PostgreSQL persistence
 
 PostgreSQL 16 persistence is implemented.
 
@@ -564,8 +507,7 @@ The schema stores:
 - source accounts and raw X posts, with account and post IDs stored as `text`;
 - merged transfer reports, every supporting raw-post source, and one optional
   preferred source per report;
-- player records, Transfermarkt profiles, transfer history, youth history, and
-  injury history;
+- player records used to link and deduplicate news reports;
 - report revisions, digest deliveries and items, workflow runs, failures, and
   retry states; and
 - timestamps, foreign keys, checks, indexes, and idempotency constraints.
@@ -598,57 +540,22 @@ For real setup, copy `deploy/support/.env.example` to the ignored local
 `deploy/support/.env`, replace the password, then start the service as
 documented in `deploy/support/README.md`.
 
-## 15. Planned Playwright scraper
-
-The scraper has not been implemented. Its intended location is:
-
-```text
-services/transfermarkt-scraper/
-```
-
-Its deployment should be added to `deploy/support/`.
-
-Required behaviour:
-
-- accept a player profile URL or a validated player identifier;
-- use Playwright;
-- collect only the approved fields;
-- normalize dates, measurements, currency, and club names;
-- return validated structured JSON;
-- apply low concurrency and delays;
-- cache results to reduce repeated page access;
-- retry only transient failures;
-- stop and alert on CAPTCHA, HTTP 403, or HTTP 429;
-- log errors without sensitive data;
-- expose a health endpoint; and
-- be reachable by n8n as `http://transfermarkt-scraper:3000`.
-
-## 16. Legal and access-control requirements
-
-Before scraping Transfermarkt:
-
-- review its current Terms of Service;
-- review its current `robots.txt`;
-- check whether the intended pages and automated access are permitted;
-- minimize request volume and cache results;
-- do not bypass CAPTCHAs, authentication, blocks, or rate limits;
-- do not use stealth or proxy rotation to evade protections; and
-- stop scraping and notify the error webhook when access is refused.
-
-These risks must be documented in setup instructions rather than hidden.
+## 14. API access requirements
 
 X data must use the user's existing RapidAPI Twitter/X API. Its current quota,
 pricing, and rate-limit headers still need to be confirmed from the active
 RapidAPI subscription.
 
-## 17. Work not yet done
+The workflow must respect the API's current terms, quotas, and rate limits. It
+must not bypass authentication, blocks, or other access controls.
+
+## 15. Work not yet done
 
 The following major components remain:
 
-1. Build and test the Playwright Transfermarkt scraper.
-2. Define the Qwen extraction prompt and strict JSON schema.
-3. Build the complete n8n workflow and export importable JSON.
-4. Run end-to-end tests for database-backed deduplication, restart safety,
+1. Define the Qwen extraction prompt and strict JSON schema.
+2. Build the complete n8n workflow and export importable JSON.
+3. Run end-to-end tests for database-backed deduplication, restart safety,
    rate limits,
    retries, Discord formatting, and failure notifications.
 
@@ -661,20 +568,19 @@ Also resolve these smaller inconsistencies:
 - confirm the runner token was rotated; and
 - reauthenticate GitHub CLI before the next GitHub write.
 
-## 18. Recommended next session
+## 16. Recommended next session
 
-Start with the Playwright Transfermarkt scraper. The PostgreSQL schema is ready
-to receive its profiles and histories, and the scraper can use the documented
-idempotent `source_entry_key` values for repeated fetches.
+Start with the Qwen extraction prompt and strict JSON schema, then build the
+complete n8n workflow around the existing PostgreSQL persistence layer.
 
 Suggested first request for the next chat:
 
 ```text
-Read current_state.md and inspect the repository. Plan the Playwright
-Transfermarkt scraper service and its deployment for this football transfer
-workflow. Do not edit until you show me the plan and I approve it. Use the
-existing PostgreSQL persistence layer, respect Transfermarkt access controls,
-and keep all credentials in ignored local .env files.
+Read current_state.md and inspect the repository. Plan the Qwen extraction
+prompt, strict JSON schema, and n8n workflow for this football transfer
+monitor. Do not edit until you show me the plan and I approve it. Use the
+existing PostgreSQL persistence layer and keep all credentials in ignored
+local .env files.
 ```
 
-After the scraper, define the extraction prompt and build the n8n workflow.
+Then implement and test the importable n8n workflow.

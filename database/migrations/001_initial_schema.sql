@@ -67,88 +67,6 @@ CREATE TABLE players (
 
 CREATE INDEX players_normalized_name_idx ON players (normalized_name);
 
-CREATE TABLE transfermarkt_profiles (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  player_id bigint NOT NULL UNIQUE REFERENCES players (id) ON DELETE CASCADE,
-  transfermarkt_player_id text NOT NULL UNIQUE CHECK (transfermarkt_player_id ~ '^[0-9]+$'),
-  profile_url text NOT NULL UNIQUE CHECK (profile_url ~ '^https://'),
-  birthplace text,
-  nationalities text[] NOT NULL DEFAULT ARRAY[]::text[],
-  height_cm smallint CHECK (height_cm BETWEEN 100 AND 250),
-  positions text[] NOT NULL DEFAULT ARRAY[]::text[],
-  preferred_foot text CHECK (preferred_foot IN ('left', 'right', 'both', 'unknown')),
-  current_club_name text,
-  squad_number text,
-  joined_on date,
-  contract_expires_on date,
-  current_market_value_amount numeric(14,2)
-    CHECK (current_market_value_amount IS NULL OR current_market_value_amount >= 0),
-  current_market_value_currency char(3)
-    CHECK (current_market_value_currency IS NULL OR current_market_value_currency ~ '^[A-Z]{3}$'),
-  current_market_value_as_of date,
-  last_scraped_at timestamptz,
-  raw_profile jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(raw_profile) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE player_transfer_history (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  transfermarkt_profile_id bigint NOT NULL REFERENCES transfermarkt_profiles (id) ON DELETE CASCADE,
-  source_entry_key text NOT NULL CHECK (btrim(source_entry_key) <> ''),
-  transfer_date date,
-  from_club_name text,
-  to_club_name text,
-  market_value_amount numeric(14,2)
-    CHECK (market_value_amount IS NULL OR market_value_amount >= 0),
-  market_value_currency char(3)
-    CHECK (market_value_currency IS NULL OR market_value_currency ~ '^[A-Z]{3}$'),
-  reported_fee text,
-  transfer_type text,
-  raw_entry jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(raw_entry) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (transfermarkt_profile_id, source_entry_key)
-);
-
-CREATE INDEX player_transfer_history_profile_date_idx
-  ON player_transfer_history (transfermarkt_profile_id, transfer_date DESC NULLS LAST);
-
-CREATE TABLE player_youth_history (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  transfermarkt_profile_id bigint NOT NULL REFERENCES transfermarkt_profiles (id) ON DELETE CASCADE,
-  source_entry_key text NOT NULL CHECK (btrim(source_entry_key) <> ''),
-  club_name text NOT NULL CHECK (btrim(club_name) <> ''),
-  sort_order integer NOT NULL CHECK (sort_order >= 0),
-  raw_entry jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(raw_entry) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (transfermarkt_profile_id, source_entry_key)
-);
-
-CREATE INDEX player_youth_history_profile_order_idx
-  ON player_youth_history (transfermarkt_profile_id, sort_order);
-
-CREATE TABLE player_injury_history (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  transfermarkt_profile_id bigint NOT NULL REFERENCES transfermarkt_profiles (id) ON DELETE CASCADE,
-  source_entry_key text NOT NULL CHECK (btrim(source_entry_key) <> ''),
-  injury_name text NOT NULL CHECK (btrim(injury_name) <> ''),
-  started_on date,
-  ended_on date,
-  days_absent integer CHECK (days_absent IS NULL OR days_absent >= 0),
-  is_current boolean NOT NULL DEFAULT false,
-  raw_entry jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(raw_entry) = 'object'),
-  created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CHECK (ended_on IS NULL OR started_on IS NULL OR ended_on >= started_on),
-  UNIQUE (transfermarkt_profile_id, source_entry_key)
-);
-
-CREATE UNIQUE INDEX player_injury_history_one_current_injury
-  ON player_injury_history (transfermarkt_profile_id)
-  WHERE is_current;
-
 CREATE TABLE transfer_reports (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   dedupe_key text NOT NULL UNIQUE CHECK (btrim(dedupe_key) <> ''),
@@ -275,8 +193,7 @@ CREATE TABLE retry_states (
   resource_type text NOT NULL CHECK (resource_type IN (
     'raw_post',
     'transfer_report',
-    'digest_delivery',
-    'transfermarkt_profile'
+    'digest_delivery'
   )),
   resource_key text NOT NULL CHECK (btrim(resource_key) <> ''),
   operation_name text NOT NULL CHECK (btrim(operation_name) <> ''),
@@ -348,18 +265,6 @@ CREATE TRIGGER raw_posts_set_updated_at
   FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
 CREATE TRIGGER players_set_updated_at
   BEFORE UPDATE ON players
-  FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
-CREATE TRIGGER transfermarkt_profiles_set_updated_at
-  BEFORE UPDATE ON transfermarkt_profiles
-  FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
-CREATE TRIGGER player_transfer_history_set_updated_at
-  BEFORE UPDATE ON player_transfer_history
-  FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
-CREATE TRIGGER player_youth_history_set_updated_at
-  BEFORE UPDATE ON player_youth_history
-  FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
-CREATE TRIGGER player_injury_history_set_updated_at
-  BEFORE UPDATE ON player_injury_history
   FOR EACH ROW EXECUTE FUNCTION app_set_updated_at();
 CREATE TRIGGER transfer_reports_set_updated_at
   BEFORE UPDATE ON transfer_reports
