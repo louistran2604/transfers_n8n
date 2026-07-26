@@ -385,7 +385,58 @@ transfers_n8n/
 Git does not track empty directories, so the empty planned directories do not
 appear on GitHub yet.
 
-## 11. Git and GitHub state
+## 11. What each current file does
+
+### Project-level files
+
+| File | Purpose |
+| --- | --- |
+| `.gitignore` | Prevents secrets, model files, dependencies, database data, test output, logs, backups, and local `.codex` metadata from being committed. Its rules apply throughout the repository. |
+| `README.md` | Short public introduction to the project, its intended workflow, current status, basic service layout, and security rules. Its layout section still needs updating after the source files moved into `docs/`. |
+| `current_state.md` | Detailed private-safe handoff document for continuing the project in another Codex chat. It records decisions and status but contains no credential values. |
+| `transfermarkt_fields.pdf` | User-supplied screenshots of available Transfermarkt player fields. It is reference material for designing the scraper, not input consumed by the running services. |
+
+### Source and API reference files
+
+| File | Purpose |
+| --- | --- |
+| `docs/journalist_list.md` | Source registry containing 50 journalists and 27 organizations with X usernames, profile URLs, and numeric user IDs. The future workflow will read or convert this data into its source configuration. |
+| `docs/rapidapi_request.txt` | Example RapidAPI `curl` request for recent Fabrizio Romano posts. It uses a placeholder instead of a real API key. |
+| `docs/rapidapi_sample.json` | Saved sample response for developing and testing post parsing without spending live API requests. |
+| `docs/rapidapi_user_request.txt` | A second example tweets request using David Ornstein's username. Despite its filename, it is not a user-ID lookup request, and its example numeric ID does not match the current source registry. |
+| `docs/rapidapi_user_sample.json` | Saved response paired with the second example request. It is parsing reference data, not a user lookup result. |
+
+### n8n deployment files
+
+| File | Purpose |
+| --- | --- |
+| `deploy/n8n/.gitignore` | Locally ignores the n8n `.env`. This duplicates the root protection deliberately so secrets remain excluded even when working inside this directory. |
+| `deploy/n8n/Dockerfile` | Builds the n8n container from `n8nio/n8n:latest`. It currently adds no custom packages and should eventually pin the intended n8n version. |
+| `deploy/n8n/compose.yaml` | Defines the n8n and external runner containers, required environment variables, persistent n8n volume, host port 5678, timezone, and attachment to `transfers_net`. |
+| `deploy/n8n/runners/Dockerfile` | Builds the external task runner from `n8nio/runners:latest` and installs the Python package `youtube-transcript-api`. It should eventually use a runner version compatible with the pinned n8n image. |
+
+### Qwen and llama.cpp files
+
+| File | Purpose |
+| --- | --- |
+| `deploy/qwen3.6-27b/README.md` | Service-specific setup, download, startup, health-check, endpoint, update, and troubleshooting instructions for the local Qwen model. |
+| `deploy/qwen3.6-27b/compose.yaml` | Defines the GPU-enabled llama.cpp server, pinned container image, model mount, inference settings, health check, localhost port 8081, and `llama` alias on `transfers_net`. |
+| `deploy/qwen3.6-27b/scripts/download-model.sh` | Downloads the selected GGUF into `models/` with resume support, verifies its fixed SHA-256 checksum, and refuses to replace an invalid existing model automatically. |
+| `deploy/qwen3.6-27b/scripts/test-server.sh` | Runs the model-service acceptance tests: Compose validation, GPU access, health, safe port binding, Docker-network access, GPU offload, VRAM use, OpenAI-compatible inference, structured transfer JSON, and restart recovery. |
+
+### Important local files that Git ignores
+
+| Path | Purpose |
+| --- | --- |
+| `deploy/n8n/.env` | Holds the real RapidAPI key, Discord webhook URLs, and n8n runner token used by the n8n Compose project. |
+| `deploy/n8n/docker-compose.yml.backup` | Local backup of an earlier Compose file. It is not part of the active deployment and is ignored through `*.backup`. |
+| `deploy/qwen3.6-27b/models/` | Stores the large downloaded GGUF model and partial downloads. Model binaries must stay out of Git. |
+
+The empty `database/`, `workflow/`, `services/transfermarkt-scraper/`, and
+`deploy/support/` directories are placeholders for components that have not
+been implemented.
+
+## 12. Git and GitHub state
 
 The repository was initialized once at the project root. No nested Git
 repositories were found.
@@ -427,12 +478,13 @@ playwright-report/
 test-results/
 *.log
 *.backup
+.codex/*
 ```
 
 It currently contains an exception for `.env.example`, although no root
 `.env.example` exists.
 
-## 12. Secret and credential state
+## 13. Secret and credential state
 
 Never print or commit actual secret values.
 
@@ -461,7 +513,7 @@ Security history:
 Do not place secrets directly in workflow JSON, Compose files, shell scripts,
 documentation, Git history, or Discord messages.
 
-## 13. PostgreSQL decision
+## 14. PostgreSQL decision
 
 PostgreSQL 16 was selected for persistence.
 
@@ -484,7 +536,7 @@ The schema has not been created. It must support:
 Database writes should use unique constraints and transactions so rerunning a
 workflow execution cannot create duplicates or resend a digest.
 
-## 14. Planned Playwright scraper
+## 15. Planned Playwright scraper
 
 The scraper has not been implemented. Its intended location is:
 
@@ -509,7 +561,7 @@ Required behaviour:
 - expose a health endpoint; and
 - be reachable by n8n as `http://transfermarkt-scraper:3000`.
 
-## 15. Legal and access-control requirements
+## 16. Legal and access-control requirements
 
 Before scraping Transfermarkt:
 
@@ -527,7 +579,7 @@ X data must use the user's existing RapidAPI Twitter/X API. Its current quota,
 pricing, and rate-limit headers still need to be confirmed from the active
 RapidAPI subscription.
 
-## 16. Work not yet done
+## 17. Work not yet done
 
 The following major components remain:
 
@@ -547,7 +599,7 @@ Also resolve these smaller inconsistencies:
 - confirm the runner token was rotated; and
 - reauthenticate GitHub CLI before the next GitHub write.
 
-## 17. Recommended next session
+## 18. Recommended next session
 
 Start with PostgreSQL and the supporting Compose project because the workflow's
 deduplication and restart safety depend on the schema.
