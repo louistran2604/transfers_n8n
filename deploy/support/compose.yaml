@@ -1,0 +1,56 @@
+name: transfers-support
+
+services:
+  transfers-postgres:
+    image: postgres:16
+    container_name: transfers-postgres
+    hostname: transfers-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: transfers_net
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - transfers_postgres_data:/var/lib/postgresql/data
+      - ../../database:/database:ro
+      - ../../database/migrate.sql:/docker-entrypoint-initdb.d/010-migrate.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - transfers_net
+
+  transfers-db-migrate:
+    image: postgres:16
+    profiles:
+      - maintenance
+    depends_on:
+      transfers-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: transfers-postgres
+      PGPORT: "5432"
+      PGDATABASE: transfers_net
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - ../../database:/database:ro
+    command:
+      - psql
+      - --set=ON_ERROR_STOP=1
+      - --file=/database/migrate.sql
+    networks:
+      - transfers_net
+
+volumes:
+  transfers_postgres_data:
+    driver: local
+
+networks:
+  transfers_net:
+    external: true

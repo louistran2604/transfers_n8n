@@ -1,0 +1,1287 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {
+    "hyperedges": [
+      {
+        "id": "transfer_monitor_processing_pipeline",
+        "label": "Transfer Monitor Processing Pipeline",
+        "nodes": [
+          "current_state_rapidapi_x_collection",
+          "current_state_qwen_extraction_service",
+          "current_state_postgresql_16_persistence",
+          "current_state_discord_delivery_policy"
+        ],
+        "relation": "participate_in",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "current_state.md"
+      },
+      {
+        "id": "shared_transfers_net_services",
+        "label": "Services on transfers_net",
+        "nodes": [
+          "deploy_n8n_compose_n8n_service",
+          "deploy_qwen3_6_27b_compose_llama_service",
+          "readme_external_transfers_net"
+        ],
+        "relation": "participate_in",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "README.md"
+      },
+      {
+        "id": "transfermarkt_enrichment_dataset",
+        "label": "Transfermarkt Enrichment Dataset",
+        "nodes": [
+          "transfermarkt_fields_player_identity_and_club_data",
+          "transfermarkt_fields_market_value_data",
+          "transfermarkt_fields_transfer_history",
+          "transfermarkt_fields_youth_clubs"
+        ],
+        "relation": "form",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "transfermarkt_fields.pdf"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "label": "download-model.sh",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "file"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_download_model",
+      "community": 6,
+      "norm_label": "download-model.sh"
+    },
+    {
+      "label": "download-model.sh script",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_entrypoint"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_download_model_sh__entry",
+      "community": 6,
+      "norm_label": "download-model.sh script"
+    },
+    {
+      "label": "checksum()",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_location": "L15",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_download_model_checksum",
+      "community": 6,
+      "norm_label": "checksum()"
+    },
+    {
+      "label": "test-server.sh",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "file"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_test_server",
+      "community": 5,
+      "norm_label": "test-server.sh"
+    },
+    {
+      "label": "test-server.sh script",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L1",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_entrypoint"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
+      "community": 5,
+      "norm_label": "test-server.sh script"
+    },
+    {
+      "label": "wait_for_health()",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L14",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health",
+      "community": 5,
+      "norm_label": "wait_for_health()"
+    },
+    {
+      "label": "check_gpu_offload()",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L40",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "_origin": "ast",
+      "id": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload",
+      "community": 5,
+      "norm_label": "check_gpu_offload()"
+    },
+    {
+      "label": "Football Transfer Monitor",
+      "file_type": "document",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_football_transfer_monitor",
+      "community": 3,
+      "norm_label": "football transfer monitor"
+    },
+    {
+      "label": "Six-Hour Transfer Digest Workflow",
+      "file_type": "concept",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_six_hour_digest_workflow",
+      "community": 3,
+      "norm_label": "six-hour transfer digest workflow"
+    },
+    {
+      "label": "Source-Preserving Report Merge",
+      "file_type": "rationale",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_source_preserving_merge",
+      "community": 3,
+      "norm_label": "source-preserving report merge"
+    },
+    {
+      "label": "External Docker Network transfers_net",
+      "file_type": "concept",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_external_transfers_net",
+      "community": 0,
+      "norm_label": "external docker network transfers_net"
+    },
+    {
+      "label": "Local Secret Isolation",
+      "file_type": "rationale",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_secret_isolation",
+      "community": 3,
+      "norm_label": "local secret isolation"
+    },
+    {
+      "label": "Transfermarkt Access Policy",
+      "file_type": "rationale",
+      "source_file": "README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "readme_transfermarkt_access_policy",
+      "community": 3,
+      "norm_label": "transfermarkt access policy"
+    },
+    {
+      "label": "Football Transfer Monitor Current-State Handoff",
+      "file_type": "document",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_project_handoff",
+      "community": 2,
+      "norm_label": "football transfer monitor current-state handoff"
+    },
+    {
+      "label": "Locked Six-Hour Schedule",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_locked_schedule",
+      "community": 3,
+      "norm_label": "locked six-hour schedule"
+    },
+    {
+      "label": "Transfer Classifications",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_transfer_classifications",
+      "community": 2,
+      "norm_label": "transfer classifications"
+    },
+    {
+      "label": "Transfer Source Priority Policy",
+      "file_type": "rationale",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_source_priority_policy",
+      "community": 2,
+      "norm_label": "transfer source priority policy"
+    },
+    {
+      "label": "Restart-Safe Deduplication",
+      "file_type": "rationale",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_restart_safe_deduplication",
+      "community": 2,
+      "norm_label": "restart-safe deduplication"
+    },
+    {
+      "label": "PostgreSQL 16 Persistence Layer",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_postgresql_16_persistence",
+      "community": 2,
+      "norm_label": "postgresql 16 persistence layer"
+    },
+    {
+      "label": "Playwright Transfermarkt Scraper",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_playwright_transfermarkt_scraper",
+      "community": 4,
+      "norm_label": "playwright transfermarkt scraper"
+    },
+    {
+      "label": "RapidAPI X Post Collection",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_rapidapi_x_collection",
+      "community": 1,
+      "norm_label": "rapidapi x post collection"
+    },
+    {
+      "label": "Qwen Extraction Service",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_qwen_extraction_service",
+      "community": 0,
+      "norm_label": "qwen extraction service"
+    },
+    {
+      "label": "Discord Digest Delivery Policy",
+      "file_type": "concept",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_discord_delivery_policy",
+      "community": 2,
+      "norm_label": "discord digest delivery policy"
+    },
+    {
+      "label": "String-Typed X Identifiers",
+      "file_type": "rationale",
+      "source_file": "current_state.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "current_state_string_x_identifiers",
+      "community": 2,
+      "norm_label": "string-typed x identifiers"
+    },
+    {
+      "label": "n8n Service",
+      "file_type": "code",
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_n8n_compose_n8n_service",
+      "community": 0,
+      "norm_label": "n8n service"
+    },
+    {
+      "label": "n8n External Task Runner",
+      "file_type": "code",
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_n8n_compose_external_task_runner",
+      "community": 0,
+      "norm_label": "n8n external task runner"
+    },
+    {
+      "label": "Persistent n8n Data Volume",
+      "file_type": "code",
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_n8n_compose_bill_n8n_data",
+      "community": 0,
+      "norm_label": "persistent n8n data volume"
+    },
+    {
+      "label": "llama.cpp Service Guide",
+      "file_type": "document",
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_readme_llama_cpp_service_guide",
+      "community": 0,
+      "norm_label": "llama.cpp service guide"
+    },
+    {
+      "label": "Qwen3.6-27B GGUF Model",
+      "file_type": "concept",
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_readme_qwen3_6_27b_model",
+      "community": 0,
+      "norm_label": "qwen3.6-27b gguf model"
+    },
+    {
+      "label": "Model-Service Acceptance Testing",
+      "file_type": "concept",
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_readme_acceptance_testing",
+      "community": 0,
+      "norm_label": "model-service acceptance testing"
+    },
+    {
+      "label": "Private Model-Service Access",
+      "file_type": "rationale",
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_readme_private_model_access",
+      "community": 0,
+      "norm_label": "private model-service access"
+    },
+    {
+      "label": "GPU llama.cpp Server",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_compose_llama_service",
+      "community": 0,
+      "norm_label": "gpu llama.cpp server"
+    },
+    {
+      "label": "llama Health Check",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_compose_llama_healthcheck",
+      "community": 0,
+      "norm_label": "llama health check"
+    },
+    {
+      "label": "GPU Inference Configuration",
+      "file_type": "code",
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "deploy_qwen3_6_27b_compose_gpu_inference_configuration",
+      "community": 0,
+      "norm_label": "gpu inference configuration"
+    },
+    {
+      "label": "X Source Account Registry",
+      "file_type": "document",
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_journalist_list_source_account_registry",
+      "community": 1,
+      "norm_label": "x source account registry"
+    },
+    {
+      "label": "Individual Journalist Accounts",
+      "file_type": "concept",
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_journalist_list_individual_journalists",
+      "community": 1,
+      "norm_label": "individual journalist accounts"
+    },
+    {
+      "label": "News and Club Organization Accounts",
+      "file_type": "concept",
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_journalist_list_news_and_club_organizations",
+      "community": 1,
+      "norm_label": "news and club organization accounts"
+    },
+    {
+      "label": "David Ornstein",
+      "file_type": "concept",
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_journalist_list_david_ornstein",
+      "community": 1,
+      "norm_label": "david ornstein"
+    },
+    {
+      "label": "Fabrizio Romano",
+      "file_type": "concept",
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_journalist_list_fabrizio_romano",
+      "community": 1,
+      "norm_label": "fabrizio romano"
+    },
+    {
+      "label": "Fabrizio Romano Tweets Request Example",
+      "file_type": "document",
+      "source_file": "docs/rapidapi_request.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_rapidapi_request_fabrizio_tweets_request",
+      "community": 1,
+      "norm_label": "fabrizio romano tweets request example"
+    },
+    {
+      "label": "RapidAPI Tweets Endpoint",
+      "file_type": "concept",
+      "source_file": "docs/rapidapi_request.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_rapidapi_request_rapidapi_tweets_endpoint",
+      "community": 1,
+      "norm_label": "rapidapi tweets endpoint"
+    },
+    {
+      "label": "David Ornstein Tweets Request Example",
+      "file_type": "document",
+      "source_file": "docs/rapidapi_user_request.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_rapidapi_user_request_david_ornstein_tweets_request",
+      "community": 1,
+      "norm_label": "david ornstein tweets request example"
+    },
+    {
+      "label": "RapidAPI Tweets Endpoint",
+      "file_type": "concept",
+      "source_file": "docs/rapidapi_user_request.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "docs_rapidapi_user_request_rapidapi_tweets_endpoint",
+      "community": 1,
+      "norm_label": "rapidapi tweets endpoint"
+    },
+    {
+      "label": "Transfermarkt Player Profile Reference",
+      "file_type": "paper",
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "transfermarkt_fields_player_profile_reference",
+      "community": 4,
+      "norm_label": "transfermarkt player profile reference"
+    },
+    {
+      "label": "Player Identity and Current Club Data",
+      "file_type": "concept",
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "transfermarkt_fields_player_identity_and_club_data",
+      "community": 4,
+      "norm_label": "player identity and current club data"
+    },
+    {
+      "label": "Current Market Value Data",
+      "file_type": "concept",
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "transfermarkt_fields_market_value_data",
+      "community": 4,
+      "norm_label": "current market value data"
+    },
+    {
+      "label": "Player Transfer History",
+      "file_type": "concept",
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "transfermarkt_fields_transfer_history",
+      "community": 4,
+      "norm_label": "player transfer history"
+    },
+    {
+      "label": "Player Youth Clubs",
+      "file_type": "concept",
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "transfermarkt_fields_youth_clubs",
+      "community": 4,
+      "norm_label": "player youth clubs"
+    }
+  ],
+  "links": [
+    {
+      "relation": "defines",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_download_model",
+      "target": "deploy_qwen3_6_27b_scripts_download_model_checksum",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_download_model",
+      "target": "deploy_qwen3_6_27b_scripts_download_model_sh__entry",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "defines",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L40",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_test_server",
+      "target": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_test_server",
+      "target": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "defines",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L14",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_test_server",
+      "target": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L100",
+      "weight": 1.0,
+      "context": "call",
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
+      "target": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_location": "L79",
+      "weight": 1.0,
+      "context": "call",
+      "_origin": "ast",
+      "source": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
+      "target": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_football_transfer_monitor",
+      "target": "readme_external_transfers_net"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_football_transfer_monitor",
+      "target": "readme_secret_isolation"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_football_transfer_monitor",
+      "target": "readme_six_hour_digest_workflow"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_football_transfer_monitor",
+      "target": "readme_source_preserving_merge"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_football_transfer_monitor",
+      "target": "readme_transfermarkt_access_policy"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_locked_schedule",
+      "target": "readme_six_hour_digest_workflow"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "readme_source_preserving_merge",
+      "target": "readme_six_hour_digest_workflow"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_source_priority_policy",
+      "target": "readme_source_preserving_merge"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_n8n_compose_n8n_service",
+      "target": "readme_external_transfers_net"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_compose_llama_service",
+      "target": "readme_external_transfers_net"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_readme_private_model_access",
+      "target": "readme_external_transfers_net"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_discord_delivery_policy"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_locked_schedule"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_playwright_transfermarkt_scraper"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_postgresql_16_persistence"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_qwen_extraction_service"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_rapidapi_x_collection"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_restart_safe_deduplication"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_source_priority_policy"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_string_x_identifiers"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_project_handoff",
+      "target": "current_state_transfer_classifications"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_source_priority_policy",
+      "target": "current_state_restart_safe_deduplication"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_restart_safe_deduplication",
+      "target": "current_state_postgresql_16_persistence"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_string_x_identifiers",
+      "target": "current_state_postgresql_16_persistence"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_playwright_transfermarkt_scraper",
+      "target": "transfermarkt_fields_player_profile_reference"
+    },
+    {
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_rapidapi_x_collection",
+      "target": "docs_journalist_list_source_account_registry"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "current_state_qwen_extraction_service",
+      "target": "deploy_qwen3_6_27b_readme_qwen3_6_27b_model"
+    },
+    {
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_n8n_compose_n8n_service",
+      "target": "deploy_n8n_compose_external_task_runner"
+    },
+    {
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/n8n/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_n8n_compose_n8n_service",
+      "target": "deploy_n8n_compose_bill_n8n_data"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_readme_llama_cpp_service_guide",
+      "target": "deploy_qwen3_6_27b_readme_acceptance_testing"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_readme_llama_cpp_service_guide",
+      "target": "deploy_qwen3_6_27b_readme_private_model_access"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_readme_llama_cpp_service_guide",
+      "target": "deploy_qwen3_6_27b_readme_qwen3_6_27b_model"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_compose_llama_service",
+      "target": "deploy_qwen3_6_27b_readme_qwen3_6_27b_model"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_compose_llama_service",
+      "target": "deploy_qwen3_6_27b_compose_gpu_inference_configuration"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "deploy_qwen3_6_27b_compose_llama_service",
+      "target": "deploy_qwen3_6_27b_compose_llama_healthcheck"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_journalist_list_source_account_registry",
+      "target": "docs_journalist_list_individual_journalists"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_journalist_list_source_account_registry",
+      "target": "docs_journalist_list_news_and_club_organizations"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_journalist_list_individual_journalists",
+      "target": "docs_journalist_list_david_ornstein"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/journalist_list.md",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_journalist_list_individual_journalists",
+      "target": "docs_journalist_list_fabrizio_romano"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/rapidapi_user_request.txt",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_rapidapi_user_request_david_ornstein_tweets_request",
+      "target": "docs_journalist_list_david_ornstein"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/rapidapi_request.txt",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_rapidapi_request_fabrizio_tweets_request",
+      "target": "docs_journalist_list_fabrizio_romano"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/rapidapi_request.txt",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_rapidapi_request_fabrizio_tweets_request",
+      "target": "docs_rapidapi_request_rapidapi_tweets_endpoint"
+    },
+    {
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.95,
+      "source_file": "docs/rapidapi_request.txt",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_rapidapi_request_rapidapi_tweets_endpoint",
+      "target": "docs_rapidapi_user_request_rapidapi_tweets_endpoint"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/rapidapi_user_request.txt",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "docs_rapidapi_user_request_david_ornstein_tweets_request",
+      "target": "docs_rapidapi_user_request_rapidapi_tweets_endpoint"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "transfermarkt_fields_player_profile_reference",
+      "target": "transfermarkt_fields_market_value_data"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "transfermarkt_fields_player_profile_reference",
+      "target": "transfermarkt_fields_player_identity_and_club_data"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "transfermarkt_fields_player_profile_reference",
+      "target": "transfermarkt_fields_transfer_history"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "transfermarkt_fields.pdf",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "transfermarkt_fields_player_profile_reference",
+      "target": "transfermarkt_fields_youth_clubs"
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "transfer_monitor_processing_pipeline",
+      "label": "Transfer Monitor Processing Pipeline",
+      "nodes": [
+        "current_state_rapidapi_x_collection",
+        "current_state_qwen_extraction_service",
+        "current_state_postgresql_16_persistence",
+        "current_state_discord_delivery_policy"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "current_state.md"
+    },
+    {
+      "id": "shared_transfers_net_services",
+      "label": "Services on transfers_net",
+      "nodes": [
+        "deploy_n8n_compose_n8n_service",
+        "deploy_qwen3_6_27b_compose_llama_service",
+        "readme_external_transfers_net"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "README.md"
+    },
+    {
+      "id": "transfermarkt_enrichment_dataset",
+      "label": "Transfermarkt Enrichment Dataset",
+      "nodes": [
+        "transfermarkt_fields_player_identity_and_club_data",
+        "transfermarkt_fields_market_value_data",
+        "transfermarkt_fields_transfer_history",
+        "transfermarkt_fields_youth_clubs"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "transfermarkt_fields.pdf"
+    }
+  ],
+  "built_at_commit": "c21324b1498e15c00f88e2b24ded36dd753d1c46"
+}

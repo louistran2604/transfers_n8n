@@ -1,0 +1,67 @@
+{
+  "deploy/qwen3.6-27b/scripts/download-model.sh": {
+    "mtime": 1785038096.0029852,
+    "ast_hash": "769582acf694b4cd39893460f45e0d07",
+    "semantic_hash": "769582acf694b4cd39893460f45e0d07"
+  },
+  "deploy/qwen3.6-27b/scripts/test-server.sh": {
+    "mtime": 1785038915.0358346,
+    "ast_hash": "2055a9ab09a16f52699ea9203d385ecb",
+    "semantic_hash": "2055a9ab09a16f52699ea9203d385ecb"
+  },
+  "docs/rapidapi_sample.json": {
+    "mtime": 1785032979.5862806,
+    "ast_hash": "2c9afed69a956900b103fcfa226c3326",
+    "semantic_hash": "2c9afed69a956900b103fcfa226c3326"
+  },
+  "docs/rapidapi_user_sample.json": {
+    "mtime": 1785034391.326608,
+    "ast_hash": "b77771c0c0fe41a26d29c672cca9285c",
+    "semantic_hash": "b77771c0c0fe41a26d29c672cca9285c"
+  },
+  "README.md": {
+    "mtime": 1785047275.4126852,
+    "ast_hash": "ed8b9f8104aa97d712218f371fb8ff63",
+    "semantic_hash": "ed8b9f8104aa97d712218f371fb8ff63"
+  },
+  "current_state.md": {
+    "mtime": 1785051478.2228029,
+    "ast_hash": "985acf1e6e1088693a702ac50d3d020f",
+    "semantic_hash": "985acf1e6e1088693a702ac50d3d020f"
+  },
+  "deploy/n8n/compose.yaml": {
+    "mtime": 1785045012.5318487,
+    "ast_hash": "c0f6917d3f88282343da23432f81e87e",
+    "semantic_hash": "c0f6917d3f88282343da23432f81e87e"
+  },
+  "deploy/qwen3.6-27b/README.md": {
+    "mtime": 1785044319.02395,
+    "ast_hash": "5ab6e898edf6f54265416d400bfa85e1",
+    "semantic_hash": "5ab6e898edf6f54265416d400bfa85e1"
+  },
+  "deploy/qwen3.6-27b/compose.yaml": {
+    "mtime": 1785038914.9468317,
+    "ast_hash": "e47009630205cd1067b71282bc1ffb5c",
+    "semantic_hash": "e47009630205cd1067b71282bc1ffb5c"
+  },
+  "docs/journalist_list.md": {
+    "mtime": 1785048258.0171719,
+    "ast_hash": "31ec4b5fc2e180f63e23d37db0d1aec4",
+    "semantic_hash": "31ec4b5fc2e180f63e23d37db0d1aec4"
+  },
+  "docs/rapidapi_request.txt": {
+    "mtime": 1785033062.110104,
+    "ast_hash": "327895a5d202dfb4d6df0f10c62cd4c7",
+    "semantic_hash": "327895a5d202dfb4d6df0f10c62cd4c7"
+  },
+  "docs/rapidapi_user_request.txt": {
+    "mtime": 1785034293.1457684,
+    "ast_hash": "2575985149bdabb3d2ce72b44bf0f29d",
+    "semantic_hash": "2575985149bdabb3d2ce72b44bf0f29d"
+  },
+  "transfermarkt_fields.pdf": {
+    "mtime": 1785031195.1557717,
+    "ast_hash": "05a15f56d515f7eee669a22914d24434",
+    "semantic_hash": "05a15f56d515f7eee669a22914d24434"
+  }
+}
