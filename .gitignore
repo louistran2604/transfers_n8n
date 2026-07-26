@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+
+*.gguf
+models/
+node_modules/
+postgres-data/
+playwright-report/
+test-results/
+*.log
+*.backup

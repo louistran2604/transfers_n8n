@@ -1,0 +1,72 @@
+services:
+  llama:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b10103@sha256:72ca3a0323ec891af9332afc8d501396557a45eca2b1b3712828d5cf57e36743}
+    container_name: transfers-llama
+    restart: unless-stopped
+    init: true
+    gpus: all
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "127.0.0.1:8081:8080"
+    command:
+      - --model
+      - /models/${MODEL_FILE:-Qwen3.6-27B-UD-IQ3_XXS.gguf}
+      - --alias
+      - ${MODEL_ALIAS:-qwen3.6-27b}
+      - --ctx-size
+      - "8192"
+      - --gpu-layers
+      - all
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --parallel
+      - "1"
+      - --fit
+      - "on"
+      - --fit-target
+      - "1024"
+      - --n-predict
+      - "2048"
+      - --reasoning
+      - "off"
+      - --cors-origins
+      - localhost
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --offline
+      - --no-webui
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - --max-time
+        - "5"
+        - http://127.0.0.1:8080/health
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 5m
+    networks:
+      transfers_net:
+        aliases:
+          - llama
+
+networks:
+  transfers_net:
+    external: true

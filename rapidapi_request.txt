@@ -1,0 +1,5 @@
+curl --request GET \
+	--url 'https://twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com/user/330262748/tweets?count=20&username=FabrizioRomano' \
+	--header 'Content-Type: application/json' \
+	--header 'x-rapidapi-host: twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com' \
+	--header 'x-rapidapi-key: RAPIDAPI_KEY'
