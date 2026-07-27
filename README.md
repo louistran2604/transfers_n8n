@@ -389,5 +389,3 @@ More focused documentation:
 - [n8n deployment](deploy/n8n/README.md)
 - [Qwen deployment and GPU checks](deploy/qwen3.6-27b/README.md)
 - [Automated tests](tests/README.md)
-
-Never commit local `.env` files, X cookie values, Discord webhook URLs, RapidAPI keys, PostgreSQL passwords, n8n runner tokens, or downloaded model data.
