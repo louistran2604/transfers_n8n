@@ -112,8 +112,8 @@ export function parseSourceRegistry(markdown) {
     }));
   }
 
-  if (accounts.length !== 77) {
-    throw new Error(`Expected 77 source accounts, found ${accounts.length}`);
+  if (accounts.length !== 78) {
+    throw new Error(`Expected 78 source accounts, found ${accounts.length}`);
   }
   return accounts;
 }

@@ -52,9 +52,9 @@ const source = (username, account_type = 'individual') => sourceMetadata({
   account_type,
 });
 
-test('source parser returns all 77 sources and preserves large IDs as strings', async () => {
+test('source parser returns all 78 sources and preserves large IDs as strings', async () => {
   const registry = await loadSourceRegistry(new URL('../../docs/journalist_list.md', import.meta.url));
-  assert.equal(registry.length, 77);
+  assert.equal(registry.length, 78);
   const harpur = registry.find((account) => account.username === 'charlotteharpur');
   assert.equal(harpur.external_account_id, '922928582866980864');
   assert.equal(typeof harpur.external_account_id, 'string');

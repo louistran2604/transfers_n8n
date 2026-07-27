@@ -1,6 +1,6 @@
 # Workflow generation and import
 
-`build-workflows.mjs` is dependency-free and is the only source for the generated workflow JSON files. It parses `docs/journalist_list.md` directly, validates every account ID as a decimal string, and rejects a registry that does not contain exactly 77 accounts. It never reads collector sample requests for IDs.
+`build-workflows.mjs` is dependency-free and is the only source for the generated workflow JSON files. It parses `docs/journalist_list.md` directly, validates every account ID as a decimal string, and rejects a registry that does not contain exactly 78 accounts. It never reads collector sample requests for IDs.
 
 ```bash
 node workflow/build-workflows.mjs

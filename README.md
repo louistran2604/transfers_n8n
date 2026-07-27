@@ -1,6 +1,6 @@
 # Football Transfer Monitor
 
-An n8n workflow that collects 20 recent X posts from 77 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector.
+An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector.
 
 The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh`.
 
@@ -10,7 +10,7 @@ The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh
 Schedule or manual trigger
   → recover interrupted deliveries
   → register the workflow run
-  → upsert the 77 configured X sources
+  → upsert the 78 configured X sources
   → request the latest 20 posts for each source
   → ignore pure retweets and persist raw posts
   → extract and validate transfer reports with local Qwen
@@ -129,7 +129,7 @@ The scraper has no host port. Its health check runs inside Docker and reports on
 
 ### 5. Generate and import workflows
 
-The generator reads all 77 accounts directly from `docs/journalist_list.md`, validates every X ID as a decimal string, and embeds the source registry, prompt, and schema:
+The generator reads all 78 accounts directly from `docs/journalist_list.md`, validates every X ID as a decimal string, and embeds the source registry, prompt, and schema:
 
 ```bash
 node workflow/build-workflows.mjs
@@ -367,7 +367,7 @@ Confirm the **Digest reserved** true branch ran, the webhook environment variabl
 - Live manual tests can consume RapidAPI quota or dedicated X-account capacity and can send real Discord messages.
 - Local Qwen extraction quality depends on the model and quantization; strict validation rejects malformed output.
 - `unknown` Discord deliveries require human review because automatic resend could duplicate a message.
-- The source registry is fixed at 77 accounts until the generator and documentation are deliberately updated.
+- The source registry is fixed at 78 accounts until the generator and documentation are deliberately updated.
 
 ## Repository layout
 
@@ -376,7 +376,7 @@ database/      schema, migrations, persistence documentation, and SQL tests
 deploy/n8n/    pinned n8n/task-runner image, Compose service, and private twscrape collector
 deploy/qwen3.6-27b/  pinned llama.cpp Qwen service and model scripts
 deploy/support/      PostgreSQL Compose service
-docs/          77-source registry and RapidAPI request/response examples
+docs/          78-source registry and RapidAPI request/response examples
 tests/         dependency-free unit tests and isolated mock E2E stack
 workflow/      prompt, schema, reusable logic, generator, and generated workflows
 graphify-out/  generated repository knowledge graph and audit report

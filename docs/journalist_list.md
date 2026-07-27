@@ -14,6 +14,7 @@
 | David Ornstein       | `@David_Ornstein`  | [x.com/David_Ornstein](https://x.com/David_Ornstein)   | `46875124`            |
 | Emma Sanders         | `@em_sandy`        | [x.com/em_sandy](https://x.com/em_sandy)               | `407837161`           |
 | Fabrizio Romano      | `@FabrizioRomano`  | [x.com/FabrizioRomano](https://x.com/FabrizioRomano)   | `330262748`           |
+| Florian Plettenberg  | `@Plettigoal`      | [x.com/Plettigoal](https://x.com/Plettigoal)	     | `2303765948`	     |
 | Gastón Edul          | `@gastonedul`      | [x.com/gastonedul](https://x.com/gastonedul)           | `165573691`           |
 | Gianluca Di Marzio   | `@DiMarzio`        | [x.com/DiMarzio](https://x.com/DiMarzio)               | `251690031`           |
 | Guillermo Rai        | `@GuillermoRai_`   | [x.com/GuillermoRai_](https://x.com/GuillermoRai_)     | `741219268210085888`  |
