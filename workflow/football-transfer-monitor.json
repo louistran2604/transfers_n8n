@@ -103,7 +103,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: $execution.mode, started_at: now.toISOString() })], logical_run_key: start.toISOString() } }];"
+        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nconst collectionStartedAt = now.toISOString();\nconst collectionCutoffAt = new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString();\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: $execution.mode, started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt })], logical_run_key: start.toISOString(), collection_started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt } }];"
       }
     },
     {
@@ -117,7 +117,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: now.toISOString(), sample: true })], logical_run_key: start.toISOString() } }];"
+        "jsCode": "const now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nconst collectionStartedAt = now.toISOString();\nconst collectionCutoffAt = new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString();\nreturn [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt, sample: true })], logical_run_key: start.toISOString(), collection_started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt } }];"
       }
     },
     {
@@ -249,8 +249,8 @@
       }
     },
     {
-      "id": "build-rapidapi-request",
-      "name": "Build RapidAPI request",
+      "id": "select-x-collector",
+      "name": "Select X collector",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -259,7 +259,107 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));"
+        "jsCode": "const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();\nif (!['rapidapi', 'twscrape'].includes(collector)) throw new Error('X_COLLECTOR must be explicitly set to rapidapi or twscrape');\nreturn $input.all().map((item) => ({ json: { ...item.json, collector } }));"
+      }
+    },
+    {
+      "id": "use-twscrape-collector",
+      "name": "Use twscrape collector",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        -40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.collector }}",
+              "rightValue": "twscrape",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "build-twscrape-collect-request",
+      "name": "Build twscrape collect request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const sources = $input.all().map((item) => ({\n  source_id: String(item.json.source_account_id),\n  username: String(item.json.username),\n  x_user_id: String(item.json.external_account_id),\n  external_account_id: String(item.json.external_account_id),\n  display_name: item.json.display_name,\n  priority_rank: item.json.priority_rank,\n  reliability_score: item.json.reliability_score,\n  is_official: item.json.is_official,\n}));\nreturn [{ json: { sources, body: { sources: sources.map(({ source_id, username, x_user_id }) => ({ source_id, username, x_user_id })), limit: 20 } } }];"
+      }
+    },
+    {
+      "id": "collect-20-x-posts-via-twscrape",
+      "name": "Collect 20 X posts via twscrape",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TWSCRAPE_BASE_URL || \"http://twscrape:8080\") + \"/collect\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 310000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "normalize-twscrape-posts",
+      "name": "Normalize twscrape posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const request = $('Build twscrape collect request').first().json;\nconst sources = new Map((request.sources ?? []).map((source) => [String(source.source_id), source]));\nconst response = $input.first()?.json?.body ?? $input.first()?.json ?? {};\nconst posts = Array.isArray(response?.posts) ? response.posts : [];\nconst context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;\nconst collectionCutoffAt = Date.parse(context.collection_cutoff_at);\nconst collectionStartedAt = Date.parse(context.collection_started_at);\nconst seen = new Set();\nreturn posts.flatMap((post) => {\n  const source = sources.get(String(post?.source_id ?? ''));\n  const externalPostId = String(post?.external_post_id ?? '');\n  const xUserId = String(post?.x_user_id ?? '');\n  const content = typeof post?.content === 'string' ? post.content.trim() : '';\n  const date = new Date(post?.posted_at);\n  if (!source || xUserId !== String(source.external_account_id) || !/^\\d+$/.test(externalPostId) || !content || seen.has(externalPostId) || /^RT\\s+@/i.test(content) || Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];\n  seen.add(externalPostId);\n  const postUrl = typeof post?.post_url === 'string' && post.post_url.startsWith('https://')\n    ? post.post_url\n    : 'https://x.com/' + source.username + '/status/' + externalPostId;\n  const rawPayload = post?.raw_payload && typeof post.raw_payload === 'object' ? post.raw_payload : {};\n  return [{ json: {\n    params: [String(source.external_account_id), externalPostId, postUrl, content, date.toISOString(), JSON.stringify(rawPayload), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official],\n  } }];\n});"
+      }
+    },
+    {
+      "id": "build-rapidapi-request",
+      "name": "Build RapidAPI request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "if (!String($env.RAPIDAPI_KEY ?? '').trim()) throw new Error('RAPIDAPI_KEY is required when X_COLLECTOR=rapidapi');\nreturn $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));"
       }
     },
     {
@@ -268,7 +368,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        320,
+        660,
         -40
       ],
       "parameters": {
@@ -325,12 +425,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        540,
+        880,
         -40
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const inputs = $input.all();\nconst requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];\nreturn inputs.flatMap((item, index) => {\n  const requestIndex = item.pairedItem?.item ?? index;\n  const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;\n  if (!request?.source) throw new Error('Missing RapidAPI request metadata for response item ' + index);\n  const response = item.json.body ?? item.json;\n  const found = [], walked = new Set(), seen = new Set();\n  const walk = (value) => {\n    if (!value || typeof value !== 'object' || walked.has(value)) return;\n    walked.add(value);\n    const text = value?.note_tweet?.note_tweet_results?.result?.text ?? value?.legacy?.full_text ?? value?.legacy?.text;\n    const id = String(value?.rest_id ?? value?.legacy?.id_str ?? value?.id_str ?? '');\n    if (/^\\d+$/.test(id) && text) found.push(value);\n    Object.values(value).forEach(walk);\n  };\n  walk(response);\n  return found.flatMap((tweet) => {\n    const external_post_id = String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');\n    const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;\n    if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];\n    const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);\n    if (Number.isNaN(date.valueOf())) return [];\n    seen.add(external_post_id);\n    const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;\n    return [{ json: {\n      params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],\n    } }];\n  });\n});"
+        "jsCode": "const inputs = $input.all();\nconst requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];\nconst context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;\nconst collectionCutoffAt = Date.parse(context.collection_cutoff_at);\nconst collectionStartedAt = Date.parse(context.collection_started_at);\nreturn inputs.flatMap((item, index) => {\n  const requestIndex = item.pairedItem?.item ?? index;\n  const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;\n  if (!request?.source) throw new Error('Missing RapidAPI request metadata for response item ' + index);\n  const response = item.json.body ?? item.json;\n  const found = [], walked = new Set(), seen = new Set();\n  const walk = (value) => {\n    if (!value || typeof value !== 'object' || walked.has(value)) return;\n    walked.add(value);\n    const text = value?.note_tweet?.note_tweet_results?.result?.text ?? value?.legacy?.full_text ?? value?.legacy?.text;\n    const id = String(value?.rest_id ?? value?.legacy?.id_str ?? value?.id_str ?? '');\n    if (/^\\d+$/.test(id) && text) found.push(value);\n    Object.values(value).forEach(walk);\n  };\n  walk(response);\n  return found.flatMap((tweet) => {\n    const external_post_id = String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');\n    const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;\n    if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];\n    const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);\n    if (Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];\n    seen.add(external_post_id);\n    const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;\n    return [{ json: {\n      params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],\n    } }];\n  });\n});"
       }
     },
     {
@@ -369,7 +469,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const prompt = \"You extract football-transfer information from one X post. Return only a JSON object that conforms exactly to the supplied JSON Schema.\\n\\nRules:\\n\\n1. Decide whether the post is about a player transfer, loan, contract renewal, failed/rejected move, or advanced negotiation. If it is not, return `{\\\"transfer_related\\\":false,\\\"reports\\\":[]}`.\\n2. Do not invent facts. Use `null` for unknown nullable values, `unknown` for an explicitly required state that is unclear, and `not_reported` when medical/agreement information is absent.\\n3. Amounts are numeric base units only. For example, `45000000`, never `€45m`, `45 million`, or an amount expressed in millions. Currency must be an uppercase ISO 4217 code when known.\\n4. Dates must be ISO calendar dates (`YYYY-MM-DD`), never relative words. Convert a stated contract duration to months only when exact.\\n5. Classify using this precedence if a post contains multiple outcomes: `contract_renewal`, `rejected_failed`, `loan`, `official_confirmed`, `advanced_negotiations`, then `rumor`.\\n6. Use `loan` for a loan move even where the post says it is agreed or official. Use `contract_renewal` for extensions/new contracts. Use `rejected_failed` only for a rejected, collapsed, or failed move. Use `official_confirmed` only when a club or reliable report states completion/official confirmation. Use `advanced_negotiations` for close talks, verbal agreement, or final-stage negotiation. Otherwise use `rumor`.\\n7. Direct and quoted posts are valid evidence. Do not add journalist identity, URL, platform, source timestamp, source tier, priority, or reliability: those are supplied outside your response.\\n8. A post may contain more than one transfer report. Each item must still contain every schema field. Confidence reflects only how clearly the post supports that extracted report.\\n\";\nconst schema = {\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Football transfer extraction response\",\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"transfer_related\",\"reports\"],\"properties\":{\"transfer_related\":{\"type\":\"boolean\"},\"reports\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"player_name\",\"player_identity_hint\",\"current_club_name\",\"destination_club_name\",\"classification\",\"move_type\",\"fee_amount\",\"fee_currency\",\"add_ons_amount\",\"add_ons_currency\",\"release_clause_amount\",\"release_clause_currency\",\"contract_length_months\",\"contract_expires_on\",\"loan_ends_on\",\"has_option_to_buy\",\"has_obligation_to_buy\",\"sell_on_percentage\",\"medical_status\",\"agreement_status\",\"confidence\"],\"properties\":{\"player_name\":{\"type\":\"string\",\"minLength\":1},\"player_identity_hint\":{\"type\":[\"string\",\"null\"]},\"current_club_name\":{\"type\":[\"string\",\"null\"]},\"destination_club_name\":{\"type\":[\"string\",\"null\"]},\"classification\":{\"type\":\"string\",\"enum\":[\"official_confirmed\",\"advanced_negotiations\",\"rumor\",\"rejected_failed\",\"contract_renewal\",\"loan\"]},\"move_type\":{\"type\":\"string\",\"enum\":[\"permanent\",\"loan\",\"unknown\"]},\"fee_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"fee_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"add_ons_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"add_ons_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"release_clause_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"release_clause_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"contract_length_months\":{\"type\":[\"integer\",\"null\"],\"minimum\":1},\"contract_expires_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"loan_ends_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"has_option_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"has_obligation_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"sell_on_percentage\":{\"type\":[\"number\",\"null\"],\"minimum\":0,\"maximum\":100},\"medical_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"scheduled\",\"passed\",\"failed\",\"pending\",\"unknown\"]},\"agreement_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"reached\",\"close\",\"negotiating\",\"rejected\",\"unknown\"]},\"confidence\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1}}}}}};\nconst llamaSchema = JSON.parse(JSON.stringify(schema));\ndelete llamaSchema.properties.reports.items.properties.player_name.minLength;\nreturn $input.all().map((item) => ({ json: {\n  raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,\n  source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), is_official: item.json.is_official },\n  body: { model: 'qwen3.6-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }\n} }));"
+        "jsCode": "const prompt = \"You extract football-transfer information from one X post. Return only a JSON object that conforms exactly to the supplied JSON Schema.\\n\\nRules:\\n\\n1. Cover men's senior football only. Exclude women's, girls', and youth football, including reports that clearly concern a known women's or youth player or team even when the post omits the competition. For excluded posts, return `{\\\"transfer_related\\\":false,\\\"reports\\\":[]}`.\\n2. Decide whether the post is about a player transfer, loan, contract renewal, failed/rejected move, or advanced negotiation. If it is not, return `{\\\"transfer_related\\\":false,\\\"reports\\\":[]}`.\\n3. Do not invent facts. Use `null` for unknown nullable values, `unknown` for an explicitly required state that is unclear, and `not_reported` when medical/agreement information is absent.\\n4. Amounts are numeric base units only. For example, `45000000`, never `€45m`, `45 million`, or an amount expressed in millions. Currency must be an uppercase ISO 4217 code when known.\\n5. Dates must be ISO calendar dates (`YYYY-MM-DD`), never relative words. Convert a stated contract duration to months only when exact.\\n6. Classify using this precedence if a post contains multiple outcomes: `contract_renewal`, `rejected_failed`, `loan`, `official_confirmed`, `advanced_negotiations`, then `rumor`.\\n7. Use `loan` for a loan move even where the post says it is agreed or official. Use `contract_renewal` for extensions/new contracts. Use `rejected_failed` only for a rejected, collapsed, or failed move. Use `official_confirmed` only when a club or reliable report states completion/official confirmation. Use `advanced_negotiations` for close talks, verbal agreement, or final-stage negotiation. Otherwise use `rumor`.\\n8. Direct and quoted posts are valid evidence. Do not add journalist identity, URL, platform, source timestamp, source tier, priority, or reliability: those are supplied outside your response.\\n9. A post may contain more than one transfer report. Each item must still contain every schema field. Confidence reflects only how clearly the post supports that extracted report.\\n\\nWomen's-football blacklist:\\n- Misa Rodríguez\\n- Misa Rodriguez\\n\\nIf a post names any player on this blacklist, including a case or diacritic variant, return {\\\"transfer_related\\\":false,\\\"reports\\\":[]}.\";\nconst schema = {\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"Football transfer extraction response\",\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"transfer_related\",\"reports\"],\"properties\":{\"transfer_related\":{\"type\":\"boolean\"},\"reports\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"player_name\",\"player_identity_hint\",\"current_club_name\",\"destination_club_name\",\"classification\",\"move_type\",\"fee_amount\",\"fee_currency\",\"add_ons_amount\",\"add_ons_currency\",\"release_clause_amount\",\"release_clause_currency\",\"contract_length_months\",\"contract_expires_on\",\"loan_ends_on\",\"has_option_to_buy\",\"has_obligation_to_buy\",\"sell_on_percentage\",\"medical_status\",\"agreement_status\",\"confidence\"],\"properties\":{\"player_name\":{\"type\":\"string\",\"minLength\":1},\"player_identity_hint\":{\"type\":[\"string\",\"null\"]},\"current_club_name\":{\"type\":[\"string\",\"null\"]},\"destination_club_name\":{\"type\":[\"string\",\"null\"]},\"classification\":{\"type\":\"string\",\"enum\":[\"official_confirmed\",\"advanced_negotiations\",\"rumor\",\"rejected_failed\",\"contract_renewal\",\"loan\"]},\"move_type\":{\"type\":\"string\",\"enum\":[\"permanent\",\"loan\",\"unknown\"]},\"fee_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"fee_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"add_ons_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"add_ons_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"release_clause_amount\":{\"type\":[\"number\",\"null\"],\"minimum\":0},\"release_clause_currency\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[A-Z]{3}$\"},\"contract_length_months\":{\"type\":[\"integer\",\"null\"],\"minimum\":1},\"contract_expires_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"loan_ends_on\":{\"type\":[\"string\",\"null\"],\"pattern\":\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\"},\"has_option_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"has_obligation_to_buy\":{\"type\":[\"boolean\",\"null\"]},\"sell_on_percentage\":{\"type\":[\"number\",\"null\"],\"minimum\":0,\"maximum\":100},\"medical_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"scheduled\",\"passed\",\"failed\",\"pending\",\"unknown\"]},\"agreement_status\":{\"type\":\"string\",\"enum\":[\"not_reported\",\"reached\",\"close\",\"negotiating\",\"rejected\",\"unknown\"]},\"confidence\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1}}}}}};\nconst llamaSchema = JSON.parse(JSON.stringify(schema));\ndelete llamaSchema.properties.reports.items.properties.player_name.minLength;\nreturn $input.all().map((item) => ({ json: {\n  raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,\n  source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), is_official: item.json.is_official },\n  body: { model: 'qwen3.6-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }\n} }));"
       }
     },
     {
@@ -568,20 +668,35 @@
       }
     },
     {
-      "id": "find-undelivered-revisions",
-      "name": "Find undelivered revisions",
-      "type": "n8n-nodes-base.postgres",
+      "id": "prepare-digest-candidates-query",
+      "name": "Prepare digest candidates query",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2520,
         -180
       ],
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;\nreturn [{ json: { params: [context.collection_cutoff_at, context.collection_started_at] } }];"
+      }
+    },
+    {
+      "id": "find-undelivered-revisions",
+      "name": "Find undelivered revisions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        -180
+      ],
+      "parameters": {
         "operation": "executeQuery",
-        "query": "WITH pending_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n    s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n    p.post_url, p.posted_at,\n    dd.idempotency_key AS pending_idempotency_key,\n    dd.window_started_at AS pending_window_started_at,\n    dd.window_ended_at AS pending_window_ended_at\n  FROM digest_deliveries dd\n  JOIN digest_items di ON di.digest_delivery_id = dd.id\n  JOIN transfer_report_revisions r ON r.id = di.transfer_report_revision_id\n  JOIN transfer_reports tr ON tr.id = r.transfer_report_id\n  JOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\n  JOIN raw_posts p ON p.id = trs.raw_post_id\n  JOIN source_accounts s ON s.id = p.source_account_id\n  WHERE dd.status = 'pending'\n),\nfresh_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n  s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n  p.post_url, p.posted_at,\n  NULL::text AS pending_idempotency_key,\n  NULL::timestamptz AS pending_window_started_at,\n  NULL::timestamptz AS pending_window_ended_at\nFROM transfer_report_revisions r\nJOIN transfer_reports tr ON tr.id = r.transfer_report_id\nJOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\nJOIN raw_posts p ON p.id = trs.raw_post_id\nJOIN source_accounts s ON s.id = p.source_account_id\nLEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id\nWHERE di.id IS NULL AND NOT EXISTS (SELECT 1 FROM pending_candidates)\n)\nSELECT * FROM pending_candidates\nUNION ALL\nSELECT * FROM fresh_candidates\nORDER BY priority_rank ASC, posted_at DESC\nLIMIT 100;",
+        "query": "WITH pending_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n    s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n    p.post_url, p.posted_at,\n    dd.idempotency_key AS pending_idempotency_key,\n    dd.window_started_at AS pending_window_started_at,\n    dd.window_ended_at AS pending_window_ended_at\n  FROM digest_deliveries dd\n  JOIN digest_items di ON di.digest_delivery_id = dd.id\n  JOIN transfer_report_revisions r ON r.id = di.transfer_report_revision_id\n  JOIN transfer_reports tr ON tr.id = r.transfer_report_id\n  JOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\n  JOIN raw_posts p ON p.id = trs.raw_post_id\n  JOIN source_accounts s ON s.id = p.source_account_id\n  WHERE dd.status = 'pending'\n),\nlatest_revisions AS (\n  SELECT DISTINCT ON (transfer_report_id) id, transfer_report_id, snapshot\n  FROM transfer_report_revisions\n  ORDER BY transfer_report_id, revision_number DESC, id DESC\n),\nfresh_candidates AS (\n  SELECT r.id::text AS revision_id, r.snapshot,\n  s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,\n  p.post_url, p.posted_at,\n  NULL::text AS pending_idempotency_key,\n  NULL::timestamptz AS pending_window_started_at,\n  NULL::timestamptz AS pending_window_ended_at\nFROM latest_revisions r\nJOIN transfer_reports tr ON tr.id = r.transfer_report_id\nJOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred\nJOIN raw_posts p ON p.id = trs.raw_post_id\nJOIN source_accounts s ON s.id = p.source_account_id\nLEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id\nWHERE di.id IS NULL\n  AND tr.last_reported_at >= $1::timestamptz\n  AND tr.last_reported_at <= $2::timestamptz\n  AND NOT EXISTS (SELECT 1 FROM pending_candidates)\n)\nSELECT * FROM pending_candidates\nUNION ALL\nSELECT * FROM fresh_candidates\nORDER BY priority_rank ASC, posted_at DESC\nLIMIT 100;",
         "options": {
           "queryBatching": "transaction",
-          "outputLargeFormatNumbers": "text"
+          "outputLargeFormatNumbers": "text",
+          "queryReplacement": "={{ $json.params }}"
         }
       },
       "credentials": {
@@ -597,12 +712,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2740,
+        2960,
         -180
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };\nconst truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';\nconst amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();\nconst reports = $input.all().map((item) => {\n  const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;\n  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;\n  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), display_name: item.json.source_name } };\n}).filter(Boolean).sort((a, b) => (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));\nconst pending = reports.find((report) => report.pending_idempotency_key);\nconst candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;\nconst selected = [...candidateReports.slice(0, 15), ...candidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];\nlet total = 45;\nconst fields = [];\nfor (const report of selected) {\n  const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);\n  const details = [\n    [report.current_club_name, report.destination_club_name].filter(Boolean).join(' → ') || 'Club details not reported',\n    report.player_identity_hint ? 'Identity: ' + report.player_identity_hint : null,\n    'Classification: ' + report.classification.replaceAll('_', ' '),\n    report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,\n    amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null,\n    amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,\n    amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,\n    report.contract_length_months !== null && report.contract_length_months !== undefined ? 'Contract length: ' + report.contract_length_months + ' months' : null,\n    report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,\n    report.loan_ends_on ? 'Loan ends: ' + report.loan_ends_on : null,\n    report.has_option_to_buy !== null && report.has_option_to_buy !== undefined ? 'Option to buy: ' + (report.has_option_to_buy ? 'Yes' : 'No') : null,\n    report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? 'Obligation to buy: ' + (report.has_obligation_to_buy ? 'Yes' : 'No') : null,\n    report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? 'Sell-on: ' + report.sell_on_percentage + '%' : null,\n    report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,\n    report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,\n    'Confidence: ' + Math.round(report.confidence * 100) + '%',\n    report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name,\n  ];\n  const value = truncate(details.filter(Boolean).join('\\n'), 1024);\n  if (fields.length >= 25 || total + name.length + value.length > 6000) continue;\n  total += name.length + value.length;\n  fields.push({ name, value, inline: false, revision_id: report.revision_id });\n}\nconst now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nconst end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);\nconst payload = { allowed_mentions: { parse: [] }, embeds: [{ title: 'Football transfer digest', color: 1948592, fields: fields.map(({ revision_id, ...field }) => field), footer: { text: String(fields.length) + ' new material report' + (fields.length === 1 ? '' : 's') } }] };\nreturn fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: payload })] } }] : [];"
+        "jsCode": "const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };\nconst truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';\nconst amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();\nconst reports = $input.all().map((item) => {\n  const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;\n  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;\n  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), display_name: item.json.source_name } };\n}).filter(Boolean).sort((a, b) => (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));\nconst pending = reports.find((report) => report.pending_idempotency_key);\nconst candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;\nconst seenRevisionIds = new Set();\nconst seenStoryKeys = new Set();\nconst distinctCandidateReports = candidateReports.filter((report) => {\n  const revisionId = String(report.revision_id ?? '');\n  const storyKey = String(report.dedupe_key ?? '');\n  if (!revisionId || seenRevisionIds.has(revisionId) || (storyKey && seenStoryKeys.has(storyKey))) return false;\n  seenRevisionIds.add(revisionId);\n  if (storyKey) seenStoryKeys.add(storyKey);\n  return true;\n});\nconst selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];\nlet total = 45;\nconst fields = [];\nfor (const report of selected) {\n  const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);\n  const details = [\n    [report.current_club_name, report.destination_club_name].filter(Boolean).join(' → ') || 'Club details not reported',\n    report.player_identity_hint ? 'Identity: ' + report.player_identity_hint : null,\n    'Classification: ' + report.classification.replaceAll('_', ' '),\n    report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,\n    amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null,\n    amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,\n    amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,\n    report.contract_length_months !== null && report.contract_length_months !== undefined ? 'Contract length: ' + report.contract_length_months + ' months' : null,\n    report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,\n    report.loan_ends_on ? 'Loan ends: ' + report.loan_ends_on : null,\n    report.has_option_to_buy !== null && report.has_option_to_buy !== undefined ? 'Option to buy: ' + (report.has_option_to_buy ? 'Yes' : 'No') : null,\n    report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? 'Obligation to buy: ' + (report.has_obligation_to_buy ? 'Yes' : 'No') : null,\n    report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? 'Sell-on: ' + report.sell_on_percentage + '%' : null,\n    report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,\n    report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,\n    'Confidence: ' + Math.round(report.confidence * 100) + '%',\n    report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name,\n  ];\n  const value = truncate(details.filter(Boolean).join('\\n'), 1024);\n  if (fields.length >= 25 || total + name.length + value.length > 6000) continue;\n  total += name.length + value.length;\n  fields.push({ name, value, inline: false, revision_id: report.revision_id });\n}\nconst now = new Date();\nconst start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);\nconst end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);\nconst payload = { allowed_mentions: { parse: [] }, embeds: [{ title: 'Football transfer digest', color: 1948592, fields: fields.map(({ revision_id, ...field }) => field), footer: { text: String(fields.length) + ' new material report' + (fields.length === 1 ? '' : 's') } }] };\nreturn fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: payload })] } }] : [];"
       }
     },
     {
@@ -611,7 +726,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2,
       "position": [
-        2960,
+        3180,
         -180
       ],
       "parameters": {
@@ -636,7 +751,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3180,
+        3400,
         -180
       ],
       "parameters": {
@@ -667,7 +782,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3400,
+        3620,
         -260
       ],
       "parameters": {
@@ -681,7 +796,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3620,
+        3840,
         -260
       ],
       "parameters": {
@@ -708,7 +823,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3840,
+        4060,
         -260
       ],
       "parameters": {
@@ -722,7 +837,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2,
       "position": [
-        4060,
+        4280,
         -260
       ],
       "parameters": {
@@ -869,7 +984,7 @@
       "main": [
         [
           {
-            "node": "Build RapidAPI request",
+            "node": "Select X collector",
             "type": "main",
             "index": 0
           }
@@ -881,6 +996,68 @@
         [
           {
             "node": "Load sample collected X posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select X collector": {
+      "main": [
+        [
+          {
+            "node": "Use twscrape collector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use twscrape collector": {
+      "main": [
+        [
+          {
+            "node": "Build twscrape collect request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build RapidAPI request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build twscrape collect request": {
+      "main": [
+        [
+          {
+            "node": "Collect 20 X posts via twscrape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect 20 X posts via twscrape": {
+      "main": [
+        [
+          {
+            "node": "Normalize twscrape posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize twscrape posts": {
+      "main": [
+        [
+          {
+            "node": "Persist raw posts",
             "type": "main",
             "index": 0
           }
@@ -1023,6 +1200,17 @@
       ]
     },
     "Persist merged reports and revisions": {
+      "main": [
+        [
+          {
+            "node": "Prepare digest candidates query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare digest candidates query": {
       "main": [
         [
           {

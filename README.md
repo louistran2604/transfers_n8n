@@ -1,6 +1,6 @@
 # Football Transfer Monitor
 
-An n8n workflow that collects 20 recent X posts from 77 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest.
+An n8n workflow that collects 20 recent X posts from 77 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector.
 
 The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh`.
 
@@ -25,10 +25,12 @@ The repository includes:
 - Generated n8n main and error workflows with no embedded credential values.
 - A strict Qwen prompt and JSON Schema plus a generated four-tier source registry.
 - Idempotent PostgreSQL writes, material revisions, retry state, and digest reservation.
-- Pinned n8n, task-runner, PostgreSQL, and llama.cpp Docker services.
+- Pinned n8n, task-runner, PostgreSQL, llama.cpp, and private `twscrape` Docker services.
 - Dependency-free unit tests, transaction-rolled-back SQL tests, and an isolated mock E2E stack.
 
 X account and post IDs remain strings. Direct and quoted posts are processed, pure retweets are ignored, and every raw post/source link is retained even when matching reports are merged.
+
+Each run captures one rolling six-hour collection window. Posts older than the window start or newer than the run start are rejected before persistence and Qwen extraction, and only reports updated inside that same window are eligible for a new digest.
 
 ## Requirements
 
@@ -36,7 +38,8 @@ X account and post IDs remain strings. Direct and quoted posts are processed, pu
 - NVIDIA Container Toolkit and a supported NVIDIA GPU for local Qwen.
 - Node.js 20 or newer for workflow generation and unit tests.
 - `curl`, `jq`, `sha256sum`, and `nvidia-smi` for model acceptance tests.
-- RapidAPI and Discord credentials only when performing live collection/delivery.
+- A dedicated X account's `auth_token` and `ct0` cookies for live `twscrape` collection, or a RapidAPI key for live RapidAPI collection.
+- Discord credentials when performing live delivery.
 
 The supplied Qwen quantization and settings target a 16 GB GPU. Check [the Qwen deployment guide](deploy/qwen3.6-27b/README.md) before changing the model, context size, or GPU options.
 
@@ -59,12 +62,21 @@ POSTGRES_PASSWORD=<long-random-password>
 
 ```dotenv
 N8N_RUNNERS_AUTH_TOKEN=<long-random-token>
-RAPIDAPI_KEY=<rapidapi-key>
+X_COLLECTOR=twscrape
+TWSCRAPE_AUTH_TOKEN=<dedicated-x-auth-token>
+TWSCRAPE_CT0=<dedicated-x-ct0>
+# RAPIDAPI_KEY=<rapidapi-key> # required only when X_COLLECTOR=rapidapi
 DISCORD_TRANSFERS_WEBHOOK_URL=<transfer-digest-webhook>
 DISCORD_ERRORS_WEBHOOK_URL=<error-alert-webhook>
 ```
 
-Never paste the real values into workflow JSON, documentation, screenshots, or commits.
+Never paste real values into workflow JSON, documentation, screenshots, logs, command output, or commits.
+
+### 1a. Configure the dedicated X cookies
+
+1. Sign in to `x.com` with the dedicated collection account, open browser developer tools, then open **Application** or **Storage** → **Cookies** → `https://x.com`.
+2. Copy only the `auth_token` and `ct0` cookie values into the ignored `deploy/n8n/.env` variables above. Do not paste them into a terminal command or this repository.
+3. Keep `X_COLLECTOR=twscrape`. The service copies the values into its internal Docker volume at startup; no workflow JSON or public port receives them.
 
 ### 2. Start PostgreSQL
 
@@ -103,14 +115,17 @@ Model alias: qwen3.6-27b
 
 ```bash
 cd deploy/n8n
-docker compose build
-docker compose up -d
+docker compose --profile twscrape build twscrape
+docker compose --profile twscrape up -d
 docker compose ps
 docker compose logs --tail=100 n8n
+docker compose exec -T twscrape python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
 cd ../..
 ```
 
 Open n8n at `http://localhost:5678`. The service and external task runner use matching pinned n8n `2.16.1` images.
+
+The scraper has no host port. Its health check runs inside Docker and reports only service status and the active-account count.
 
 ### 5. Generate and import workflows
 
@@ -150,14 +165,14 @@ Open both imported workflows, select `Transfers PostgreSQL` on every Postgres no
 
 ### 7. Test before activation
 
-Use **Manual sample run** first. It bypasses only the `Collect 20 X posts` RapidAPI node, inserts deterministic sample X responses, and then uses the real PostgreSQL, Qwen, merge, digest, and Discord path.
+Use **Manual sample run** first. It bypasses only the live collector, inserts deterministic sample X responses, and then uses the real PostgreSQL, Qwen, merge, digest, and Discord path.
 
 The sample path sends to `DISCORD_TRANSFERS_WEBHOOK_URL`. Its rows are persistent test data, so use a test webhook/database when you do not want sample reports mixed with live data.
 
 After the sample path succeeds:
 
-1. Run **Manual run** only when a valid RapidAPI key and remaining quota are available.
-2. Confirm `Collect 20 X posts` returns real response bodies instead of error objects.
+1. Run **Manual run** only after the selected collector is configured.
+2. Confirm the selected collection node returns posts or structured per-source errors without aborting the run.
 3. Confirm Qwen validation, report persistence, digest reservation, and Discord finalization are green.
 4. Activate the main workflow to enable the four scheduled daily runs.
 
@@ -179,6 +194,16 @@ Journalist name, source URL, platform, post timestamp, priority, and reliability
 ### Extraction contract
 
 Qwen must return `{ transfer_related, reports[] }` matching [the strict schema](workflow/qwen-response-schema.json). Every report property is required; unknown nullable facts use `null`. Classifications and move types are locked enums, dates use ISO `YYYY-MM-DD`, currencies use ISO three-letter codes, and monetary values use base units.
+
+Only senior men's football is in scope. Known women's-football players are listed in [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt), one name or spelling variant per line. After adding a name, regenerate and re-import the main workflow:
+
+```bash
+node workflow/build-workflows.mjs
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n import:workflow --input=/workflows/football-transfer-monitor.json
+```
+
+The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
 
 Classification precedence during merging is:
 
@@ -202,11 +227,11 @@ Each story includes every meaningful non-null extracted detail that fits:
 - Loan end, purchase option/obligation, and sell-on percentage.
 - Medical status, agreement status, confidence, and linked source.
 
-Values such as `unknown` and `not_reported` are omitted. The digest admits 15 normal stories plus up to three extra official/confirmed or tier-1/2 advanced reports. It enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
+Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and transfer dedupe key. The digest admits the first 15 distinct stories, then up to three extra stories only when they are official/confirmed or tier-1/2 advanced reports. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
 
 ### Retry and delivery safety
 
-RapidAPI retries up to five times and Qwen retries up to three times. Retry timing honors `Retry-After` and rate-reset headers with bounded exponential backoff.
+RapidAPI retries up to five times and Qwen retries up to three times. Retry timing honors `Retry-After` and rate-reset headers with bounded exponential backoff. The `twscrape` service uses one shared API instance, a persistent SQLite account database, two concurrent timeline tasks, a 30-second source timeout, and a five-minute batch timeout. A failed or rate-limited source returns a structured error while successful sources continue.
 
 A revision is reserved in PostgreSQL before the Discord request. The workflow sends one webhook request with `wait=true` and records the returned Discord message ID only after success. If n8n stops after sending but before recording the response, recovery changes `sending` to `unknown` and never automatically resends it. This prefers a possible missed digest over a duplicate message.
 
@@ -221,6 +246,7 @@ docker compose -f deploy/support/compose.yaml ps
 docker compose -f deploy/qwen3.6-27b/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml logs -f n8n
+docker compose -f deploy/n8n/compose.yaml --profile twscrape logs -f twscrape
 docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
 ```
 
@@ -230,8 +256,27 @@ Check PostgreSQL and Qwen directly:
 docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
   sh -c 'pg_isready --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
 curl --fail http://127.0.0.1:8081/health
+docker compose -f deploy/n8n/compose.yaml exec -T twscrape python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
 nvidia-smi
 ```
+
+### X collector recovery and switching
+
+If the scraper health check returns unavailable or source errors report `account_unavailable`, obtain fresh `auth_token` and `ct0` values from the dedicated account, update only ignored `deploy/n8n/.env`, then run:
+
+```bash
+docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --force-recreate twscrape
+```
+
+Do not delete the `twscrape_accounts` volume during normal recovery. The service updates the stored account only when the local cookie values change.
+
+To use the retained RapidAPI path, set `X_COLLECTOR=rapidapi`, provide `RAPIDAPI_KEY` in the same ignored file, and recreate n8n:
+
+```bash
+docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n n8n-runner
+```
+
+Switch back by setting `X_COLLECTOR=twscrape`, then start the profile command from step 4. `X_COLLECTOR` has no default; an unset or invalid value stops collection before any posts are persisted.
 
 ### Safe stop and restart
 
@@ -253,8 +298,15 @@ Run fast checks from the repository root:
 node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
 docker compose -f deploy/n8n/compose.yaml config --quiet
+docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
 docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+```
+
+After building the scraper image, run its unit tests without any X account:
+
+```bash
+docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python transfers-n8n-twscrape:local -m unittest discover -s /tests -v
 ```
 
 Run PostgreSQL safety tests:
@@ -272,7 +324,7 @@ The SQL tests run inside transactions and roll back their fixtures. Run the isol
 tests/e2e/run.sh
 ```
 
-The mock stack consumes no live RapidAPI, Discord, or Qwen quota. Full test details are in [tests/README.md](tests/README.md).
+The mock stack consumes no live X account, RapidAPI, Discord, or Qwen quota. It verifies the `twscrape` response adapter with a partial source failure while retaining RapidAPI retry coverage. Full test details are in [tests/README.md](tests/README.md).
 
 Before committing:
 
@@ -303,7 +355,7 @@ The model unloads after 30 idle seconds. Its next request triggers a reload. Wat
 
 ### Digest reservation returns no delivery ID
 
-The selected revisions may already belong to a digest, or a prior interrupted delivery may now be `unknown`. This is deliberate duplicate prevention. Inspect the relevant PostgreSQL rows before changing any status.
+The run may have no eligible reports from its rolling six-hour window, the selected revisions may already belong to a digest, or a prior interrupted delivery may now be `unknown`. This is deliberate duplicate prevention. Inspect the relevant PostgreSQL rows before changing any status.
 
 ### Discord receives no message
 
@@ -311,8 +363,8 @@ Confirm the **Digest reserved** true branch ran, the webhook environment variabl
 
 ## Limitations
 
-- RapidAPI returns only the latest 20 posts per account; a long outage can permanently miss older posts.
-- Live manual tests consume RapidAPI quota and can send real Discord messages.
+- Both collectors request only the latest 20 posts per account; a long outage can permanently miss older posts.
+- Live manual tests can consume RapidAPI quota or dedicated X-account capacity and can send real Discord messages.
 - Local Qwen extraction quality depends on the model and quantization; strict validation rejects malformed output.
 - `unknown` Discord deliveries require human review because automatic resend could duplicate a message.
 - The source registry is fixed at 77 accounts until the generator and documentation are deliberately updated.
@@ -321,7 +373,7 @@ Confirm the **Digest reserved** true branch ran, the webhook environment variabl
 
 ```text
 database/      schema, migrations, persistence documentation, and SQL tests
-deploy/n8n/    pinned n8n/task-runner image and Compose service
+deploy/n8n/    pinned n8n/task-runner image, Compose service, and private twscrape collector
 deploy/qwen3.6-27b/  pinned llama.cpp Qwen service and model scripts
 deploy/support/      PostgreSQL Compose service
 docs/          77-source registry and RapidAPI request/response examples
@@ -338,4 +390,4 @@ More focused documentation:
 - [Qwen deployment and GPU checks](deploy/qwen3.6-27b/README.md)
 - [Automated tests](tests/README.md)
 
-Never commit local `.env` files, Discord webhook URLs, RapidAPI keys, PostgreSQL passwords, n8n runner tokens, or downloaded model data.
+Never commit local `.env` files, X cookie values, Discord webhook URLs, RapidAPI keys, PostgreSQL passwords, n8n runner tokens, or downloaded model data.

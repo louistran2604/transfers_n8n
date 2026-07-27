@@ -38,8 +38,9 @@ services:
       N8N_PERSONALIZATION_ENABLED: "false"
       N8N_SECURE_COOKIE: "false"
       GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
-      RAPIDAPI_KEY: e2e-only-key
+      X_COLLECTOR: twscrape
       RAPIDAPI_BASE_URL: http://mock-services:18081/rapid
+      TWSCRAPE_BASE_URL: http://mock-services:18081/twscrape
       QWEN_CHAT_COMPLETIONS_URL: http://mock-services:18081/qwen/valid
       DISCORD_TRANSFERS_WEBHOOK_URL: http://mock-services:18081/discord/receive
       DISCORD_ERRORS_WEBHOOK_URL: http://mock-services:18081/discord/receive

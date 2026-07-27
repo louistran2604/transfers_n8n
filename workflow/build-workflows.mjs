@@ -8,6 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outputPath = resolve(here, 'football-transfer-monitor.json');
 const errorOutputPath = resolve(here, 'football-transfer-monitor-errors.json');
+const womensBlacklistPath = resolve(here, 'womens-football-blacklist.txt');
 
 const postgresCredential = { postgres: { id: '', name: 'Transfers PostgreSQL' } };
 
@@ -49,12 +50,14 @@ function postgresNode(name, position, query) {
 }
 
 function httpNode(name, position, parameters, extras = {}) {
+  const { requestOptions = {}, ...nodeExtras } = extras;
   return node(name, 'n8n-nodes-base.httpRequest', position, {
     ...parameters,
     options: {
+      ...requestOptions,
       response: { response: { fullResponse: true, neverError: true } },
     },
-  }, { typeVersion: 4.2, ...extras });
+  }, { typeVersion: 4.2, ...nodeExtras });
 }
 
 function sourceUpsertSql() {
@@ -229,6 +232,11 @@ WITH pending_candidates AS (
   JOIN source_accounts s ON s.id = p.source_account_id
   WHERE dd.status = 'pending'
 ),
+latest_revisions AS (
+  SELECT DISTINCT ON (transfer_report_id) id, transfer_report_id, snapshot
+  FROM transfer_report_revisions
+  ORDER BY transfer_report_id, revision_number DESC, id DESC
+),
 fresh_candidates AS (
   SELECT r.id::text AS revision_id, r.snapshot,
   s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,
@@ -236,13 +244,16 @@ fresh_candidates AS (
   NULL::text AS pending_idempotency_key,
   NULL::timestamptz AS pending_window_started_at,
   NULL::timestamptz AS pending_window_ended_at
-FROM transfer_report_revisions r
+FROM latest_revisions r
 JOIN transfer_reports tr ON tr.id = r.transfer_report_id
 JOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred
 JOIN raw_posts p ON p.id = trs.raw_post_id
 JOIN source_accounts s ON s.id = p.source_account_id
 LEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id
-WHERE di.id IS NULL AND NOT EXISTS (SELECT 1 FROM pending_candidates)
+WHERE di.id IS NULL
+  AND tr.last_reported_at >= $1::timestamptz
+  AND tr.last_reported_at <= $2::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM pending_candidates)
 )
 SELECT * FROM pending_candidates
 UNION ALL
@@ -355,6 +366,9 @@ function rapidApiParserCode() {
   return `
 const inputs = $input.all();
 const requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];
+const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
+const collectionCutoffAt = Date.parse(context.collection_cutoff_at);
+const collectionStartedAt = Date.parse(context.collection_started_at);
 return inputs.flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
   const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;
@@ -375,13 +389,41 @@ return inputs.flatMap((item, index) => {
     const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;
     if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];
     const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);
-    if (Number.isNaN(date.valueOf())) return [];
+    if (Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];
     seen.add(external_post_id);
     const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;
     return [{ json: {
       params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],
     } }];
   });
+});`;
+}
+
+function twscrapeParserCode() {
+  return `
+const request = $('Build twscrape collect request').first().json;
+const sources = new Map((request.sources ?? []).map((source) => [String(source.source_id), source]));
+const response = $input.first()?.json?.body ?? $input.first()?.json ?? {};
+const posts = Array.isArray(response?.posts) ? response.posts : [];
+const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
+const collectionCutoffAt = Date.parse(context.collection_cutoff_at);
+const collectionStartedAt = Date.parse(context.collection_started_at);
+const seen = new Set();
+return posts.flatMap((post) => {
+  const source = sources.get(String(post?.source_id ?? ''));
+  const externalPostId = String(post?.external_post_id ?? '');
+  const xUserId = String(post?.x_user_id ?? '');
+  const content = typeof post?.content === 'string' ? post.content.trim() : '';
+  const date = new Date(post?.posted_at);
+  if (!source || xUserId !== String(source.external_account_id) || !/^\\d+$/.test(externalPostId) || !content || seen.has(externalPostId) || /^RT\\s+@/i.test(content) || Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];
+  seen.add(externalPostId);
+  const postUrl = typeof post?.post_url === 'string' && post.post_url.startsWith('https://')
+    ? post.post_url
+    : 'https://x.com/' + source.username + '/status/' + externalPostId;
+  const rawPayload = post?.raw_payload && typeof post.raw_payload === 'object' ? post.raw_payload : {};
+  return [{ json: {
+    params: [String(source.external_account_id), externalPostId, postUrl, content, date.toISOString(), JSON.stringify(rawPayload), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official],
+  } }];
 });`;
 }
 
@@ -465,7 +507,17 @@ const reports = $input.all().map((item) => {
 }).filter(Boolean).sort((a, b) => (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
 const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;
-const selected = [...candidateReports.slice(0, 15), ...candidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];
+const seenRevisionIds = new Set();
+const seenStoryKeys = new Set();
+const distinctCandidateReports = candidateReports.filter((report) => {
+  const revisionId = String(report.revision_id ?? '');
+  const storyKey = String(report.dedupe_key ?? '');
+  if (!revisionId || seenRevisionIds.has(revisionId) || (storyKey && seenStoryKeys.has(storyKey))) return false;
+  seenRevisionIds.add(revisionId);
+  if (storyKey) seenStoryKeys.add(storyKey);
+  return true;
+});
+const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];
 let total = 45;
 const fields = [];
 for (const report of selected) {
@@ -515,11 +567,15 @@ function mainWorkflow({ registry, prompt, schema }) {
     codeNode('Create run context', [-700, -40], `
 const now = new Date();
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
-return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: $execution.mode, started_at: now.toISOString() })], logical_run_key: start.toISOString() } }];`),
+const collectionStartedAt = now.toISOString();
+const collectionCutoffAt = new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString();
+return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: $execution.mode, started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt })], logical_run_key: start.toISOString(), collection_started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt } }];`),
     codeNode('Create sample run context', [-700, 220], `
 const now = new Date();
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
-return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: now.toISOString(), sample: true })], logical_run_key: start.toISOString() } }];`),
+const collectionStartedAt = now.toISOString();
+const collectionCutoffAt = new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString();
+return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt, sample: true })], logical_run_key: start.toISOString(), collection_started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt } }];`),
     postgresNode('Register workflow run', [-500, -40], runRegistrationSql()),
     postgresNode('Register sample workflow run', [-500, 220], runRegistrationSql()),
     codeNode('Load generated sources', [-300, -40], `
@@ -530,9 +586,32 @@ return sources.map((source) => ({ json: { source, params: [source.platform, sour
 const source = { platform: 'x', external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton', account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.70 };
 return [{ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score] } }];`),
     postgresNode('Upsert sample source account', [-100, 220], sourceUpsertSql()),
-    codeNode('Build RapidAPI request', [100, -40], `
+    codeNode('Select X collector', [100, -40], `
+const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();
+if (!['rapidapi', 'twscrape'].includes(collector)) throw new Error('X_COLLECTOR must be explicitly set to rapidapi or twscrape');
+return $input.all().map((item) => ({ json: { ...item.json, collector } }));`),
+    node('Use twscrape collector', 'n8n-nodes-base.if', [280, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.collector }}', rightValue: 'twscrape', operator: { type: 'string', operation: 'equals' } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Build twscrape collect request', [440, -160], `
+const sources = $input.all().map((item) => ({
+  source_id: String(item.json.source_account_id),
+  username: String(item.json.username),
+  x_user_id: String(item.json.external_account_id),
+  external_account_id: String(item.json.external_account_id),
+  display_name: item.json.display_name,
+  priority_rank: item.json.priority_rank,
+  reliability_score: item.json.reliability_score,
+  is_official: item.json.is_official,
+}));
+return [{ json: { sources, body: { sources: sources.map(({ source_id, username, x_user_id }) => ({ source_id, username, x_user_id })), limit: 20 } } }];`),
+    httpNode('Collect 20 X posts via twscrape', [660, -160], {
+      method: 'POST', url: '={{ ($env.TWSCRAPE_BASE_URL || "http://twscrape:8080") + "/collect" }}', sendBody: true,
+      contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
+    }, { continueOnFail: true, requestOptions: { timeout: 310000 } }),
+    codeNode('Normalize twscrape posts', [880, -160], twscrapeParserCode()),
+    codeNode('Build RapidAPI request', [440, -40], `
+if (!String($env.RAPIDAPI_KEY ?? '').trim()) throw new Error('RAPIDAPI_KEY is required when X_COLLECTOR=rapidapi');
 return $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));`),
-    httpNode('Collect 20 X posts', [320, -40], {
+    httpNode('Collect 20 X posts', [660, -40], {
       method: 'GET', url: '={{ ($env.RAPIDAPI_BASE_URL || "https://twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com") + $json.requestPath }}', sendHeaders: true,
       headerParameters: { parameters: [
         { name: 'Content-Type', value: 'application/json' },
@@ -549,7 +628,7 @@ return [{ json: { source, body: { data: { entries: [
   tweet('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),
   tweet('999000000000000003', 'RT @example: TEST DATA: this pure retweet must be ignored.'),
 ] } } } }];`),
-    codeNode('Parse RapidAPI posts', [540, -40], rapidApiParserCode()),
+    codeNode('Parse RapidAPI posts', [880, -40], rapidApiParserCode()),
     postgresNode('Persist raw posts', [760, -40], rawPostUpsertSql()),
     codeNode('Build Qwen request', [980, -40], `
 const prompt = ${JSON.stringify(prompt)};
@@ -572,19 +651,22 @@ return $input.all().map((item) => ({ json: {
     postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id;`),
     codeNode('Merge extracted reports', [2080, -180], mergeCode()),
     postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql()),
-    postgresNode('Find undelivered revisions', [2520, -180], candidatesSql()),
-    codeNode('Build bounded Discord digest', [2740, -180], digestCode()),
-    postgresNode('Reserve digest before delivery', [2960, -180], reserveDigestSql()),
-    node('Digest reserved', 'n8n-nodes-base.if', [3180, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    codeNode('Build Discord delivery request', [3400, -260], `
+    codeNode('Prepare digest candidates query', [2520, -180], `
+const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
+return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at] } }];`),
+    postgresNode('Find undelivered revisions', [2740, -180], candidatesSql()),
+    codeNode('Build bounded Discord digest', [2960, -180], digestCode()),
+    postgresNode('Reserve digest before delivery', [3180, -180], reserveDigestSql()),
+    node('Digest reserved', 'n8n-nodes-base.if', [3400, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Build Discord delivery request', [3620, -260], `
 const digest = $('Build bounded Discord digest').first().json.params[0];
 const payload = typeof digest === 'string' ? JSON.parse(digest) : digest;
 return [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload.discord_payload } }];`),
-    httpNode('Send Discord digest once', [3620, -260], {
+    httpNode('Send Discord digest once', [3840, -260], {
       method: 'POST', url: '={{ $env.DISCORD_TRANSFERS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true }),
-    codeNode('Prepare delivery finalization', [3840, -260], `
+    codeNode('Prepare delivery finalization', [4060, -260], `
 const request = $('Build Discord delivery request').first().json;
 const response = $json.body ?? $json;
 const status = Number($json.statusCode ?? $json.status ?? 0);
@@ -592,7 +674,7 @@ const workflowRunId = $('Register workflow run').isExecuted
   ? $('Register workflow run').first().json.workflow_run_id
   : $('Register sample workflow run').first().json.workflow_run_id;
 return [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];`),
-    postgresNode('Finalize delivery and run', [4060, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
+    postgresNode('Finalize delivery and run', [4280, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
   ];
   const connections = {
     'Every six hours': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
@@ -606,8 +688,13 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Register sample workflow run': { main: [[{ node: 'Load sample source', type: 'main', index: 0 }]] },
     'Load generated sources': { main: [[{ node: 'Upsert source accounts', type: 'main', index: 0 }]] },
     'Load sample source': { main: [[{ node: 'Upsert sample source account', type: 'main', index: 0 }]] },
-    'Upsert source accounts': { main: [[{ node: 'Build RapidAPI request', type: 'main', index: 0 }]] },
+    'Upsert source accounts': { main: [[{ node: 'Select X collector', type: 'main', index: 0 }]] },
     'Upsert sample source account': { main: [[{ node: 'Load sample collected X posts', type: 'main', index: 0 }]] },
+    'Select X collector': { main: [[{ node: 'Use twscrape collector', type: 'main', index: 0 }]] },
+    'Use twscrape collector': { main: [[{ node: 'Build twscrape collect request', type: 'main', index: 0 }], [{ node: 'Build RapidAPI request', type: 'main', index: 0 }]] },
+    'Build twscrape collect request': { main: [[{ node: 'Collect 20 X posts via twscrape', type: 'main', index: 0 }]] },
+    'Collect 20 X posts via twscrape': { main: [[{ node: 'Normalize twscrape posts', type: 'main', index: 0 }]] },
+    'Normalize twscrape posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
     'Build RapidAPI request': { main: [[{ node: 'Collect 20 X posts', type: 'main', index: 0 }]] },
     'Collect 20 X posts': { main: [[{ node: 'Parse RapidAPI posts', type: 'main', index: 0 }]] },
     'Load sample collected X posts': { main: [[{ node: 'Parse RapidAPI posts', type: 'main', index: 0 }]] },
@@ -619,7 +706,8 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Qwen response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record Qwen validation failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Merge extracted reports': { main: [[{ node: 'Persist merged reports and revisions', type: 'main', index: 0 }]] },
-    'Persist merged reports and revisions': { main: [[{ node: 'Find undelivered revisions', type: 'main', index: 0 }]] },
+    'Persist merged reports and revisions': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
+    'Prepare digest candidates query': { main: [[{ node: 'Find undelivered revisions', type: 'main', index: 0 }]] },
     'Find undelivered revisions': { main: [[{ node: 'Build bounded Discord digest', type: 'main', index: 0 }]] },
     'Build bounded Discord digest': { main: [[{ node: 'Reserve digest before delivery', type: 'main', index: 0 }]] },
     'Reserve digest before delivery': { main: [[{ node: 'Digest reserved', type: 'main', index: 0 }]] },
@@ -678,10 +766,19 @@ async function sameFile(path, content) {
   try { return await readFile(path, 'utf8') === content; } catch { return false; }
 }
 
+async function qwenPromptWithWomensBlacklist(prompt) {
+  const names = (await readFile(womensBlacklistPath, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  const uniqueNames = [...new Set(names)];
+  return `${prompt.trim()}\n\nWomen's-football blacklist:\n${uniqueNames.map((name) => `- ${name}`).join('\n')}\n\nIf a post names any player on this blacklist, including a case or diacritic variant, return {"transfer_related":false,"reports":[]}.`;
+}
+
 async function main() {
   const check = process.argv.includes('--check');
   const registry = await loadSourceRegistry(resolve(root, 'docs/journalist_list.md'));
-  const prompt = await readFile(resolve(here, 'qwen-system-prompt.md'), 'utf8');
+  const prompt = await qwenPromptWithWomensBlacklist(await readFile(resolve(here, 'qwen-system-prompt.md'), 'utf8'));
   const schema = JSON.parse(await readFile(resolve(here, 'qwen-response-schema.json'), 'utf8'));
   const files = [
     [outputPath, `${JSON.stringify(mainWorkflow({ registry, prompt, schema }), null, 2)}\n`],

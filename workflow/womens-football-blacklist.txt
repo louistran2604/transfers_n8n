@@ -1,0 +1,4 @@
+# One women's-football player name or spelling variant per line. Lines beginning with # are ignored.
+# Add names here, regenerate the workflow, then re-import it into n8n.
+Misa Rodríguez
+Misa Rodriguez

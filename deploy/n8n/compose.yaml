@@ -21,7 +21,9 @@ services:
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:?N8N_RUNNERS_AUTH_TOKEN is required}
       - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
       - N8N_RUNNERS_BROKER_PORT=5679
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY:?RAPIDAPI_KEY is required}
+      - X_COLLECTOR=${X_COLLECTOR:?X_COLLECTOR is required}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY:-}
+      - TWSCRAPE_BASE_URL=${TWSCRAPE_BASE_URL:-http://twscrape:8080}
       - DISCORD_TRANSFERS_WEBHOOK_URL=${DISCORD_TRANSFERS_WEBHOOK_URL:?DISCORD_TRANSFERS_WEBHOOK_URL is required}
       - DISCORD_ERRORS_WEBHOOK_URL=${DISCORD_ERRORS_WEBHOOK_URL:?DISCORD_ERRORS_WEBHOOK_URL is required}
     volumes:
@@ -38,11 +40,36 @@ services:
     environment:
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:?N8N_RUNNERS_AUTH_TOKEN is required}
       - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - X_COLLECTOR=${X_COLLECTOR:?X_COLLECTOR is required}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY:-}
     depends_on:
       - n8n
 
+  twscrape:
+    build: ./twscrape
+    image: transfers-n8n-twscrape:local
+    profiles: ["twscrape"]
+    restart: unless-stopped
+    environment:
+      - TWSCRAPE_AUTH_TOKEN=${TWSCRAPE_AUTH_TOKEN:?TWSCRAPE_AUTH_TOKEN is required for twscrape}
+      - TWSCRAPE_CT0=${TWSCRAPE_CT0:?TWSCRAPE_CT0 is required for twscrape}
+      - TWS_TELEMETRY=0
+      - TWS_LOG_LEVEL=WARNING
+    volumes:
+      - twscrape_accounts:/data
+    networks:
+      - transfers_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
 volumes:
   bill_n8n_data:
+    driver: local
+  twscrape_accounts:
     driver: local
 
 networks:

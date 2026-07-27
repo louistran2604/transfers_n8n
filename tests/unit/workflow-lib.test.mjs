@@ -200,10 +200,84 @@ test('generated digest node ignores n8n no-row placeholders', async () => {
   assert.deepEqual(output, []);
 });
 
+test('generated twscrape adapter preserves string IDs, keeps quoted posts, filters retweets, and tolerates partial failures', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const adapter = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
+  const request = {
+    sources: [{
+      source_id: 'source-1', external_account_id: '922928582866980864', username: 'charlotteharpur', display_name: 'Charlotte Harpur', priority_rank: 4, reliability_score: 0.7, is_official: false,
+    }],
+  };
+  const response = {
+    posts: [
+      { source_id: 'source-1', username: 'charlotteharpur', x_user_id: '922928582866980864', external_post_id: '900000000000000101', post_url: 'https://x.com/charlotteharpur/status/900000000000000101', content: 'Direct transfer report', posted_at: '2026-07-26T00:00:00.000Z', raw_payload: { id: '900000000000000101' } },
+      { source_id: 'source-1', username: 'charlotteharpur', x_user_id: '922928582866980864', external_post_id: '900000000000000102', post_url: 'https://x.com/charlotteharpur/status/900000000000000102', content: 'Quote comment\n\nQuoted post:\nQuoted transfer report', posted_at: '2026-07-26T00:01:00.000Z', raw_payload: { id: '900000000000000102' } },
+      { source_id: 'source-1', username: 'charlotteharpur', x_user_id: '922928582866980864', external_post_id: '900000000000000103', post_url: 'https://x.com/charlotteharpur/status/900000000000000103', content: 'RT @source: pure retweet', posted_at: '2026-07-26T00:02:00.000Z', raw_payload: { id: '900000000000000103' } },
+      { source_id: 'source-1', username: 'charlotteharpur', x_user_id: '922928582866980864', external_post_id: '900000000000000104', post_url: 'https://x.com/charlotteharpur/status/900000000000000104', content: 'Stale transfer report', posted_at: '2026-07-25T23:59:59.999Z', raw_payload: { id: '900000000000000104' } },
+      { source_id: 'source-1', username: 'charlotteharpur', x_user_id: '922928582866980864', external_post_id: '900000000000000105', post_url: 'https://x.com/charlotteharpur/status/900000000000000105', content: 'Future transfer report', posted_at: '2026-07-26T06:00:00.001Z', raw_payload: { id: '900000000000000105' } },
+    ],
+    errors: [{ source_id: 'source-2', username: 'unavailable', x_user_id: '330262748', code: 'account_unavailable', message: 'X account unavailable', retryable: true }],
+  };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runAdapter = new AsyncFunction('$input', '$', adapter.parameters.jsCode);
+  const output = await runAdapter({ first: () => ({ json: { body: response } }) }, (name) => {
+    if (name === 'Create run context') return { isExecuted: true, first: () => ({ json: { collection_cutoff_at: '2026-07-26T00:00:00.000Z', collection_started_at: '2026-07-26T06:00:00.000Z' } }) };
+    if (name === 'Create sample run context') return { isExecuted: false };
+    assert.equal(name, 'Build twscrape collect request');
+    return { first: () => ({ json: request }) };
+  });
+  assert.equal(output.length, 2);
+  assert.equal(output[0].json.params[0], '922928582866980864');
+  assert.equal(typeof output[0].json.params[0], 'string');
+  assert.equal(output[0].json.params[1], '900000000000000101');
+  assert.match(output[1].json.params[3], /Quoted post:\nQuoted transfer report/);
+});
+
+test('generated RapidAPI adapter applies the same rolling six-hour boundary', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const adapter = workflow.nodes.find((node) => node.name === 'Parse RapidAPI posts');
+  const sourceAccount = source('David_Ornstein');
+  const response = { data: { entries: [
+    { rest_id: '900000000000000201', legacy: { full_text: 'Fresh report', created_at: 'Sat Jul 26 00:00:00 +0000 2026' } },
+    { rest_id: '900000000000000202', legacy: { full_text: 'Stale report', created_at: 'Fri Jul 25 23:59:59 +0000 2026' } },
+    { rest_id: '900000000000000203', legacy: { full_text: 'Future report', created_at: 'Sat Jul 26 06:00:01 +0000 2026' } },
+  ] } };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runAdapter = new AsyncFunction('$input', '$', adapter.parameters.jsCode);
+  const output = await runAdapter({ all: () => [{ json: { body: response } }] }, (name) => {
+    if (name === 'Build RapidAPI request') return { all: () => [{ json: { source: sourceAccount } }] };
+    if (name === 'Create run context') return { isExecuted: true, first: () => ({ json: { collection_cutoff_at: '2026-07-26T00:00:00.000Z', collection_started_at: '2026-07-26T06:00:00.000Z' } }) };
+    if (name === 'Create sample run context') return { isExecuted: false };
+    throw new Error(`Unexpected node lookup: ${name}`);
+  });
+  assert.equal(output.length, 1);
+  assert.equal(output[0].json.params[1], '900000000000000201');
+});
+
+test('generated digest deduplicates repeated candidate rows before applying its 15/18 limit', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const snapshot = { ...validReport(), dedupe_key: 'alvaro-test|test-fc|destination-fc' };
+  const repeated = Array.from({ length: 20 }, () => ({ json: {
+    revision_id: 'revision-1', snapshot, post_url: 'https://x.com/source/status/1', priority_rank: '2', reliability_score: '0.95', source_name: 'Source',
+  } }));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const output = await runDigest({ all: () => repeated });
+  assert.equal(output.length, 1);
+  const payload = JSON.parse(output[0].json.params[0]);
+  assert.deepEqual(payload.revision_ids, ['revision-1']);
+  assert.equal(payload.discord_payload.embeds[0].fields.length, 1);
+});
+
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const sourceNode = workflow.nodes.find((node) => node.name === 'Load generated sources');
   const qwenNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
+  const collectorNode = workflow.nodes.find((node) => node.name === 'Select X collector');
+  const twscrapeBuilderNode = workflow.nodes.find((node) => node.name === 'Build twscrape collect request');
+  const twscrapeNode = workflow.nodes.find((node) => node.name === 'Collect 20 X posts via twscrape');
+  const twscrapeParserNode = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
   const rapidApiBuilderNode = workflow.nodes.find((node) => node.name === 'Build RapidAPI request');
   const rapidApiNode = workflow.nodes.find((node) => node.name === 'Collect 20 X posts');
   const rapidApiParserNode = workflow.nodes.find((node) => node.name === 'Parse RapidAPI posts');
@@ -216,7 +290,16 @@ test('generated workflow stays in sync with the registry and extraction contract
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
   assert.match(qwenNode.parameters.jsCode, /football_transfer_extraction/);
-  assert.doesNotMatch(rapidApiBuilderNode.parameters.jsCode, /\$env/);
+  assert.match(qwenNode.parameters.jsCode, /women's, girls', and youth football/);
+  assert.match(qwenNode.parameters.jsCode, /Women's-football blacklist/);
+  assert.match(qwenNode.parameters.jsCode, /Misa Rodríguez/);
+  assert.match(qwenNode.parameters.jsCode, /Misa Rodriguez/);
+  assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
+  assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
+  assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
+  assert.equal(twscrapeNode.parameters.options.timeout, 310000);
+  assert.match(twscrapeParserNode.parameters.jsCode, /Build twscrape collect request/);
+  assert.match(rapidApiBuilderNode.parameters.jsCode, /RAPIDAPI_KEY/);
   assert.match(rapidApiNode.parameters.url, /RAPIDAPI_BASE_URL/);
   assert.doesNotMatch(rapidApiParserNode.parameters.jsCode, /itemMatching/);
   assert.match(rapidApiParserNode.parameters.jsCode, /\$\('Build RapidAPI request'\)\.all\(\)/);
@@ -226,9 +309,16 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.doesNotMatch(workflow.nodes.find((node) => node.name === 'Prepare delivery finalization').parameters.jsCode, /itemMatching/);
   assert.match(sampleNode.parameters.jsCode, /TEST DATA/);
   assert.ok(workflow.connections['Manual sample run']);
+  assert.equal(workflow.connections['Use twscrape collector'].main[0][0].node, 'Build twscrape collect request');
+  assert.equal(workflow.connections['Use twscrape collector'].main[1][0].node, 'Build RapidAPI request');
   assert.match(reserveNode.parameters.query, /status = 'sending'/);
   assert.doesNotMatch(reserveNode.parameters.query, /sending AS/);
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
+  assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
+  assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
+  assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
+  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
   assert.equal(runNode.parameters.options.queryReplacement, '={{ $json.params }}');

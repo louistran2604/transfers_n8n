@@ -417,8 +417,18 @@ export function selectDigestReports(reports) {
     || right.confidence - left.confidence
     || String(right.last_reported_at ?? '').localeCompare(String(left.last_reported_at ?? ''))
   ));
-  const normal = sorted.slice(0, 15);
-  const extra = sorted.slice(15).filter((report) => (
+  const seenRevisionIds = new Set();
+  const seenStoryKeys = new Set();
+  const distinct = sorted.filter((report) => {
+    const revisionId = String(report.revision_id ?? '');
+    const storyKey = String(report.dedupe_key ?? dedupeKey(report));
+    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey)) return false;
+    if (revisionId) seenRevisionIds.add(revisionId);
+    seenStoryKeys.add(storyKey);
+    return true;
+  });
+  const normal = distinct.slice(0, 15);
+  const extra = distinct.slice(15).filter((report) => (
     report.classification === 'official_confirmed'
     || (report.classification === 'advanced_negotiations' && (report.preferred_source?.priority_rank ?? report.source?.priority_rank) <= 2)
   )).slice(0, 3);

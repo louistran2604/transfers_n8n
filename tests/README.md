@@ -6,8 +6,15 @@ Run these from the repository root in this order:
 node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
 docker compose -f deploy/n8n/compose.yaml config --quiet
+docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
 docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+```
+
+After building the scraper image, run its dependency-free service tests without real X credentials:
+
+```bash
+docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python transfers-n8n-twscrape:local -m unittest discover -s /tests -v
 ```
 
 Run PostgreSQL tests against the normal support service after configuring `deploy/support/.env`:
@@ -25,7 +32,7 @@ Run isolated mock E2E/import validation:
 tests/e2e/run.sh
 ```
 
-It starts disposable PostgreSQL, mock RapidAPI/Qwen/Discord endpoints, and the pinned n8n image; runs the SQL safety tests; imports both workflows; then verifies duplicate/retry/invalid-response/Discord-limit/interrupted-delivery scenarios. Its cleanup removes only the `transfers-e2e` test volume.
+It starts disposable PostgreSQL, mock `twscrape`/RapidAPI/Qwen/Discord endpoints, and the pinned n8n image; runs the SQL safety tests; imports both workflows; then verifies a partial `twscrape` source failure, RapidAPI retry behavior, duplicate/retry/invalid-response/Discord-limit/interrupted-delivery scenarios. Its cleanup removes only the `transfers-e2e` test volume.
 
 Before a commit, scan tracked files for obvious secret assignments and inspect ignored state:
 
