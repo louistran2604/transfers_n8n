@@ -54,6 +54,41 @@ INSERT INTO transfer_reports (
 ON CONFLICT (dedupe_key) DO UPDATE SET last_reported_at = EXCLUDED.last_reported_at
 RETURNING id \gset report_
 
+INSERT INTO raw_posts (
+  source_account_id, external_post_id, post_url, content, posted_at, raw_payload
+) VALUES (
+  :id, '900000000000000203', 'https://x.com/workflowsafety/status/900000000000000203',
+  'Workflow safety replacement source fixture.', '2026-07-26 06:01:00+00', '{}'::jsonb
+)
+ON CONFLICT (platform, external_post_id) DO UPDATE
+SET collected_at = CURRENT_TIMESTAMP
+RETURNING id \gset replacement_raw_post_
+
+-- Preferred-source replacement must happen in two ordered statements. A single
+-- data-modifying CTE can attempt the new preferred insert before clearing the old
+-- row, which violates the partial unique index.
+INSERT INTO transfer_report_sources (
+  transfer_report_id, raw_post_id, source_observed_at, is_preferred
+) VALUES (:report_id, :raw_post_id, '2026-07-26 06:00:00+00', true)
+ON CONFLICT (transfer_report_id, raw_post_id) DO UPDATE
+SET source_observed_at = EXCLUDED.source_observed_at,
+    is_preferred = true;
+
+INSERT INTO transfer_report_sources (
+  transfer_report_id, raw_post_id, source_observed_at, is_preferred
+) VALUES (:report_id, :replacement_raw_post_id, '2026-07-26 06:01:00+00', false)
+ON CONFLICT (transfer_report_id, raw_post_id) DO UPDATE
+SET source_observed_at = EXCLUDED.source_observed_at,
+    is_preferred = false;
+
+UPDATE transfer_report_sources
+SET is_preferred = false
+WHERE transfer_report_id = :report_id AND is_preferred;
+
+UPDATE transfer_report_sources
+SET is_preferred = true
+WHERE transfer_report_id = :report_id AND raw_post_id = :replacement_raw_post_id;
+
 INSERT INTO transfer_report_revisions (
   transfer_report_id, revision_number, content_sha256, snapshot
 ) VALUES (
@@ -124,6 +159,8 @@ SELECT CASE
    AND (SELECT count(*) FROM digest_items WHERE transfer_report_revision_id = :revision_id) = 1
    AND (SELECT attempt_count FROM retry_states WHERE id = :retry_state_id) = 2
    AND (SELECT count(*) FROM workflow_runs WHERE workflow_name = 'football-transfer-monitor' AND logical_run_key = '2026-07-26T06:00:00Z') = 2
+   AND (SELECT count(*) FROM transfer_report_sources WHERE transfer_report_id = :report_id AND is_preferred) = 1
+   AND (SELECT raw_post_id FROM transfer_report_sources WHERE transfer_report_id = :report_id AND is_preferred) = :replacement_raw_post_id
   THEN 'true' ELSE 'false'
 END AS workflow_safety \gset
 

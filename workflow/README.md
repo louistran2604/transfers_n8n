@@ -28,4 +28,4 @@ Classification conflict precedence is: contract renewal, rejected/failed, loan, 
 
 RapidAPI permits at most five attempts and Qwen at most three. The `twscrape` HTTP request has a finite 310-second timeout. The shared logic calculates bounded exponential delay and respects `Retry-After` or rate-reset headers. Discord is retryable only for an explicit `429` or `5xx`; a request interrupted after the network write is marked `unknown` and is never automatically resent.
 
-The digest has at most 15 normal stories. Positions 16–18 are only official/confirmed or tier-1/2 advanced reports. It also caps output at 10 embeds, 25 fields per embed, 1,024 characters per field, and 6,000 aggregate embed characters.
+The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It has at most 15 normal stories; positions 16–18 are only confirmed transfers or Romano/Ornstein reports. It also caps output at 10 embeds, 25 fields per embed, 1,024 characters per field, and 6,000 aggregate embed characters.

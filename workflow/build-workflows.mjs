@@ -36,12 +36,12 @@ function codeNode(name, position, js) {
   });
 }
 
-function postgresNode(name, position, query) {
+function postgresNode(name, position, query, queryReplacement) {
   const options = {
     queryBatching: 'transaction',
     outputLargeFormatNumbers: 'text',
   };
-  if (/\$\d+\b/.test(query)) options.queryReplacement = '={{ $json.params }}';
+  if (/\$\d+\b/.test(query)) options.queryReplacement = queryReplacement ?? '={{ $json.params }}';
   return node(name, 'n8n-nodes-base.postgres', position, {
     operation: 'executeQuery',
     query,
@@ -175,20 +175,15 @@ report AS (
       normalized_data = EXCLUDED.normalized_data
   RETURNING id
 ),
-unprefer AS (
-  UPDATE transfer_report_sources SET is_preferred = false
-  WHERE transfer_report_id = (SELECT id FROM report)
-),
 sources AS (
   INSERT INTO transfer_report_sources (transfer_report_id, raw_post_id, source_observed_at, extracted_data, is_preferred)
   SELECT (SELECT id FROM report), (source->>'raw_post_id')::bigint,
-    (source->>'posted_at')::timestamptz, source,
-    (source->>'raw_post_id') = (SELECT payload->>'preferred_raw_post_id' FROM input)
+    (source->>'posted_at')::timestamptz, source, false
   FROM input, jsonb_array_elements(input.payload->'sources') AS source
   ON CONFLICT (transfer_report_id, raw_post_id) DO UPDATE
   SET source_observed_at = EXCLUDED.source_observed_at,
       extracted_data = EXCLUDED.extracted_data,
-      is_preferred = EXCLUDED.is_preferred
+      is_preferred = false
 ),
 mark_merged AS (
   UPDATE raw_posts SET processing_state = 'merged', classified_at = CURRENT_TIMESTAMP
@@ -211,14 +206,15 @@ revision AS (
   RETURNING id
 )
 SELECT (SELECT id::text FROM report) AS transfer_report_id,
-  (SELECT id::text FROM revision) AS revision_id;`.trim();
+  (SELECT id::text FROM revision) AS revision_id,
+  (SELECT payload->>'preferred_raw_post_id' FROM input) AS preferred_raw_post_id;`.trim();
 }
 
 function candidatesSql() {
   return `
 WITH pending_candidates AS (
   SELECT r.id::text AS revision_id, r.snapshot,
-    s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,
+    s.priority_rank, s.reliability_score, s.is_official, s.username AS source_username, s.display_name AS source_name,
     p.post_url, p.posted_at,
     dd.idempotency_key AS pending_idempotency_key,
     dd.window_started_at AS pending_window_started_at,
@@ -239,7 +235,7 @@ latest_revisions AS (
 ),
 fresh_candidates AS (
   SELECT r.id::text AS revision_id, r.snapshot,
-  s.priority_rank, s.reliability_score, s.is_official, s.display_name AS source_name,
+  s.priority_rank, s.reliability_score, s.is_official, s.username AS source_username, s.display_name AS source_name,
   p.post_url, p.posted_at,
   NULL::text AS pending_idempotency_key,
   NULL::timestamptz AS pending_window_started_at,
@@ -430,7 +426,7 @@ return posts.flatMap((post) => {
 function qwenParseCode() {
   return `
 const requests = $('Build Qwen request').all();
-const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'])};
+const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
@@ -440,7 +436,7 @@ return $input.all().flatMap((item, index) => {
   const content = response?.choices?.[0]?.message?.content;
   let parsed;
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
-  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
+  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
@@ -476,7 +472,7 @@ for (const reports of groups.values()) {
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
-  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
+  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
     ...snapshot,
@@ -500,11 +496,20 @@ function digestCode() {
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
+const digestPriority = (report) => {
+  if (report.classification === 'official_confirmed') return 0;
+  const username = String(report.preferred_source.username ?? '').toLowerCase();
+  const displayName = String(report.preferred_source.display_name ?? '').trim().toLowerCase();
+  if (username === 'fabrizioromano' || username === 'david_ornstein' || displayName === 'fabrizio romano' || displayName === 'david ornstein') return 1;
+  if (report.classification === 'rumor' && report.is_huge_rumor === true) return 2;
+  if (report.classification === 'rumor' && Number(report.fee_amount) >= 70000000 && ['EUR', 'GBP'].includes(String(report.fee_currency ?? '').toUpperCase())) return 3;
+  return 4;
+};
 const reports = $input.all().map((item) => {
   const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;
-  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), display_name: item.json.source_name } };
-}).filter(Boolean).sort((a, b) => (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
+  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), username: item.json.source_username, display_name: item.json.source_name } };
+}).filter(Boolean).sort((a, b) => (digestPriority(a) - digestPriority(b)) || (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (b.preferred_source.reliability_score - a.preferred_source.reliability_score) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
 const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;
 const seenRevisionIds = new Set();
@@ -517,7 +522,7 @@ const distinctCandidateReports = candidateReports.filter((report) => {
   if (storyKey) seenStoryKeys.add(storyKey);
   return true;
 });
-const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => report.classification === 'official_confirmed' || (report.classification === 'advanced_negotiations' && report.preferred_source.priority_rank <= 2)).slice(0, 3)];
+const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3)];
 let total = 45;
 const fields = [];
 for (const report of selected) {
@@ -651,22 +656,43 @@ return $input.all().map((item) => ({ json: {
     postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id;`),
     codeNode('Merge extracted reports', [2080, -180], mergeCode()),
     postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql()),
-    codeNode('Prepare digest candidates query', [2520, -180], `
+    codeNode('Prepare preferred source reset', [2520, -180], `
+return $input.all().map((item) => {
+  const reportId = String(item.json.transfer_report_id ?? '');
+  const rawPostId = String(item.json.preferred_raw_post_id ?? '');
+  if (!/^\\d+$/.test(reportId) || !/^\\d+$/.test(rawPostId)) throw new Error('Missing merged report preferred-source metadata');
+  return { json: { params: [reportId, rawPostId] } };
+});`),
+    postgresNode('Clear preferred report source', [2740, -180], `
+WITH cleared AS (
+  UPDATE transfer_report_sources
+  SET is_preferred = false
+  WHERE transfer_report_id = $1::bigint AND is_preferred
+  RETURNING 1
+)
+SELECT $1::text AS transfer_report_id, $2::text AS preferred_raw_post_id
+FROM (SELECT count(*) FROM cleared) AS completed;`),
+    postgresNode('Set preferred report source', [2960, -180], `
+UPDATE transfer_report_sources
+SET is_preferred = true
+WHERE transfer_report_id = $1::bigint AND raw_post_id = $2::bigint
+RETURNING $1::text AS transfer_report_id, $2::text AS preferred_raw_post_id;`, '={{ [$json.transfer_report_id, $json.preferred_raw_post_id] }}'),
+    codeNode('Prepare digest candidates query', [3180, -180], `
 const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
 return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at] } }];`),
-    postgresNode('Find undelivered revisions', [2740, -180], candidatesSql()),
-    codeNode('Build bounded Discord digest', [2960, -180], digestCode()),
-    postgresNode('Reserve digest before delivery', [3180, -180], reserveDigestSql()),
-    node('Digest reserved', 'n8n-nodes-base.if', [3400, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    codeNode('Build Discord delivery request', [3620, -260], `
+    postgresNode('Find undelivered revisions', [3400, -180], candidatesSql()),
+    codeNode('Build bounded Discord digest', [3620, -180], digestCode()),
+    postgresNode('Reserve digest before delivery', [3840, -180], reserveDigestSql()),
+    node('Digest reserved', 'n8n-nodes-base.if', [4060, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Build Discord delivery request', [4280, -260], `
 const digest = $('Build bounded Discord digest').first().json.params[0];
 const payload = typeof digest === 'string' ? JSON.parse(digest) : digest;
 return [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload.discord_payload } }];`),
-    httpNode('Send Discord digest once', [3840, -260], {
+    httpNode('Send Discord digest once', [4500, -260], {
       method: 'POST', url: '={{ $env.DISCORD_TRANSFERS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true }),
-    codeNode('Prepare delivery finalization', [4060, -260], `
+    codeNode('Prepare delivery finalization', [4720, -260], `
 const request = $('Build Discord delivery request').first().json;
 const response = $json.body ?? $json;
 const status = Number($json.statusCode ?? $json.status ?? 0);
@@ -674,7 +700,7 @@ const workflowRunId = $('Register workflow run').isExecuted
   ? $('Register workflow run').first().json.workflow_run_id
   : $('Register sample workflow run').first().json.workflow_run_id;
 return [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];`),
-    postgresNode('Finalize delivery and run', [4280, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
+    postgresNode('Finalize delivery and run', [4940, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
   ];
   const connections = {
     'Every six hours': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
@@ -706,7 +732,10 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Qwen response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record Qwen validation failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Merge extracted reports': { main: [[{ node: 'Persist merged reports and revisions', type: 'main', index: 0 }]] },
-    'Persist merged reports and revisions': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
+    'Persist merged reports and revisions': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }]] },
+    'Prepare preferred source reset': { main: [[{ node: 'Clear preferred report source', type: 'main', index: 0 }]] },
+    'Clear preferred report source': { main: [[{ node: 'Set preferred report source', type: 'main', index: 0 }]] },
+    'Set preferred report source': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Prepare digest candidates query': { main: [[{ node: 'Find undelivered revisions', type: 'main', index: 0 }]] },
     'Find undelivered revisions': { main: [[{ node: 'Build bounded Discord digest', type: 'main', index: 0 }]] },
     'Build bounded Discord digest': { main: [[{ node: 'Reserve digest before delivery', type: 'main', index: 0 }]] },

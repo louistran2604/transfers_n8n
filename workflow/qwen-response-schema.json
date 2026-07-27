@@ -32,6 +32,7 @@
           "sell_on_percentage",
           "medical_status",
           "agreement_status",
+          "is_huge_rumor",
           "confidence"
         ],
         "properties": {
@@ -64,6 +65,7 @@
             "type": "string",
             "enum": ["not_reported", "reached", "close", "negotiating", "rejected", "unknown"]
           },
+          "is_huge_rumor": { "type": "boolean" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
         }
       }

@@ -39,6 +39,7 @@ const validReport = (overrides = {}) => ({
   sell_on_percentage: null,
   medical_status: 'not_reported',
   agreement_status: 'not_reported',
+  is_huge_rumor: false,
   confidence: 0.7,
   ...overrides,
 });
@@ -115,9 +116,9 @@ test('retry timing honors server headers within a bounded exponential backoff po
   assert.equal(shouldRetry('discord', 429), true);
 });
 
-test('digest selection allows only eligible positions 16 through 18 and respects Discord limits', () => {
+test('digest selection allows only important positions 16 through 18 and respects Discord limits', () => {
   const reports = Array.from({ length: 22 }, (_, index) => ({
-    ...validReport({ player_name: `Player ${index}`, classification: index >= 15 && index < 19 ? 'official_confirmed' : 'advanced_negotiations', confidence: 0.9 }),
+    ...validReport({ player_name: `Player ${index}`, classification: 'official_confirmed', confidence: 0.9 }),
     preferred_source: { ...source(index >= 15 ? 'BBCSport' : 'David_Ornstein', index >= 15 ? 'organization' : 'individual'), display_name: 'Source' },
     sources: [{ post_url: `https://x.com/source/status/${900000000000000000n + BigInt(index)}` }],
     last_reported_at: `2026-07-26T${String(index % 24).padStart(2, '0')}:00:00.000Z`,
@@ -131,6 +132,29 @@ test('digest selection allows only eligible positions 16 through 18 and respects
   assert.ok(payload.embeds[0].fields.every((field) => field.value.length <= 1024));
   const size = payload.embeds[0].title.length + payload.embeds[0].fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
   assert.ok(size <= 6000);
+});
+
+test('digest prioritizes confirmed reports, Romano or Ornstein, huge rumors, then €70m or £70m rumors', () => {
+  const ordinary = { ...validReport({ player_name: 'Ordinary', classification: 'advanced_negotiations' }), preferred_source: source('someone') };
+  const bigMoney = { ...validReport({ player_name: 'Big Money', fee_amount: 70000000, fee_currency: 'EUR' }), preferred_source: source('someone') };
+  const huge = { ...validReport({ player_name: 'Huge', is_huge_rumor: true }), preferred_source: source('someone') };
+  const ornstein = { ...validReport({ player_name: 'Ornstein', classification: 'rumor' }), preferred_source: source('David_Ornstein') };
+  const confirmed = { ...validReport({ player_name: 'Confirmed', classification: 'official_confirmed' }), preferred_source: source('someone') };
+  assert.deepEqual(selectDigestReports([ordinary, bigMoney, huge, ornstein, confirmed]).map((report) => report.player_name), ['Confirmed', 'Ornstein', 'Huge', 'Big Money', 'Ordinary']);
+  assert.equal(selectDigestReports([{ ...bigMoney, fee_currency: 'USD' }, ordinary])[0].player_name, 'Ordinary');
+});
+
+test('digest positions 16 through 18 exclude huge and big-money rumors', () => {
+  const reports = [
+    ...Array.from({ length: 16 }, (_, index) => ({ ...validReport({ player_name: `Confirmed ${index}`, classification: 'official_confirmed' }), preferred_source: source('someone') })),
+    { ...validReport({ player_name: 'Huge extra', is_huge_rumor: true }), preferred_source: source('someone') },
+    { ...validReport({ player_name: 'Big money extra', fee_amount: 70000000, fee_currency: 'GBP' }), preferred_source: source('someone') },
+    { ...validReport({ player_name: 'Romano extra' }), preferred_source: source('FabrizioRomano') },
+  ];
+  const selected = selectDigestReports(reports);
+  assert.equal(selected.length, 17);
+  assert.deepEqual(selected.slice(15).map((report) => report.player_name), ['Confirmed 15', 'Romano extra']);
+  assert.ok(!selected.some((report) => ['Huge extra', 'Big money extra'].includes(report.player_name)));
 });
 
 test('digest displays every meaningful non-null transfer detail', () => {
@@ -306,6 +330,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.doesNotMatch(qwenParserNode.parameters.jsCode, /itemMatching/);
   assert.match(qwenNode.parameters.jsCode, /delete llamaSchema\.properties\.reports\.items\.properties\.player_name\.minLength/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.player_name\.trim\(\)\.length > 0/);
+  assert.match(qwenParserNode.parameters.jsCode, /report\.is_huge_rumor === 'boolean'/);
   assert.doesNotMatch(workflow.nodes.find((node) => node.name === 'Prepare delivery finalization').parameters.jsCode, /itemMatching/);
   assert.match(sampleNode.parameters.jsCode, /TEST DATA/);
   assert.ok(workflow.connections['Manual sample run']);
@@ -317,11 +342,19 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
-  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare digest candidates query');
+  assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
+  assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
+  assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
+  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
+  assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare digest candidates query');
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
   assert.equal(runNode.parameters.options.queryReplacement, '={{ $json.params }}');
   assert.equal(recoveryNode.parameters.options.queryReplacement, undefined);
+  assert.equal(
+    workflow.nodes.find((node) => node.name === 'Set preferred report source').parameters.options.queryReplacement,
+    '={{ [$json.transfer_report_id, $json.preferred_raw_post_id] }}',
+  );
   assert.equal(workflow.settings.timezone, 'Asia/Ho_Chi_Minh');
 });

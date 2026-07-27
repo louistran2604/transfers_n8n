@@ -39,6 +39,7 @@ const REPORT_FIELDS = Object.freeze([
   'sell_on_percentage',
   'medical_status',
   'agreement_status',
+  'is_huge_rumor',
   'confidence',
 ]);
 
@@ -281,6 +282,7 @@ export function validateQwenResponse(value) {
       }
       if (!MEDICAL_STATES.includes(report.medical_status)) errors.push(`${label}.medical_status is invalid`);
       if (!AGREEMENT_STATES.includes(report.agreement_status)) errors.push(`${label}.agreement_status is invalid`);
+      if (typeof report.is_huge_rumor !== 'boolean') errors.push(`${label}.is_huge_rumor must be boolean`);
       if (typeof report.confidence !== 'number' || !Number.isFinite(report.confidence) || report.confidence < 0 || report.confidence > 1) errors.push(`${label}.confidence must be between 0 and 1`);
     });
   }
@@ -377,6 +379,17 @@ function classificationWeight(classification) {
   return CLASSIFICATION_PRECEDENCE[classification] ?? 0;
 }
 
+function digestPriority(report) {
+  if (report.classification === 'official_confirmed') return 0;
+  const source = report.preferred_source ?? report.source ?? {};
+  const username = String(source.username ?? '').toLowerCase();
+  const displayName = normalizeText(source.display_name);
+  if (username === 'fabrizioromano' || username === 'david_ornstein' || displayName === 'fabrizio romano' || displayName === 'david ornstein') return 1;
+  if (report.classification === 'rumor' && report.is_huge_rumor === true) return 2;
+  if (report.classification === 'rumor' && Number(report.fee_amount) >= 70_000_000 && ['EUR', 'GBP'].includes(String(report.fee_currency ?? '').toUpperCase())) return 3;
+  return 4;
+}
+
 function formatAmount(amount, currency) {
   if (amount === null || amount === undefined) return null;
   return `${Number(amount).toLocaleString('en-US')} ${currency ?? ''}`.trim();
@@ -412,7 +425,8 @@ function truncate(value, maximum) {
 
 export function selectDigestReports(reports) {
   const sorted = [...reports].sort((left, right) => (
-    sourceComparator(left, right)
+    digestPriority(left) - digestPriority(right)
+    || sourceComparator(left, right)
     || classificationWeight(right.classification) - classificationWeight(left.classification)
     || right.confidence - left.confidence
     || String(right.last_reported_at ?? '').localeCompare(String(left.last_reported_at ?? ''))
@@ -428,10 +442,7 @@ export function selectDigestReports(reports) {
     return true;
   });
   const normal = distinct.slice(0, 15);
-  const extra = distinct.slice(15).filter((report) => (
-    report.classification === 'official_confirmed'
-    || (report.classification === 'advanced_negotiations' && (report.preferred_source?.priority_rank ?? report.source?.priority_rank) <= 2)
-  )).slice(0, 3);
+  const extra = distinct.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3);
   return [...normal, ...extra];
 }
 

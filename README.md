@@ -227,7 +227,7 @@ Each story includes every meaningful non-null extracted detail that fits:
 - Loan end, purchase option/obligation, and sell-on percentage.
 - Medical status, agreement status, confidence, and linked source.
 
-Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and transfer dedupe key. The digest admits the first 15 distinct stories, then up to three extra stories only when they are official/confirmed or tier-1/2 advanced reports. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
+Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and transfer dedupe key. The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It admits the first 15 distinct stories, then up to three extra stories only when they are confirmed or reported by Romano/Ornstein. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
 
 ### Retry and delivery safety
 
