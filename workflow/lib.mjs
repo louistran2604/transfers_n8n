@@ -40,6 +40,7 @@ const REPORT_FIELDS = Object.freeze([
   'medical_status',
   'agreement_status',
   'is_huge_rumor',
+  'is_digest_worthy',
   'confidence',
 ]);
 
@@ -283,6 +284,7 @@ export function validateQwenResponse(value) {
       if (!MEDICAL_STATES.includes(report.medical_status)) errors.push(`${label}.medical_status is invalid`);
       if (!AGREEMENT_STATES.includes(report.agreement_status)) errors.push(`${label}.agreement_status is invalid`);
       if (typeof report.is_huge_rumor !== 'boolean') errors.push(`${label}.is_huge_rumor must be boolean`);
+      if (typeof report.is_digest_worthy !== 'boolean') errors.push(`${label}.is_digest_worthy must be boolean`);
       if (typeof report.confidence !== 'number' || !Number.isFinite(report.confidence) || report.confidence < 0 || report.confidence > 1) errors.push(`${label}.confidence must be between 0 and 1`);
     });
   }
@@ -296,7 +298,7 @@ export function chooseClassification(classifications) {
 }
 
 export function dedupeKey(report) {
-  return [report.player_identity_hint || report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown']
+  return [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown']
     .map(normalizeIdentity)
     .join('|');
 }
@@ -355,7 +357,9 @@ export function hashSnapshot(snapshot) {
 
 export function materialRevision(existingHash, report) {
   const snapshot = materialSnapshot(report);
-  const content_sha256 = hashSnapshot(snapshot);
+  const materialSnapshotForHash = { ...snapshot };
+  delete materialSnapshotForHash.is_digest_worthy;
+  const content_sha256 = hashSnapshot(materialSnapshotForHash);
   return { changed: content_sha256 !== existingHash, content_sha256, snapshot };
 }
 
@@ -395,10 +399,25 @@ function formatAmount(amount, currency) {
   return `${Number(amount).toLocaleString('en-US')} ${currency ?? ''}`.trim();
 }
 
+function hasNamedClub(value) {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && !/^(not[ _-]?reported|unknown|n\/?a)$/i.test(value.trim());
+}
+
+function digestStoryKey(report) {
+  return normalizeIdentity(report.player_name);
+}
+
+function isDigestEligible(report) {
+  return report.is_digest_worthy === true
+    && hasNamedClub(report.current_club_name)
+    && hasNamedClub(report.destination_club_name);
+}
+
 function storyText(report) {
-  const clubDirection = [report.current_club_name, report.destination_club_name].filter(Boolean).join(' → ') || 'Club details not reported';
+  const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
   const details = [
-    report.player_identity_hint ? `Identity: ${report.player_identity_hint}` : null,
     `Classification: ${report.classification.replaceAll('_', ' ')}`,
     report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
     formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null,
@@ -424,7 +443,7 @@ function truncate(value, maximum) {
 }
 
 export function selectDigestReports(reports) {
-  const sorted = [...reports].sort((left, right) => (
+  const sorted = reports.filter(isDigestEligible).sort((left, right) => (
     digestPriority(left) - digestPriority(right)
     || sourceComparator(left, right)
     || classificationWeight(right.classification) - classificationWeight(left.classification)
@@ -433,12 +452,15 @@ export function selectDigestReports(reports) {
   ));
   const seenRevisionIds = new Set();
   const seenStoryKeys = new Set();
+  const seenPlayerStoryKeys = new Set();
   const distinct = sorted.filter((report) => {
     const revisionId = String(report.revision_id ?? '');
     const storyKey = String(report.dedupe_key ?? dedupeKey(report));
-    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey)) return false;
+    const playerStoryKey = digestStoryKey(report);
+    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey) || seenPlayerStoryKeys.has(playerStoryKey)) return false;
     if (revisionId) seenRevisionIds.add(revisionId);
     seenStoryKeys.add(storyKey);
+    seenPlayerStoryKeys.add(playerStoryKey);
     return true;
   });
   const normal = distinct.slice(0, 15);

@@ -76,7 +76,7 @@ assert.equal(womenExtraction.transfer_related, false);
 const reports = Array.from({ length: 20 }, (_, index) => ({
   player_name: `Mock Player ${index}`, current_club_name: 'Mock FC', destination_club_name: 'Test United',
   classification: index > 14 ? 'official_confirmed' : 'rumor', move_type: 'permanent', confidence: 0.8,
-  fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false,
+  fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
   preferred_source: { ...sourceMetadata({ username: index > 14 ? 'someone' : 'David_Ornstein', display_name: 'Mock Source', external_account_id: String(900000000000000000n + BigInt(index)), account_type: 'individual' }), display_name: 'Mock Source' },
   sources: [{ post_url: `https://x.com/mock/status/${900000000000000000n + BigInt(index)}` }],
 }));

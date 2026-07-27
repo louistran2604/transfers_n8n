@@ -249,6 +249,19 @@ LEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id
 WHERE di.id IS NULL
   AND tr.last_reported_at >= $1::timestamptz
   AND tr.last_reported_at <= $2::timestamptz
+  AND NOT EXISTS (
+    SELECT 1
+    FROM digest_items sent_item
+    JOIN digest_deliveries sent_delivery ON sent_delivery.id = sent_item.digest_delivery_id
+    JOIN transfer_report_revisions sent_revision ON sent_revision.id = sent_item.transfer_report_revision_id
+    JOIN transfer_reports sent_report ON sent_report.id = sent_revision.transfer_report_id
+    WHERE sent_delivery.status = 'sent'
+      AND sent_delivery.sent_at >= CURRENT_TIMESTAMP - interval '24 hours'
+      AND lower(btrim(sent_report.reported_player_name)) = lower(btrim(tr.reported_player_name))
+      AND NULLIF(btrim(r.snapshot->>'destination_club_name'), '') IS NOT NULL
+      AND regexp_replace(lower(COALESCE(sent_revision.snapshot->>'destination_club_name', '')), '[^a-z0-9]+', '', 'g')
+          = regexp_replace(lower(r.snapshot->>'destination_club_name'), '[^a-z0-9]+', '', 'g')
+  )
   AND NOT EXISTS (SELECT 1 FROM pending_candidates)
 )
 SELECT * FROM pending_candidates
@@ -320,7 +333,7 @@ RETURNING id::text AS workflow_run_id, external_execution_id, logical_run_key;`.
 function runtimeHelpers() {
   return `
 const normalize = (value) => String(value ?? '').normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\\s+/g, ' ');
-const key = (report) => [report.player_identity_hint || report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');
+const key = (report) => [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const compareSource = (left, right) => (left.source.priority_rank - right.source.priority_rank) || (right.source.reliability_score - left.source.reliability_score) || String(left.posted_at).localeCompare(String(right.posted_at));
 const sha256 = (value) => {
@@ -426,7 +439,7 @@ return posts.flatMap((post) => {
 function qwenParseCode() {
   return `
 const requests = $('Build Qwen request').all();
-const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'confidence'])};
+const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
@@ -436,7 +449,9 @@ return $input.all().flatMap((item, index) => {
   const content = response?.choices?.[0]?.message?.content;
   let parsed;
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
-  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
+  const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
+  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => ({ ...report, current_club_name: nullableClub(report.current_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
+  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
@@ -472,11 +487,11 @@ for (const reports of groups.values()) {
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
-  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
+  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
     ...snapshot,
-    player_identity_key: normalize(merged.player_identity_hint || merged.player_name).replace(/\\s/g, '-'),
+    player_identity_key: normalize(merged.player_name).replace(/\\s/g, '-'),
     normalized_player_name: normalize(merged.player_name),
     first_reported_at: merged.first_reported_at,
     last_reported_at: merged.last_reported_at,
@@ -484,7 +499,7 @@ for (const reports of groups.values()) {
     preferred_raw_post_id: String(best.raw_post_id),
     sources: reports.map((report) => ({ raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source })),
     snapshot,
-    content_sha256: sha256(snapshot),
+    content_sha256: sha256(Object.fromEntries(Object.entries(snapshot).filter(([field]) => field !== 'is_digest_worthy'))),
   };
   outputs.push({ json: { params: [JSON.stringify(payload)] } });
 }
@@ -496,6 +511,9 @@ function digestCode() {
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
+const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
+const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
+const digestStoryKey = (report) => String(report.player_name ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const digestPriority = (report) => {
   if (report.classification === 'official_confirmed') return 0;
   const username = String(report.preferred_source.username ?? '').toLowerCase();
@@ -511,15 +529,18 @@ const reports = $input.all().map((item) => {
   return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), username: item.json.source_username, display_name: item.json.source_name } };
 }).filter(Boolean).sort((a, b) => (digestPriority(a) - digestPriority(b)) || (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (b.preferred_source.reliability_score - a.preferred_source.reliability_score) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
-const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports;
+const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports.filter(isDigestEligible);
 const seenRevisionIds = new Set();
 const seenStoryKeys = new Set();
+const seenPlayerStoryKeys = new Set();
 const distinctCandidateReports = candidateReports.filter((report) => {
   const revisionId = String(report.revision_id ?? '');
   const storyKey = String(report.dedupe_key ?? '');
-  if (!revisionId || seenRevisionIds.has(revisionId) || (storyKey && seenStoryKeys.has(storyKey))) return false;
+  const playerStoryKey = digestStoryKey(report);
+  if (!revisionId || seenRevisionIds.has(revisionId) || (storyKey && seenStoryKeys.has(storyKey)) || seenPlayerStoryKeys.has(playerStoryKey)) return false;
   seenRevisionIds.add(revisionId);
   if (storyKey) seenStoryKeys.add(storyKey);
+  seenPlayerStoryKeys.add(playerStoryKey);
   return true;
 });
 const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3)];
@@ -528,8 +549,7 @@ const fields = [];
 for (const report of selected) {
   const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);
   const details = [
-    [report.current_club_name, report.destination_club_name].filter(Boolean).join(' → ') || 'Club details not reported',
-    report.player_identity_hint ? 'Identity: ' + report.player_identity_hint : null,
+    report.current_club_name + ' → ' + report.destination_club_name,
     'Classification: ' + report.classification.replaceAll('_', ' '),
     report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
     amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null,

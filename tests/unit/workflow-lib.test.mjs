@@ -40,6 +40,7 @@ const validReport = (overrides = {}) => ({
   medical_status: 'not_reported',
   agreement_status: 'not_reported',
   is_huge_rumor: false,
+  is_digest_worthy: true,
   confidence: 0.7,
   ...overrides,
 });
@@ -100,8 +101,10 @@ test('merging uses source tier, fills missing fields, keeps conflicts, and creat
   const first = materialRevision(null, merged);
   assert.equal(first.changed, true);
   assert.equal(materialRevision(first.content_sha256, { ...merged, sources: [] }).changed, false);
+  assert.equal(materialRevision(first.content_sha256, { ...merged, is_digest_worthy: !merged.is_digest_worthy }).changed, false);
   assert.equal(materialRevision(first.content_sha256, { ...merged, fee_amount: 50000000 }).changed, true);
   assert.equal(dedupeKey(merged), 'alvaro-test|test-fc|destination-fc');
+  assert.equal(dedupeKey({ ...merged, player_identity_hint: 'Test FC' }), 'alvaro-test|test-fc|destination-fc');
   assert.equal(chooseClassification(['rumor', 'loan', 'contract_renewal']), 'contract_renewal');
 });
 
@@ -157,6 +160,15 @@ test('digest positions 16 through 18 exclude huge and big-money rumors', () => {
   assert.ok(!selected.some((report) => ['Huge extra', 'Big money extra'].includes(report.player_name)));
 });
 
+test('digest requires relevance and complete clubs, then keeps one story per player', () => {
+  const samePlayerLowerPriority = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club A' }), preferred_source: source('someone'), revision_id: '1' };
+  const samePlayerPreferred = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club B', classification: 'official_confirmed' }), preferred_source: source('David_Ornstein'), revision_id: '2' };
+  const lowProfile = { ...validReport({ player_name: 'Low Profile', is_digest_worthy: false }), preferred_source: source('David_Ornstein'), revision_id: '3' };
+  const incomplete = { ...validReport({ player_name: 'Incomplete', current_club_name: 'not_reported' }), preferred_source: source('David_Ornstein'), revision_id: '4' };
+  assert.deepEqual(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred, lowProfile, incomplete]).map((report) => report.player_name), ['Same Player']);
+  assert.equal(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred])[0].destination_club_name, 'Club B');
+});
+
 test('digest displays every meaningful non-null transfer detail', () => {
   const report = {
     ...validReport({
@@ -182,7 +194,6 @@ test('digest displays every meaningful non-null transfer detail', () => {
   };
   const value = buildDiscordDigest([report]).embeds[0].fields[0].value;
   for (const expected of [
-    'Identity: Senior Spain international',
     'Move: loan',
     'Fee: 25,000,000 EUR',
     'Add-ons: 5,000,000 EUR',
@@ -196,6 +207,7 @@ test('digest displays every meaningful non-null transfer detail', () => {
     'Medical: scheduled',
     'Agreement: reached',
   ]) assert.match(value, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(value, /Identity:/);
 });
 
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {
@@ -211,7 +223,9 @@ test('generated merge node hashes snapshots without the Web Crypto global', asyn
   const report = { ...validReport(), raw_post_id: '1', post_url: 'https://x.com/test/status/1', posted_at: '2026-07-26T00:00:00.000Z', source: source('David_Ornstein') };
   const output = await runMerge({ all: () => [{ json: { report } }] });
   const payload = JSON.parse(output[0].json.params[0]);
-  const expected = createHash('sha256').update(JSON.stringify(payload.snapshot)).digest('hex');
+  const hashInput = { ...payload.snapshot };
+  delete hashInput.is_digest_worthy;
+  const expected = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex');
   assert.equal(payload.content_sha256, expected);
 });
 
@@ -342,6 +356,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
+  assert.match(candidatesNode.parameters.query, /sent_delivery\.sent_at >= CURRENT_TIMESTAMP - interval '24 hours'/);
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
