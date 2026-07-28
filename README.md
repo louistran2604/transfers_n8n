@@ -2,7 +2,7 @@
 
 An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector.
 
-The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh`.
+The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` GMT+7.
 
 ## What the project does
 
