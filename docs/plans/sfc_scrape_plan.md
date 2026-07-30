@@ -2,668 +2,1051 @@
 
 ## 1. Executive decision
 
-The feature is feasible with **soccerdata 1.9.1 and its Sofascore provider only**, but not through the provider's current high-level public methods alone.
+The feature is **feasible with `soccerdata==1.9.1` and its Sofascore provider only**, provided the implementation accepts two limitations:
 
-The implemented boundary should be a small, persistent, internal Python HTTP service. It should:
+1. soccerdata's high-level Sofascore methods do not expose player profiles or player-season statistics;
+2. all provider fields must remain nullable because the permitted raw Sofascore JSON schemas and competition coverage vary.
 
-- import and instantiate `soccerdata.Sofascore`;
-- use the inherited, documented `BaseRequestsReader.get()` transport and cache;
-- call four targeted Sofascore JSON endpoint shapes through that reader;
-- normalize nullable player/profile/statistic data behind a versioned local contract;
-- never scrape rendered HTML and never use Playwright, Selenium, ScraperFC, a standalone Sofascore package, or another football-data provider.
+The recommended architecture is a persistent, internal-only Python `aiohttp` service on the existing `transfers_net` Docker network. The service imports only `soccerdata.Sofascore`, calls the inherited public `Sofascore.get()` transport/cache method, and implements a thin, fixture-tested adapter for targeted player endpoints. It has no PostgreSQL, Discord, X, or Qwen credentials. n8n remains responsible for loading context, persisting normalized mappings/snapshots, and continuing digest delivery when enrichment fails.
 
-The high-level `Sofascore` class currently exposes league tables and schedules, not player search, profiles, or player season statistics. The required player data is therefore dependent on undocumented Sofascore JSON endpoint schemas. That is the main feasibility risk and requires fixture tests, schema guards, raw-payload provenance, a package pin, and fail-open workflow integration.
+Required-field verdict:
 
-No requested field is guaranteed for every player and league:
+- **20 required fields require a small local adapter** over raw JSON transported by `Sofascore.get()`.
+- **4 required fields use a stable derivation**: age, stable source identifier, provider retrieval timestamp, and minutes per game.
+- **0 required fields are directly supported** by soccerdata's high-level Sofascore methods.
+- **0 required fields were proved unsupported or unverifiable** during the spike.
+- Availability is not universal. Starts, xG, xA, rating, height, preferred foot, value, and other optional values can be absent and must remain null.
 
-- age, minutes per game, the source URL, and retrieval time are derived locally;
-- starts, height, preferred foot, proposed market value, xG, xA, and average rating are nullable and were absent in at least some verified responses;
-- market value is Sofascore's **proposed** market value, not a guaranteed official valuation;
-- all player fields are unsupported by soccerdata's high-level Sofascore methods and require the thin adapter described above.
+Verified supported profile data includes canonical name, Sofascore player ID, current club, nationality, date of birth, position, height, preferred foot, proposed market value, and its currency. Verified season data includes competition, season, appearances, starts, minutes, goals, xG, assists, xA, and average rating. Age and minutes per game are derived. The stable source is `sofascore:player:<id>` because a stable human-facing URL format was not verified.
 
-Enrichment must remain optional. A digest must still be reserved and sent when the service is unavailable, every player is unresolved, the database enrichment write fails, or every field is null.
+Recommended same-request optional fields are yellow/red cards and, for goalkeepers, clean sheets and saves. They are nullable, lower-priority Discord content and must not add provider requests. Shots, key passes, and other observed metrics remain raw-payload data only in the initial scope.
+
+Major blockers before production activation are:
+
+- raw player endpoints are outside soccerdata's supported high-level API and upstream player tests;
+- provider access-policy approval is unresolved;
+- soccerdata's transport has five generic attempts, no explicit request timeout, and lossy terminal errors;
+- the raw cache is non-atomic and can retain malformed successful responses;
+- duplicate names require deterministic contextual identity resolution;
+- future seasons can appear first in provider season arrays;
+- the transitive TLS library must be baked and checksum-verified instead of downloaded at runtime;
+- CPU/RSS and batch deadlines must be measured before active mode.
+
+The architecture is fail-open. `off`, `shadow`, and `active` modes are required. Enrichment never enters the transfer material hash, never creates a statistics-only transfer revision, never releases a delivered revision, and never becomes a prerequisite for digest reservation or sending. With a healthy core PostgreSQL path, the digest must complete when every enrichment operation fails.
 
 ## 2. Current-state findings
 
+### Repository and branch state
+
+The investigation was performed in the existing `feature/sfc_scrape` worktree. The authoritative repository instructions are `/home/louistran/projects/transfers_n8n/AGENTS.md`; the worktree has no separate `AGENTS.md`.
+
+The branch already contained an earlier `docs/plans/sfc_scrape_plan.md` at commit `319acabc34e02b6593a1ac7267c79f2f31364e33`. This run treated it as an artifact to replace, not evidence. Repository architecture was navigated with `graphify-out/GRAPH_REPORT.md` and graph queries, then verified against source files. `graphify-out` must not be regenerated or modified during implementation.
+
+Per the user's scope correction, historical browser/Transfermarkt work is excluded from further investigation and implementation planning. The active tree contains no player-enrichment service, browser container, browser dependency, or browser configuration to remove. There is therefore no obsolete active enrichment file to delete or archive. Historical applied migration text remains untouched, and unrelated history remains historical documentation only.
+
 ### Existing transfer pipeline
 
-The current six-hour pipeline is:
+The authoritative main workflow is generated by `workflow/build-workflows.mjs`; `workflow/football-transfer-monitor.json` and `workflow/football-transfer-monitor-errors.json` are generated artifacts and must never be hand-edited.
+
+Current six-hour flow:
 
 ```text
-X collection
+schedule/manual trigger
+  -> Recover interrupted deliveries
+  -> register workflow run
+  -> upsert configured X sources
+  -> collect and persist raw X posts
+  -> build Qwen requests
   -> Qwen extraction
-  -> strict report validation
-  -> merge material reports and sources
-  -> persist reports/revisions/preferred sources
-  -> select undelivered material revisions
-  -> construct one bounded Discord digest
-  -> reserve/send/finalize delivery
+  -> strict response validation
+  -> merge reports and select preferred source values
+  -> persist transfer reports, material revisions, and report-source links
+  -> reset/set preferred report source
+  -> find undelivered material revisions
+  -> build bounded Discord digest
+  -> reserve delivery
+  -> send once
+  -> finalize delivery and workflow run
 ```
 
-Evidence:
+Exact sources:
 
-- `README.md:3-20` describes X collection, Qwen extraction, PostgreSQL persistence, and Discord delivery. `README.md:33` describes the rolling collection window.
-- `workflow/qwen-system-prompt.md:1-15` limits extraction to senior men's football, defines classification precedence, and forbids invented facts.
-- `workflow/qwen-response-schema.json:1-76` is a strict schema with `additionalProperties: false`; all report keys exist and nullable values remain null.
-- `workflow/build-workflows.mjs:439-460` validates exact Qwen fields and injects source metadata.
-- `workflow/build-workflows.mjs:463-506` merges reports by normalized player/current-club/destination identity, sorts sources, chooses preferred values, records conflicts, and constructs a material content hash.
-- `workflow/lib.mjs:300-363` handles report deduplication, material snapshots, and revisions.
-- `workflow/build-workflows.mjs:677-706` persists merged reports and revisions, resets and sets preferred sources, prepares digest candidates, finds undelivered revisions, builds the digest, and enters the delivery reservation flow.
-- `workflow/build-workflows.mjs:754-760` defines the corresponding generated graph connections.
+- `README.md`: operational overview and six-hour collection behavior.
+- `workflow/qwen-system-prompt.md`: senior men's football extraction and no-invention rules.
+- `workflow/qwen-response-schema.json`: strict 23-field response schema, nullable unknowns, fixed enums, and `additionalProperties: false`.
+- `workflow/build-workflows.mjs`:
+  - `qwenParseCode()` validates the exact Qwen response contract;
+  - `mergeCode()` groups and merges report evidence;
+  - `mergeReportSql()` persists reports, sources, snapshots, and material revisions;
+  - `candidatesSql()` selects undelivered revisions;
+  - `reserveDigestSql()` and `finalizeDeliverySql()` implement delivery state;
+  - `digestCode()` builds the generated-workflow digest;
+  - `mainWorkflow()` defines nodes and connections.
+- `workflow/lib.mjs`:
+  - `validateQwenResponse()` mirrors the Qwen contract;
+  - `mergeReportGroup()` and `materialRevision()` define merge/revision behavior;
+  - `storyText()`, `buildDiscordDigest()`, `nextRetryDelaySeconds()`, and `recoverInterruptedDelivery()` define formatting, limits, retries, and recovery.
 
-The enrichment insertion point is **after** reports, revisions, and preferred sources have been persisted, and **before** digest candidates are formatted. Enrichment must not be part of the transfer snapshot or its content hash. Refreshing player statistics alone must not create a transfer revision or a Discord delivery.
+### Preservation boundaries
 
-### Existing idempotency, retry, and failure isolation
+The following behavior must remain unchanged except for narrowly additive enrichment joins and tests:
 
-- `database/migrations/001_initial_schema.sql:13-258` defines source/raw-item uniqueness, provider-neutral `players`, transfer report/revision uniqueness, preferred-source uniqueness, workflow run state, retry state, failures, and restart-safe digest delivery constraints.
-- `database/migrations/001_initial_schema.sql:58-68` already provides the provider-neutral `players` anchor with a unique `identity_key`, display/normalized names, and nullable birth date.
-- Revisions are unique by `(transfer_report_id, revision_number)` and `(transfer_report_id, content_sha256)`.
-- `database/migrate.sql:3-24` uses `app_schema_migrations` and a PostgreSQL advisory lock. Migration `001` is already historical and must not be rewritten.
-- `database/tests/001_dedup_restart_safety.sql:18-307` and `database/tests/002_workflow_safety.sql:14-171` use transaction rollback to verify replay, delivery, and recovery behavior.
-- `workflow/lib.mjs:366-380` bounds retry delay at 300 seconds and respects `Retry-After`; Discord retries are limited to 429 and 5xx responses.
-- `workflow/lib.mjs:495-498` converts interrupted `sending` deliveries to `unknown` rather than risking duplicate sends.
-- `workflow/build-workflows.mjs:631-646` gives the twscrape request a 310-second timeout and `continueOnFail`; the RapidAPI path is bounded.
-- `workflow/build-workflows.mjs:668-674` bounds Qwen attempts and records terminal extraction failures.
-- `workflow/build-workflows.mjs:700-723` builds, reserves, sends, and finalizes one Discord webhook delivery.
+- X collection, source prioritization, reliability ranking, and current collector retry/timeout behavior;
+- the Qwen prompt, response schema, validation, and nullable-field semantics;
+- report grouping and preferred-value/source selection;
+- transfer material snapshots and `content_sha256`;
+- revision uniqueness and eligibility;
+- 24-hour duplicate player/destination suppression in digest candidates;
+- delivery reservation, send-once semantics, and `sending -> unknown` recovery;
+- no automatic resend of an `unknown` delivery;
+- PostgreSQL private networking and migration advisory locking.
 
-These behaviors are preservation constraints. Enrichment may add its own cache and attempt state, but must not weaken the existing report or delivery keys.
+`workflow/build-workflows.mjs` currently derives `player_identity_key` from the normalized player name only. `players.identity_key` is unique, so two people with the same normalized name can initially share a placeholder `players` row even though transfer reports remain distinct by name/current-club/destination context. Enrichment must therefore resolve identity per transfer-report context before creating/reusing a canonical provider-backed player row. It must not key automatic provider mappings only by the current `players.id`.
 
-### Discord construction
+Enrichment must not be added to `transfer_report_revisions.snapshot`, report merge conflicts, or the transfer material hash. A statistics refresh creates no transfer revision and cannot make a delivered story eligible again.
 
-- `workflow/lib.mjs:418-438` builds each transfer story and preserves the journalist source link.
-- `workflow/lib.mjs:445-492` deduplicates and prioritizes at most 15 primary plus 3 secondary stories, emits at most 25 embed fields, truncates names to 256 characters and values to 1,024 characters, and respects Discord's 6,000-character aggregate embed limit.
-- `tests/unit/workflow-lib.test.mjs:122-211` covers story priority, formatting, and limits.
+### Persistence and restart safety
 
-Player data must be subordinate to the transfer report and journalist attribution. It is optional text within the existing bounded field, not a second unbounded embed.
+- `database/migrations/001_initial_schema.sql` is historical and must not be edited.
+- `database/migrate.sql` explicitly registers migrations, holds `pg_advisory_lock(hashtext('transfers_net_schema_migrations'))`, and records versions in `app_schema_migrations`.
+- Current uniqueness covers raw sources/items, transfer reports, report sources, material revisions, preferred sources, workflow runs, retry states, delivery idempotency keys, and one delivery item per revision.
+- `database/tests/001_dedup_restart_safety.sql` and `database/tests/002_workflow_safety.sql` are transaction-wrapped regression gates.
+- `retry_states` has a closed resource/state contract and must not be widened for enrichment. Enrichment needs its own attempts table.
 
-### Deployment and service pattern
+A discovered additive delivery requirement is to freeze the exact Discord request payload at reservation time. Without a stored payload, a retry could be rebuilt from newer enrichment and violate send-once semantics. Migration 002 must therefore add `digest_deliveries.request_payload` and change reservation to return the stored payload.
 
-- `deploy/n8n/compose.yaml:3-67` runs n8n, its task runner, and the optional internal twscrape service on the external `transfers_net` network.
-- `deploy/support/compose.yaml:4-48` keeps PostgreSQL and migrations on the same private network.
-- `deploy/n8n/twscrape/app.py` is the nearest service pattern: a small Python HTTP process with health handling, persistent local state, structured errors, and no public host port.
-- `tests/e2e/compose.yaml`, `tests/e2e/mock/server.mjs`, `tests/e2e/scenario.mjs`, and `tests/e2e/run.sh` provide the existing container and workflow smoke-test surface.
+### Discord behavior
 
-### Failed Transfermarkt/Playwright work
+Current construction selects up to 15 ordinary stories plus 3 high-priority extras, with a feature-level maximum of 18 stories. It enforces:
 
-Commit `6e6ceca7450cbb80edde2553804e39937693c645` is titled `Removed player data scraping`. Repository history shows:
+- at most 25 fields per embed;
+- at most 256 characters per field name;
+- at most 1,024 characters per field value;
+- at most 6,000 aggregate embed characters;
+- journalist source links as required primary content.
 
-- a deleted `transfermarkt_fields.pdf`;
-- a now-deleted `current_state.md` design describing a planned `services/transfermarkt-scraper/` service, low concurrency, cache, retries, and stopping on CAPTCHA/403/429;
-- historical, pre-release versions of migration `001` containing `transfermarkt_profiles`, `player_transfer_history`, `player_youth_history`, and `player_injury_history`, plus related triggers/retry values.
+Implementation must use a two-pass budget: admit the same transfer stories first, then append enrichment only to already-admitted fields. Enrichment may never displace a transfer story or truncate a journalist link.
 
-There is no committed Playwright/Transfermarkt service implementation or service test to migrate. There is also no recorded live bot-detection run; history contains a bot-detection policy, not evidence of an executed failure. The active tree has no Transfermarkt or Playwright dependency, container, or production reference.
+### Deployment and tests
 
-Decisions:
+- `deploy/n8n/compose.yaml` runs n8n, its external runner, and the optional private twscrape service on `transfers_net`.
+- `deploy/support/compose.yaml` keeps PostgreSQL private and runs migrations through its maintenance profile.
+- `deploy/n8n/twscrape/` is the closest private `aiohttp` service pattern: no host port, persistent volume, health check, bounded work, and structured partial failures.
+- Soccerdata must not be installed in the n8n runner or n8n image.
+- `tests/README.md` is the current test entrypoint. There is no repository CI workflow or package-level test runner.
+- `tests/e2e/run.sh` provides Compose startup, PostgreSQL tests, generated-workflow import into pinned n8n, and direct generated-code scenarios. It does **not** trigger the imported n8n workflow end to end; documentation and acceptance claims must remain honest.
 
-- do not restore the deleted PDF, deleted design file, or historical Transfermarkt tables;
-- do not rewrite migration `001`;
-- do not archive or delete anything from the active production tree because no active implementation remains;
-- leave `graphify-out` as unrelated generated repository analysis output; do not regenerate or clean it as part of this feature;
-- document the replacement in current README/operations documentation during implementation.
+Baseline verified during planning:
 
-Complete historical-reference disposition:
+```text
+node workflow/build-workflows.mjs --check   -> 78 sources, 2 workflows checked
+node --test tests/unit/*.test.mjs           -> 17 passed, 0 failed
+Compose rendering                            -> n8n, support, and Qwen passed
+./tests/e2e/run.sh                           -> SQL tests passed, workflows imported,
+                                                mock scenarios passed, cleanup passed
+```
 
-| Historical path/reference | What history contains | Decision |
-| --- | --- | --- |
-| `.gitignore` | Removed `playwright-report/` ignore entry | No active browser report exists; do not restore it |
-| `README.md` | Planned Playwright/Transfermarkt flow and access policy before `6e6ceca` | Replace only with current Sofascore operations text when the feature is implemented |
-| `current_state.md` | Planned empty service, endpoint, fields, access stops, and handoff; later deleted by `cc1aaf6` | Leave deleted |
-| `database/README.md` | Descriptions of the removed Transfermarkt profile/history tables | Add new soccerdata tables only; do not restore the old text |
-| `database/migrations/001_initial_schema.sql` | Pre-release Transfermarkt tables, triggers, indexes, and retry resource | Preserve the current applied migration byte-for-byte; add migration `002` |
-| `transfermarkt_fields.pdf` | User-supplied field reference deleted by `6e6ceca` | Leave deleted |
-| Planned `services/transfermarkt-scraper/` | Mentioned as empty in documentation; no committed implementation files | Nothing to delete or archive |
-
-Current-tree searches find no Transfermarkt, Playwright, browser container, or browser dependency reference. Therefore implementation must remove none; claiming otherwise would rewrite history rather than replace active code.
-
-The feature branch and `main` started this investigation at the same commit (`f3dd914`); no separate unfinished implementation was found.
+No baseline check contacted X, Qwen, Discord, or Sofascore.
 
 ## 3. Verified soccerdata capabilities
 
-### Evaluated release and source
+### Evaluated release and evidence
 
 - Package: `soccerdata==1.9.1`
-- PyPI release date observed: 2026-07-24
-- Wheel SHA-256 observed: `15c135e9995f27535cd26ba360edccdbf664051796675ba2cd5109e0cc63d2bc`
+- Release date observed: 2026-07-24
+- Python compatibility: `>=3.10,<3.15`
 - Git tag: `v1.9.1`
-- Tag commit observed: `323169a3acc1378cc8c5318db3bae7de5fe3d14f`
-- Supported Python range: `>=3.10,<3.15`
+- Tag commit: `323169a3acc1378cc8c5318db3bae7de5fe3d14f`
+- Wheel SHA-256 observed: `15c135e9995f27535cd26ba360edccdbf664051796675ba2cd5109e0cc63d2bc`
+- Tag is annotated but was not verified as cryptographically signed.
 
-Primary evidence:
+Evidence inspected:
 
-- [soccerdata 1.9.1 on PyPI](https://pypi.org/project/soccerdata/1.9.1/)
-- [soccerdata v1.9.1 release](https://github.com/probberechts/soccerdata/releases/tag/v1.9.1)
-- [Sofascore provider reference](https://soccerdata.readthedocs.io/en/stable/reference/sofascore.html)
-- [Base reader reference](https://soccerdata.readthedocs.io/en/latest/reference/base.html)
-- [`soccerdata/sofascore.py` at v1.9.1](https://github.com/probberechts/soccerdata/blob/v1.9.1/soccerdata/sofascore.py)
-- [Upstream Sofascore tests at v1.9.1](https://github.com/probberechts/soccerdata/blob/v1.9.1/tests/test_Sofascore.py)
+- tagged `soccerdata/sofascore.py`, `_common.py`, packaging metadata, and cache/transport code;
+- official Sofascore and base-reader documentation;
+- tagged upstream Sofascore tests;
+- installed wheel source in an isolated environment;
+- fixture-backed transport/cache/error probes;
+- safe live read-only probes on 2026-07-30.
 
-The exact release must be hash-locked with its full dependency tree. `soccerdata` currently has a mandatory SeleniumBase dependency for other providers. The Sofascore class itself extends `BaseRequestsReader` and does not need a browser. The service must install the supported dependency tree but must not install a browser binary, start Selenium, or import any soccerdata provider other than `Sofascore`. Installing `soccerdata --no-deps` would be a fragile unsupported packaging shortcut and is rejected.
+Upstream references fixed to the evaluated release:
 
-### Public surface
+- `https://github.com/probberechts/soccerdata/tree/v1.9.1`;
+- `https://github.com/probberechts/soccerdata/blob/v1.9.1/soccerdata/sofascore.py`;
+- `https://github.com/probberechts/soccerdata/blob/v1.9.1/tests/test_Sofascore.py`;
+- `https://soccerdata.readthedocs.io/en/stable/reference/sofascore.html`.
 
-The provider's high-level public methods are:
+Source evidence establishes the high-level method list, transport/cache behavior, retry loop, non-atomic writes, static league mappings, and local season heuristic. Upstream tests cover only selected league/season, an unsupported season, one schedule row count, and one league-table row count; they do not cover player endpoints, fields, errors, identity, or active-season selection. Fixture probes establish cache and malformed/error behavior without network access. Live probes establish actual player fields, endpoint fanout, non-top-five coverage, goalkeeper extras, ambiguity, season ordering, and movement semantics. Plain `curl` returned 403 during an independent check while the required soccerdata reader transport succeeded; this is an availability/policy risk, not permission to add an evasion or fallback transport.
+
+The supported package dependency tree includes SeleniumBase even though the Sofascore provider uses request transport and no browser. The implementation must install the supported, hash-locked dependency tree but must not install a browser binary, invoke SeleniumBase, or use another soccerdata provider.
+
+### Public and internal methods considered
+
+High-level public Sofascore methods:
 
 ```python
-soccerdata.Sofascore.read_leagues()
-soccerdata.Sofascore.read_seasons()
-soccerdata.Sofascore.read_league_table(force_cache=False)
-soccerdata.Sofascore.read_schedule(force_cache=False)
+Sofascore.read_leagues()
+Sofascore.read_seasons()
+Sofascore.read_league_table(force_cache=False)
+Sofascore.read_schedule(force_cache=False)
 ```
 
-Upstream tests cover those four operations. There is no `read_player`, player search, profile, or player-statistics method.
+These methods expose leagues, locally selected season ranges, tables, and schedules. None returns player profiles or player season statistics. Built-in mappings cover only Premier League, LaLiga, Serie A, Bundesliga, Ligue 1, and EURO; this high-level allowlist is unsuitable for generic league resolution.
 
-`Sofascore` inherits the documented `BaseRequestsReader.get(url, filepath, max_age, no_cache)` transport. Using that method does not make the player endpoints part of the supported high-level provider API: the endpoint paths and response schemas remain undocumented provider internals. The local adapter must be intentionally thin and must not copy `_session`, `_download_and_save`, or other private soccerdata internals.
+The inherited documented public transport/cache method is:
 
-### Targeted endpoints verified through soccerdata-compatible transport
+```python
+Sofascore.get(url, filepath=None, max_age=MAXAGE, no_cache=False, var=None)
+```
 
-The feasibility spike used these JSON endpoint shapes:
+The local adapter may construct targeted endpoint URLs/cache paths and call `Sofascore.get()`. It must not call or copy private `_session`, `_download_and_save`, or any private parser. No reusable soccerdata internal player parser exists.
+
+High-level `seasons=None` does not select Sofascore's active season. It constructs local year ranges. The source comment says five seasons while its range yields six. Neither this heuristic nor `read_schedule()`/`read_league_table()` may be used for player enrichment.
+
+### Targeted endpoint families verified
+
+All live provider calls were made through `Sofascore.get()` against `https://api.sofascore.com/api/v1/`:
 
 ```text
-/search/all?q=<name>
-/player/<player_id>
-/unique-tournament/<tournament_id>/seasons
-/player/<player_id>/unique-tournament/<tournament_id>/season/<season_id>/statistics/overall
+search/all?q=<encoded-name>
+player/<player-id>
+unique-tournament/<unique-tournament-id>/seasons
+unique-tournament/<unique-tournament-id>
+player/<player-id>/unique-tournament/<tournament-id>/season/<season-id>/statistics/overall
+player/<player-id>/transfer-history
 ```
 
-The production adapter should form the URLs, choose deterministic cache file names, and pass them to `Sofascore.get()`. It must validate returned JSON before normalization.
+Transfer history was used only to verify movement semantics and is not required for normal enrichment. An exploratory `last-ratings` endpoint returned 404, was retried five times, and collapsed to a generic `ConnectionError`; it is unsupported and excluded.
 
-A cold, unambiguous lookup needs four targeted successful downloads: search, profile, seasons, and overall statistics. It does **not** require a league-wide download. With a confirmed player mapping and competition-season mapping, a refresh needs profile plus statistics at most. A fresh PostgreSQL snapshot requires no provider call.
+Profile, search, season list, tournament metadata, and statistics are separate requests. A cold unambiguous minimal player path used exactly four calls: search, profile, shared season list, and targeted overall statistics. It did not fetch a schedule, table, roster, event list, or league-wide payload.
 
-For comparison, the high-level league-table path needs approximately three downloads, while a 38-round schedule can need approximately 41. Those methods should not be used for per-player enrichment.
+For `U` distinct cold/unmapped players in `T` distinct tournaments, the minimal verified batch model is:
 
-An unresolved ambiguous search may inspect at most five football candidate profiles, making the bounded cold worst case eight calls: one search, five profiles, one season list, and one statistics call. The statistics and season calls occur only after one candidate clears the identity threshold.
+```text
+3U + T
+```
 
-### Cache and error behavior
+Search, profile, and statistics are per player; the season list is shared per tournament. A new/stale competition classification additionally needs one tournament-metadata validation per unique tournament. Persisted player IDs remove search. Fresh normalized snapshots remove all provider calls. Ambiguity can add at most five bounded candidate profile calls and must stop before statistics until one identity is safe.
 
-- Default cache root: `~/soccerdata/data/Sofascore`.
-- The service must set a dedicated persistent data root and volume rather than relying on a container home directory.
-- `no_cache=True` bypasses an existing cache but still permits storing the new response.
-- `no_store=True` prevents storage.
-- Current-season table/schedule operations bypass cache unless `force_cache=True`; the local adapter must set explicit `max_age` values for its own raw files.
-- `BaseRequestsReader` defaults to no request delay.
-- The inherited transport retries a failed request up to five times without provider-specific exponential backoff or `Retry-After` handling, then raises a generic connection error.
-- The inspected `get()` path has no explicit per-request timeout parameter.
+### Live probe results
 
-The service therefore must add a single-call rate gate, must not add another same-run retry layer, and must enforce the batch deadline by isolating provider work in a replaceable worker process.
+| Subject | Purpose | Verified result |
+| --- | --- | --- |
+| Kylian Mbappé | Rich reference | Player `826643`, Real Madrid `2829`, LaLiga `8`, season `77559`; profile fields present; 31 apps, 29 starts, 2,604 min, 25 goals, 23.9453 xG, 5 assists, 6.2019957 xA, 7.5612903225806 rating; 84.0 min/app derived; proposed value 191,000,000 EUR |
+| John Smith | Duplicate name | Search returned 20 mixed results and at least two exact-name football players, IDs `2544168` and `2332241`; name-only selection is unsafe |
+| Nguyễn Quang Hải | Non-top-five/sparse | Player `845067`, Công An Hà Nội `193616`, V-League 1 `626`, season `78589`; 24 apps/starts, 2,160 min, 3 goals, 6 assists, 7.4083 rating; xG/xA absent; `team.tournament` misleadingly referenced V-League 2 `771` |
+| Thibaut Courtois | Goalkeeper | Player `70988`; LaLiga 2025/26 returned 13 clean sheets and 70 saves in the same overall request |
+| Antoine Semenyo | Same-league move | Player `934354`; Bournemouth to Manchester City on 2026-01-09; Premier League season total 37 appearances proves selected-league aggregation across clubs |
+| Florian Wirtz | Cross-league move | Player `1019322`; current Liverpool/Premier League profile and season data corroborate current-club-league selection after a move from Leverkusen |
 
-### Live spike results
-
-The live read-only spike ran on 2026-07-30:
-
-1. **Kylian Mbappé**
-   - Search resolved one football player: Sofascore ID `826643`.
-   - Profile: Real Madrid, France, date-of-birth timestamp, forward, 180 cm, right foot, proposed market value `191000000 EUR`.
-   - LaLiga 2025/26: tournament `8`, season `77559`, 31 appearances, 29 starts, 2,604 minutes, 25 goals, 23.9453 xG, 5 assists, 6.2019957 xA, and 7.5612903225806 rating.
-   - Derived minutes per appearance: `84.0`.
-
-2. **John Smith, duplicate-name case**
-   - Search returned 20 mixed-sport results.
-   - At least two exact-name football players were present: ID `2544168` (retired English midfielder without a current team) and ID `2332241` (United States goalkeeper at Holy Cross/NCAA).
-   - Name-only selection is unsafe and must return `ambiguous` or `unresolved`.
-
-3. **Nguyễn Quang Hải, outside the top five**
-   - Profile: ID `845067`, Công An Hà Nội, Vietnam, midfielder, 168 cm, left foot, proposed market value `435000 EUR`.
-   - V-League 1 2025/26: tournament `626`, season `78589`, 24 appearances/starts, 2,160 minutes, 3 goals, 6 assists, and 7.4083 rating.
-   - xG and xA were absent.
-   - The profile's `team.tournament` indicated V-League 2 (`771`), while `primaryUniqueTournament` indicated V-League 1 (`626`) and only the V-League 1 statistics lookup succeeded. League resolution must prefer and validate `primaryUniqueTournament`; it must never blindly use `team.tournament`.
-
-Direct plain `curl` access returned 403 during an independent check. The design must use the soccerdata reader transport as required, not replace it with a second HTTP scraping dependency.
+On 2026-07-30, LaLiga and Premier League season arrays listed future 2026/27 first and 2025/26 second. Season objects exposed no explicit `active`/`isCurrent` flag. Selecting the first season is unsafe.
 
 ### Field matrix
 
-All normalized fields remain nullable unless explicitly identified as a local invariant.
+Classification meanings:
 
-| Requested field | Available | Soccerdata method/source | Normalization | Fallback behavior |
+- **directly supported**: returned and normalized by a high-level soccerdata Sofascore method;
+- **supported through a stable derivation**: deterministic from verified adapter fields or a successful retrieval event;
+- **requires a small local adapter**: observed in targeted raw JSON transported by the public inherited `Sofascore.get()`, with a local endpoint parser/validator required.
+
+| Requested field | Classification | soccerdata method/source | Derivation or normalization | Missing-data behavior |
 | --- | --- | --- | --- | --- |
-| Canonical player name | Direct, nullable | `/player/<id>` through `Sofascore.get()` | Trim Unicode; preserve provider spelling | Keep report name and mark profile partial |
-| Sofascore player ID | Direct | Search/profile path and payload | Store as non-empty text to avoid numeric-width assumptions | No mapping is persisted when unresolved |
-| Current club | Direct, nullable | Player profile `team` | Resolve to provider-neutral club and alias | Retain report club evidence; do not invent a provider club |
-| Nationality | Direct, nullable | Player profile `country` | Store provider code/name separately when present | Omit from output |
-| Age | Derived | Date of birth plus retrieval date | Completed years at `retrieved_at` | Null if date of birth is absent |
-| Date of birth | Direct, nullable | Player profile timestamp | UTC calendar date | Null |
-| Primary position | Direct, nullable | Player profile `position` | Map provider code to a small display label while retaining raw value | Show raw supported label or omit |
-| Height | Direct, nullable | Player profile `height` | Integer centimetres; reject implausible values in schema validation | Null/omit |
-| Preferred foot | Direct, nullable | Player profile `preferredFoot` | `left`, `right`, or null; retain unknown raw values only in payload | Null/omit |
-| Market value | Direct, nullable | Player profile `proposedMarketValueRaw.value` | Non-negative integer in smallest provider unit as observed; label as proposed value | Null/omit |
-| Market-value currency | Direct, nullable | Player profile `proposedMarketValueRaw.currency` | Uppercase ISO-like code; use a symbol only for a known code | Display code or omit value when currency is invalid |
-| Source URL | Derived, unstable convenience | Player slug and ID | Build a Sofascore player URL; provider ID remains authoritative | Emit stable `sofascore:<id>` identifier if URL format fails |
-| Stable source identifier | Direct/derived | Player ID | `provider=sofascore`, `entity_type=player`, external ID | Required for a resolved mapping |
-| Source retrieval timestamp | Local | Service clock after successful normalization | UTC `timestamptz` | Use last-good snapshot time for stale data |
-| Competition | Direct context, nullable | `primaryUniqueTournament` plus stored provider mapping | Provider-neutral domestic-league mapping | `unsupported_competition`; omit statistics |
-| Season | Direct context, nullable | Tournament seasons endpoint | Provider ID, label, start/end dates where present | Use confirmed stored mapping; otherwise omit stats |
-| Appearances | Direct, nullable | Overall statistics `appearances` | Non-negative integer | Null/omit |
-| Starts | Direct, nullable | Overall statistics `matchesStarted` | Non-negative integer, not greater than appearances when both exist | Null/omit |
-| Minutes played | Direct, nullable | Overall statistics `minutesPlayed` | Non-negative integer | Null/omit |
-| Minutes per game | Derived | Minutes divided by appearances | One decimal internally; compact integer display when exact | Null when minutes or appearances are absent/zero |
-| Goals | Direct, nullable | Overall statistics `goals` | Non-negative integer | Null/omit |
-| Expected goals (xG) | Direct, nullable | Overall statistics `expectedGoals` | Non-negative decimal | Null/omit; never estimate |
-| Assists | Direct, nullable | Overall statistics `assists` | Non-negative integer | Null/omit |
-| Expected assists (xA) | Direct, nullable | Overall statistics `expectedAssists` | Non-negative decimal | Null/omit; never estimate |
-| Average rating | Direct, nullable | Overall statistics `rating` | Decimal retained at provider precision; two-decimal display | Null/omit |
-| Other same-call fields | Direct, coverage varies | Same overall-statistics payload | Initially normalize total shots, shots on target, key passes, and big chances created only when present | Store raw payload; keep these out of Discord unless space remains |
-| Raw payload/provenance | Direct | Each adapter response | JSON object, endpoint kind, schema version, content hash, cache state | Keep last-good normalized row if new payload is invalid |
+| Canonical player name | requires a small local adapter | `Sofascore.get()` profile `player.name` | Unicode display spelling preserved; trim/collapse surrounding whitespace only | Preserve report spelling and mark profile partial |
+| Sofascore player ID | requires a small local adapter | `Sofascore.get()` search/profile `player.id` | Decimal ID stored as text | Do not persist an automatic mapping |
+| Current club | requires a small local adapter | Profile `player.team` and `team.id` | Provider team ID plus canonical name; report clubs remain matching evidence | Null provider club; keep report evidence |
+| Nationality | requires a small local adapter | Profile `player.country` | Preserve provider name/code separately when present | Null and omit |
+| Age | supported through a stable derivation | DOB plus provider retrieval time | Completed years on retrieval date; store derivation rule/version | Null when DOB is absent |
+| Date of birth | requires a small local adapter | Profile `dateOfBirth` / `dateOfBirthTimestamp` | Normalize to UTC calendar date | Null and omit |
+| Primary position | requires a small local adapter | Profile `player.position` | Retain raw code and normalize known display label | Null and omit |
+| Height | requires a small local adapter | Profile `player.height` | Integer centimetres after type/range validation | Null and omit |
+| Preferred foot | requires a small local adapter | Profile `player.preferredFoot` | Normalize known left/right display value; preserve raw in payload | Null and omit |
+| Market value | requires a small local adapter | Profile `proposedMarketValueRaw.value` | Non-negative integer; label as Sofascore proposed value | Null and omit |
+| Market-value currency | requires a small local adapter | Profile `proposedMarketValueRaw.currency` | Uppercase ISO-like code; no conversion | Null; omit value unless currency is valid |
+| Source URL or stable source identifier | supported through a stable derivation | Verified `player.id` | Use `sofascore:player:<id>`; do not depend on unverified URL format | No provider source ID for unresolved player |
+| Provider retrieval timestamp | supported through a stable derivation | Successful validated retrieval event | Service UTC clock after validation; snapshot-specific | Stale row retains its original timestamp |
+| Competition | requires a small local adapter | Profile `team.primaryUniqueTournament`, tournament metadata, stored mapping | Select eligible provider unique-tournament ID only | `unsupported_competition`; omit statistics |
+| Season | requires a small local adapter | `unique-tournament/<id>/seasons` plus tournament metadata | Deterministic active/latest-started resolver; persist provider season ID/label | Null until confirmed; never relabel old season |
+| Appearances | requires a small local adapter | Overall `statistics.appearances` | Non-negative integer | Null and omit |
+| Starts | requires a small local adapter | Overall `statistics.matchesStarted` | Non-negative integer; cannot exceed appearances when both present | Null and omit |
+| Minutes played | requires a small local adapter | Overall `statistics.minutesPlayed` | Non-negative integer | Null and omit |
+| Minutes per game | supported through a stable derivation | `minutesPlayed / appearances` | One-decimal internal value; compact display; provenance lists inputs | Null when inputs absent or appearances is zero |
+| Goals | requires a small local adapter | Overall `statistics.goals` | Non-negative integer | Null and omit |
+| Expected goals, xG | requires a small local adapter | Overall `statistics.expectedGoals` | Non-negative decimal; never estimate | Null and omit; V-League absence is valid |
+| Assists | requires a small local adapter | Overall `statistics.assists` | Non-negative integer | Null and omit |
+| Expected assists | requires a small local adapter | Overall `statistics.expectedAssists` | Non-negative decimal; never estimate | Null and omit; V-League absence is valid |
+| Average rating | requires a small local adapter | Overall `statistics.rating` | Validate 0–10; retain provider precision, display two decimals | Null and omit |
 
-“Available” above means observed from the targeted endpoint, not promised by the high-level public Sofascore API.
+Classification totals: 20 local-adapter fields, 4 stable derivations, 0 directly supported, 0 indirectly available through a private/internal parser, 0 unsupported, and 0 unverifiable.
+
+### Cache and failure behavior
+
+- Default raw cache: `~/soccerdata/data/Sofascore`, controlled by `SOCCERDATA_DIR`.
+- `max_age` accepts days, a `timedelta`, or `None`; `None` leaves an existing file unexpired.
+- `no_cache=True` bypasses a cached response but still overwrites/stores the new response.
+- `no_store=True` prevents storage.
+- Writes use direct file writes with no verified atomic rename or lock.
+- Sofascore uses `wrapper-tls-requests`; `self._session.get(url)` receives no explicit timeout.
+- All exceptions are retried up to five times, with a session recreation after failure.
+- There is no provider-specific `Retry-After`, exponential backoff, or terminal status preservation.
+- Exhaustion becomes generic `ConnectionError("Could not download ...")`.
+- Successful response bytes are cached before JSON/schema parsing. A malformed 2xx body can poison the cache until bypassed or deleted.
+
+Fixture probes confirmed cold/write, warm/read, bypass/overwrite, expiry, no-store, five 429-like attempts, five timeout-like attempts, malformed-cache reuse, and recovery by one `no_cache=True` refresh.
+
+The transitive `wrapper-tls-requests==1.2.5` wheel downloads a native TLS library at runtime when missing and does not verify a checksum. For Linux amd64, the verified build input is:
+
+```text
+asset: tls-client-xgo-1.13.1-linux-amd64.so
+sha256: 3f9bf4a741002b1d57043571d69e6ebe8f1df416aa1ca9ca9766dba36e4d4941
+```
+
+The image must bake, verify, and load it from `TLS_LIBRARY_PATH` before runtime.
 
 ## 4. Proposed architecture
 
-### Decision
+### Decision and boundaries
 
-Add a persistent internal service named `sofascore-enrichment` under `deploy/n8n/sofascore/`. It follows the existing twscrape service boundary but does not copy twscrape-specific logic.
+Create a persistent private service named `sofascore-enrichment` under `deploy/n8n/sofascore/`.
 
 ```text
-                             private transfers_net
+                                private transfers_net
 
-  X/Qwen/merge
-       |
-       v
-  n8n persists transfer report + material revision
-       |
-       v
-  PostgreSQL enrichment lookup
-       |\
-       | \ fresh profile/stats -----------------------------+
-       |                                                     |
-       +-- missing/stale distinct players                    |
-                   |                                         |
-                   v                                         |
-       POST /v1/enrich (bounded batch)                        |
-                   |                                         |
-                   v                                         |
-       sofascore-enrichment service                           |
-         |  supervisor: validation/deadline/health            |
-         |  replaceable worker: soccerdata.Sofascore          |
-         |  persistent raw HTTP cache volume                  |
-         v                                                    |
-       targeted Sofascore JSON endpoints                      |
-                   |                                         |
-                   v                                         |
-       normalized per-player success/error result             |
-                   |                                         |
-                   v                                         |
-       PostgreSQL conflict-safe upsert + stale fallback -------+
-                   |
-                   v
-       existing digest candidate query and Discord delivery
+X collection -> Qwen -> merge -> transfer report/revision persistence
+                                      |
+                                      v
+                            Set preferred report source
+                                      |
+                                      v
+PostgreSQL context/mappings/snapshots -> n8n per-run dedupe
+                                      |
+                     fresh snapshots + no refresh? ----+
+                                      |                 |
+                                      v                 |
+                         POST /v1/enrich                |
+                                      |                 |
+                 +--------------------+-----------------+
+                 | sofascore-enrichment service        |
+                 |  aiohttp parent                      |
+                 |    -> bounded queue/deadlines        |
+                 |    -> one replaceable child          |
+                 |       -> soccerdata.Sofascore.get()  |
+                 |       -> persistent raw cache volume |
+                 |    -> validate/normalize/provenance  |
+                 +--------------------+-----------------+
+                                      |
+                                      v
+                       n8n transactional DB upsert
+                                      |
+                                      v
+              current_player_enrichment left join / stale policy
+                                      |
+                                      v
+      existing candidates -> bounded Discord -> reserve -> send -> finalize
 ```
 
-### Why this boundary
+Service responsibilities:
 
-- It matches the proven private-service pattern without adding soccerdata to the JavaScript task runner.
-- The Python process and dependency tree are isolated from n8n.
-- A persistent raw cache survives container restarts and is shared across six-hour workflow runs.
-- The HTTP contract makes fixture-backed testing and schema-change handling explicit.
-- n8n remains the only component that needs PostgreSQL credentials and owns durable identity/snapshot state.
-- A hung library request can be terminated by replacing the worker process without killing n8n.
+- own Python, soccerdata, TLS native asset, and the persistent raw cache;
+- call only `soccerdata.Sofascore.get()` for football-data acquisition;
+- perform bounded identity, competition, season, and schema normalization using caller-provided mappings/overrides;
+- serialize provider/cache access through one child process;
+- enforce rate, deadline, circuit, quarantine, and one-bypass behavior;
+- return normalized, upsert-ready results and typed per-item failures;
+- expose internal liveness/readiness and structured counters.
 
-Rejected alternatives:
+n8n/PostgreSQL responsibilities:
 
-- **Scheduled cache warmer:** it cannot know a newly mentioned player before that digest and adds another schedule/recovery surface. A later optional warm job may call the same service for already-mapped active players.
-- **n8n task-runner dependency:** it couples a large Python dependency tree and cache lifecycle to the JavaScript runner and weakens timeout isolation.
-- **Direct n8n HTTP calls:** they would bypass soccerdata, duplicate caching/normalization, and violate the provider boundary.
-- **Service with PostgreSQL access:** it adds credentials and transaction ownership to the service without a requirement. n8n can batch all reads/writes.
-- **Paid football API or automatic fallback provider:** both are outside the required soccerdata/Sofascore-only boundary.
+- load report contexts, confirmed IDs, aliases, manual overrides, mappings, and snapshot freshness;
+- deduplicate a run and supply stable request/item keys;
+- transactionally canonicalize players and persist mappings, snapshots, and attempts;
+- decide stale eligibility and presentation;
+- preserve transfer revisions, reservation, frozen payload, recovery, and Discord delivery.
 
-### Request and cache budget
+The service receives no database credential and claims no durable response idempotency. PostgreSQL constraints/upserts are the durable boundary.
 
-- PostgreSQL profile TTL: 7 days.
-- PostgreSQL current-season statistics TTL: 12 hours, so alternating six-hour runs normally reuse data.
-- Competition/season mapping TTL: 7 days during a season and mandatory refresh at a detected season boundary.
-- Stale profile fallback: up to 30 days.
-- Stale current-season-stat fallback: up to 7 days and visibly marked in stored metadata, not Discord text unless operationally useful.
-- Raw soccerdata cache uses matching endpoint-specific ages on a persistent volume.
-- Fresh DB snapshot: 0 provider downloads.
-- Known player and current competition-season, expired data: at most 2 downloads.
-- Cold unambiguous player: 4 downloads.
-- Cold ambiguous player: at most 8 downloads, with no statistics request until one identity is safe.
+### Cache and failure boundaries
 
-Defaults should be conservative:
+Three cache layers are intentional:
 
-- one active provider worker;
-- at least 1 second between endpoint calls;
-- maximum batch of 25 distinct players;
-- 45-second provider-work budget and 60-second n8n HTTP timeout;
-- no outer same-run retry, because soccerdata already attempts failed downloads;
-- a circuit breaker opens after a configurable small run of provider failures and returns stale/error results until a short cooldown expires.
+1. **Raw filesystem cache** owned by one service child, persisted in a named volume.
+2. **Normalized PostgreSQL snapshots/mappings** providing restart-safe cross-run reuse and last-good data.
+3. **Per-run n8n dedupe** preventing duplicate lookups for the same provider player or unresolved name+club context.
 
-The HTTP supervisor must treat its deadline as authoritative. It should terminate and recreate the single provider worker if the inherited soccerdata transport does not return before the deadline.
+Initial freshness policy:
+
+| Data | Fresh | Stale fallback |
+| --- | ---: | ---: |
+| Player profile | 24 hours | up to 72 hours after provider failure |
+| Selected-season statistics | 12 hours | up to 72 hours after provider failure |
+| Team/competition/season mapping | 24 hours | resolver-specific; boundary refresh overrides TTL |
+| Currently unattached last-confirmed data | no fresh stats request | up to 7 days, explicitly labeled |
+
+A confirmed new season with no statistics must not display a prior season as current. Raw validated payload JSON is retained for 30 days; normalized snapshots are retained 24 months with latest-row exceptions.
+
+Provider execution rules:
+
+- one provider call at a time;
+- minimum 1.0 second between calls plus up to 250 ms jitter;
+- 15-second parent deadline per `Sofascore.get()` call;
+- terminate and replace the child after a hard deadline;
+- 75-second total batch budget and maximum 25 distinct items;
+- return unfinished work as `deferred`;
+- no n8n or service outer retry after soccerdata's terminal five attempts;
+- open a 10-minute circuit after repeated terminal provider failures;
+- quarantine malformed cached JSON and perform exactly one bypass refresh;
+- never promote malformed/invalid data over last-good normalized data.
+
+### Alternatives rejected
+
+| Candidate | Decision | Reason |
+| --- | --- | --- |
+| Persistent private Python service | Selected | Best cache reuse, timeout isolation, testability, observability, and fit with existing private-service pattern |
+| Scheduled cache warmer as primary path | Rejected | Cannot anticipate newly mentioned players and adds a second schedule/recovery system; optional future caller only |
+| soccerdata in n8n task runner | Rejected | Couples native/heavy dependencies, cache corruption, and hangs to unrelated runner execution |
+| Per-run batch container/job | Rejected | Repeated startup/native cost and harder job/result/restart orchestration |
+| Direct n8n Sofascore HTTP nodes | Rejected | Bypasses soccerdata and scatters undocumented parsing/cache logic |
+| Browser/rendered HTML, another package/provider, paid fallback | Prohibited | Violates explicit dependency and acquisition boundaries |
 
 ## 5. Identity, league, and season resolution
 
 ### Player identity algorithm
 
-Resolution order:
+Use provider identity `(provider='sofascore', entity='player', provider_player_id)` and the stable identifier `sofascore:player:<id>`. Display names never form a provider identity.
 
-1. Use a confirmed manual or prior `(provider, player)` mapping.
-2. Search the report's original player name.
-3. Keep football player candidates only. Reject other sports and clearly women's, youth, reserve, or non-player results.
-4. Fetch at most five candidate profiles.
-5. Compare normalized names and current-club evidence. Nationality, position, and a report identity hint may corroborate but may not replace club evidence.
-6. Persist a mapping only when the acceptance threshold and runner-up margin pass. Otherwise return `ambiguous` or `unresolved`.
+Resolution precedence:
 
-Normalization:
+1. active manual identity override;
+2. confirmed persisted provider player ID for this report context;
+3. deterministic provider search and bounded profile verification;
+4. otherwise `ambiguous` or `unresolved` with no mapping.
 
-- apply Unicode NFKD and casefolding;
-- remove combining accents for comparison while preserving display spelling;
-- normalize punctuation and repeated whitespace;
-- store original provider/report aliases;
-- treat a transliteration as an alias only after manual confirmation or after exact club-backed provider resolution;
-- never use edit-distance fuzzy matching as an automatic acceptance rule.
+Maintain three name representations:
 
-Scoring:
+- display spelling, unchanged for output/audit;
+- Unicode exact key: NFKC, trim/collapse whitespace, casefold, normalize punctuation/separators, preserve scripts and diacritics;
+- accent-folded key: NFKD from the exact key, remove combining marks, retain non-Latin letters.
 
-| Evidence | Score |
-| --- | ---: |
-| Existing confirmed provider ID or manual override | 1.00 |
-| Exact normalized canonical name or confirmed alias | 0.55 |
-| Exact normalized current club or confirmed club alias | 0.35 |
-| Corroborated nationality, position, or explicit report identity hint | 0.10 |
+Do not replace the existing ASCII-oriented `workflow/lib.mjs::normalizeText()` used for transfer dedupe. Enrichment gets separate Unicode-safe logic, so transfer revision identity does not change.
 
-Automatic acceptance requires:
+Transliteration rules:
 
-- score `>= 0.90`;
-- current-club evidence;
-- a margin `>= 0.15` above the next candidate.
+- never auto-transliterate arbitrary scripts;
+- accept only explicit provider, previously verified report, or manual transliteration aliases;
+- store aliases contextually and non-uniquely;
+- return unresolved rather than inventing a transliteration.
 
-Anything else is non-destructive:
+Candidate generation:
 
-- exact name without club: `unresolved`;
-- more than one candidate above the threshold or an insufficient margin: `ambiguous`;
-- no candidate: `unresolved`;
-- a changed provider club conflicting with a locked manual mapping: keep the mapping, record conflict evidence, and refresh the manual queue.
+1. Search the original report name once.
+2. Permit one second search only for an explicit stored alias.
+3. Keep football-player entities only.
+4. Require Unicode-exact, accent-folded, or explicit-alias name evidence.
+5. Use provider search rank only to order checks; it contributes zero confidence.
+6. Fetch at most five candidate profiles.
+7. Stop without statistics unless one candidate passes all safety rules.
 
-Manual overrides use the database mapping tables, not tracked config containing personal data or a new admin UI. Operations documentation should provide reviewed SQL to insert/update a locked player, club, or competition mapping with an operator note and timestamp. Locked mappings are auditable and are never replaced by an automatic result.
+Hard exclusions include non-football/non-player entities, known women/youth/reserve entities, active negative overrides, trusted DOB conflict, invalid provider ID, and invalid profile envelope. Nationality mismatch is not a hard exclusion because dual nationality/provider representation can differ.
 
-### League resolution algorithm
+Deterministic score:
 
-For the resolved current club:
+| Evidence | Points | Rule |
+| --- | ---: | --- |
+| Unicode-exact or accent-folded name | 50 | Required unless an explicit alias supplies name evidence |
+| Explicit active name/transliteration alias | 45 | Alternative name evidence, not added to exact name |
+| Provider current team matches mapped report current club | 30 | Club aliases must resolve to the same provider team ID |
+| Provider team matches report destination | 30 | Only for `official_confirmed` or `loan`; rumor destinations do not qualify |
+| Trusted DOB exact match | 30 | Existing internal/manual evidence only |
+| Trusted nationality match | 10 | Supporting only |
+| Trusted age match without DOB | 10 | Supporting only; never double-count DOB |
 
-1. Prefer profile `primaryUniqueTournament`; do not select `team.tournament`.
-2. Resolve its provider tournament ID through a stored provider competition mapping.
-3. Require the mapping classification to be `domestic_league`, `senior`, and `men`.
-4. Require club/team country/category consistency when provider metadata supplies it.
-5. Reject stored or provider classifications for cups, continental competitions, national teams, women's competitions, youth/U-age competitions, and reserve/B/II teams.
-6. If provider metadata is insufficient, store a candidate mapping as `pending` and return `unsupported_competition`. Do not guess from a similar name.
+Club evidence is capped at 30. Position, `player_identity_hint`, fuzzy similarity, provider search score, and rumor destination contribute zero automatic points.
 
-The top five leagues may be seeded as confirmed provider mappings, but the algorithm is not a five-name allowlist. Any league can be accepted when its provider ID has the same validated, stored classification. The Nguyễn Quang Hải spike proves the need for provider-ID mappings and the `primaryUniqueTournament` rule.
+Automatic resolution requires all of:
 
-Club aliases are provider-neutral and country-scoped. An alias maps report text such as abbreviations or transliterations to one club; conflicting aliases remain pending for manual review.
+- score at least 80;
+- exact/folded/explicit-alias name evidence;
+- one independent discriminator: exact mapped club or exact DOB;
+- at least a 15-point lead over every other eligible candidate.
 
-### Active season algorithm
+A tie or insufficient lead is `ambiguous`. A low score is `unresolved`. John Smith name-only candidates remain unmapped.
 
-1. Load a confirmed, non-expired provider club/competition-season mapping when available.
-2. Otherwise fetch the selected tournament's seasons.
-3. Prefer the unique season whose provider start/end timestamps contain the retrieval time.
-4. If dates are absent, use a unique provider “current” marker when present.
-5. If neither is decisive, use the unique latest season that has started only when its ordering and label agree; otherwise return `unsupported_competition`.
-6. Persist provider season ID, label, dates, retrieval time, and resolution method.
+Manual overrides support contextual/global resolve, per-candidate reject, and reject-all decisions; effective/revoked intervals; operator/reason/evidence; and negative blocks. A manual provider ID is still profile-validated. Overrides outrank automation and are never silently rewritten.
 
-Club-to-league mappings are season-scoped. Promotion or relegation is detected by refreshing the player profile and mapping at the season boundary; an old season mapping never overrides a new `primaryUniqueTournament`. A manual mapping can resolve incomplete provider metadata.
+After safe resolution, persist score, margin, rule version, evidence, context, and retrieval time. Reuse the provider ID across reports, but retain a per-transfer-report resolution row. Current-club changes do not invalidate a stable player ID. DOB conflict, missing ID, or a manual block moves it to review.
 
-### Mid-season transfers
+### Canonical player handling
 
-Statistics should mean:
+Because the current placeholder player key is name-only, canonicalization must be one transaction:
 
-> all player appearances across clubs in the selected current club's primary domestic league and active season.
+1. lock the transfer report;
+2. resolve/reuse `(sofascore, provider_player_id)`;
+3. create/reuse a canonical `players` row with `identity_key='sofascore-player-<id>'`;
+4. create/reuse `player_provider_ids`;
+5. upsert `transfer_report_player_resolutions`;
+6. update only that report's `player_id` to the canonical row.
 
-Consequences:
+`mergeReportSql()` must preserve an existing report's canonical `player_id` rather than overwrite it with a later name-only placeholder. This changes linkage only, not merge fields or revision hashes. Pre-existing placeholder rows remain; do not globally merge or delete them.
 
-- a same-league transfer shows combined league performance across old and current clubs because the targeted overall endpoint is player + tournament + season;
-- a cross-league transfer shows only the new current domestic league, excluding the old league;
-- cups, continental matches, and national-team statistics are always excluded.
+### Current-club and league resolution
 
-This is more useful for transfer reporting than “current club only”: it preserves the player's full performance in the league the reader is evaluating and matches the low-cost overall endpoint. The tradeoff is that a same-league total is not a pure current-club split. The API and Discord label must say `scope: selected-league-all-clubs`.
+Provider profile `player.team.id` is current-club truth for enrichment. Report origin/destination clubs are matching evidence only. Rumored destinations never change club or league selection.
+
+For official/loan reports, either origin or destination may corroborate a lagging profile. If neither matches the provider team, record `club_conflict` and withhold fresh statistics until a later profile, trusted mapping, or manual override resolves it. If the provider has no team, treat the player as unattached and make no fresh league/statistics call.
+
+Stable provider keys:
+
+- player: `player.id`;
+- current club: `team.id`;
+- competition: `uniqueTournament.id`;
+- season: `season.id`.
+
+Live `tournament.id` and `team.tournament.uniqueTournament` are diagnostic provenance only. The Nguyễn Quang Hải probe proved they can conflict with the primary domestic league.
+
+Competition precedence:
+
+1. active effective-dated manual team/competition override;
+2. fresh effective persisted team-to-competition mapping that still agrees with profile data;
+3. validated `team.primaryUniqueTournament` plus unique-tournament metadata;
+4. otherwise `unsupported_competition`/`ambiguous_competition`, with profile-only enrichment.
+
+Automatic eligibility requires all available structural evidence to establish:
+
+```text
+football + club + men + senior + domestic_league + tier 1 + country/category agreement
+```
+
+A stored cross-border-club override may explain country/category mismatch. Required missing/contradictory metadata produces a pending mapping, never a name guess.
+
+Explicit exclusions: domestic cups, continental/international club competitions, national-team competitions, youth/reserve leagues, women's competitions, friendly competitions, and preseason tournaments.
+
+There is no top-five allowlist. The same identifiers, structural rule, persisted mappings, and manual overrides handle every league. V-League 1 ID `626` is the verified non-top-five reference. Club aliases are scoped by provider team and country/competition context; generic names are never globally unique.
+
+Promotion/relegation and mapping refresh:
+
+- mappings are effective-dated, not timeless;
+- a changed team ID or `primaryUniqueTournament.id` forces re-resolution;
+- the newly verified current primary league replaces the former division;
+- former-division statistics are not relabeled or combined;
+- during transition with no new-league stats, return profile-only;
+- refresh profile mapping at profile expiry or club conflict;
+- refresh competition/season mappings every 24 hours and every six-hour run in the configured 45-day boundary windows.
+
+### Season resolution
+
+Reporting season definition:
+
+1. use the provider season that has started and is active when deterministically identified;
+2. during an offseason, use the most recent season that has started/completed and label it accurately;
+3. never select a future first-listed season merely by array order.
+
+Precedence:
+
+1. active effective-dated manual competition-season override;
+2. fresh verified persisted selection;
+3. fresh seasons list plus unique-tournament metadata;
+4. otherwise `missing_active_season`, profile-only.
+
+Fresh resolver:
+
+1. Fetch the season list once per distinct tournament and share it across the batch.
+2. Validate IDs, labels/years, uniqueness, envelope, and observed ordering.
+3. Fetch/reuse tournament metadata with presented start/end dates.
+4. Match dates to a season label/year only when unambiguous.
+5. Mark and skip leading future seasons.
+6. Use the first remaining season only when newest-first ordering is verified and every skipped item is proved future.
+7. Mark a started/not-ended selection `active`; mark the latest ended selection `latest_completed` when no newer season has started.
+8. Persist IDs, label, dates, state, provider list hash, retrieval time, rule version, and evidence.
+9. Treat reversal, duplicate IDs, unparseable labels, or unexplained leading entries as resolver/schema failure.
+
+Soccerdata's high-level local season ranges are never used. A previous snapshot may be shown only with its original competition/season/time and an explicit stale label. A prior season is never renamed current.
+
+### Player movement rule
+
+Choose option **2: all appearances in the selected domestic league**.
+
+The selected competition is the verified primary domestic league of the player's current provider club at retrieval. The targeted overall endpoint is keyed by player, unique tournament, and season, not team, so it returns the player's aggregate across clubs in that league/season.
+
+| Scenario | Behavior |
+| --- | --- |
+| Same-league transfer | Combined selected-league appearances across old/current clubs |
+| Cross-league transfer | Current club's selected league only; former league omitted |
+| Joins mid-season | Only appearances accumulated in selected current league |
+| Leaves for another league | After provider club changes, new selected league only |
+| Multiple teams in selected league | Combined provider aggregate; no invented split |
+| Returns from same-league loan | Combined league total |
+| Returns from different-league loan | Parent/current club league only; loan league omitted |
+| Currently unattached | No fresh league/stat call; last-confirmed data only within 7 days and labeled stale |
+| Provider profile lags official/loan move | `club_conflict`; withhold fresh stats pending agreement/override |
+| Promotion/relegation | Newly verified current league only; former division omitted |
+
+This rule is useful for transfer reporting, matches verified low-cost endpoint semantics, and does not add requests. Lost data includes per-team splits, former-league performance after a cross-league move, and all excluded competition types. Discord must label it `selected league, all clubs`. Database provenance must record current team, unique tournament, season, scope `selected_domestic_league_all_clubs`, retrieval time, and resolver/schema versions.
 
 ## 6. Database changes
 
-Create one new forward migration:
+### Migration ordering
 
-`database/migrations/002_soccerdata_sofascore_enrichment.sql`
+Create `database/migrations/002_soccerdata_enrichment.sql` and add one explicit `002_soccerdata_enrichment` block to `database/migrate.sql` under the existing advisory lock.
 
-Register it in `database/migrate.sql`. Do not modify `001_initial_schema.sql`.
+Rules:
 
-The migration is transactional and creates the following provider-neutral objects. Every externally supplied text key gets a non-empty check; every JSON payload gets an object check; timestamps use `timestamptz`.
+- never edit `database/migrations/001_initial_schema.sql`;
+- execute 002 in one transaction;
+- write its ledger row only after every statement succeeds;
+- a rerun is a ledger-controlled no-op;
+- deploy 002 before any generated workflow that references its objects;
+- migration creates no guessed/backfilled provider mapping;
+- rollback is application-first and retains additive schema.
 
-### Tables and constraints
+Every provider ID is decimal text with a non-empty/regex check. Every JSONB evidence/payload column is object-checked. All operational timestamps use `timestamptz`. Add/update triggers should reuse the existing repository trigger pattern where available.
 
-1. `football_data_providers`
-   - `id bigint generated always as identity primary key`
-   - `provider_key text not null unique`
-   - `display_name text not null`
-   - `created_at`, `updated_at`
-   - seed exactly one row: `sofascore`
+### Existing-table additive change
 
-2. `player_aliases`
-   - `id`, `player_id references players(id) on delete cascade`
-   - `alias`, `normalized_alias`, `alias_source`
-   - source check: `report`, `provider`, or `manual`
-   - `unique (player_id, normalized_alias)`
-   - index `(normalized_alias)`
+`digest_deliveries`:
 
-3. `player_provider_mappings`
-   - `id`, `player_id`, `provider_id`, `provider_player_id`
-   - `status`: `confirmed_auto` or `confirmed_manual`
-   - nullable confidence constrained to `[0,1]`
-   - `resolution_method`, JSON `match_evidence`, nullable `manual_note`
-   - `manual_locked boolean not null default false`
-   - `first_seen_at`, `last_verified_at`, `created_at`, `updated_at`
-   - `unique (provider_id, player_id)`
-   - `unique (provider_id, provider_player_id)`
-   - ambiguous/rejected candidates stay in attempt evidence rather than claiming an external identity
+- add `request_payload jsonb NOT NULL DEFAULT '{}'::jsonb`;
+- add `CHECK (jsonb_typeof(request_payload) = 'object')`.
 
-4. `football_clubs`
-   - `id`, unique `identity_key`, `display_name`, `normalized_name`
-   - nullable `country_code`
-   - `gender` constrained to `men`, `women`, or `unknown`
-   - `team_level` constrained to `senior`, `reserve`, `youth`, or `unknown`
-   - timestamps
-   - index `(normalized_name, country_code)`
+Reservation must write the exact Discord request on the first reservation. `ON CONFLICT` retry must not replace it. `Reserve digest before delivery` returns the stored payload, and `Build Discord delivery request` sends that returned payload. This makes newer enrichment unable to mutate an already-reserved message. Existing `sending -> unknown` behavior remains unchanged.
 
-5. `club_aliases`
-   - `id`, `club_id`, `alias`, `normalized_alias`, nullable `country_code`, `alias_source`
-   - `unique (club_id, normalized_alias, country_code)`
-   - lookup index `(normalized_alias, country_code)`
+### New tables
 
-6. `provider_clubs`
-   - `id`, `provider_id`, nullable `club_id`, `provider_club_id`, provider display/normalized name
-   - nullable country/gender/team-level evidence
-   - `mapping_status`: `confirmed_auto`, `confirmed_manual`, `pending`, or `rejected`
-   - `mapping_source`, `manual_locked`, JSON `raw_payload`
-   - first/last-seen and update timestamps
-   - `unique (provider_id, provider_club_id)`
-   - partial unique index `(provider_id, club_id) where club_id is not null and mapping_status in ('confirmed_auto', 'confirmed_manual')`
+#### `player_provider_ids`
 
-7. `football_competitions`
-   - `id`, unique `identity_key`, `display_name`, nullable `country_code`
-   - `competition_type`: `domestic_league`, `domestic_cup`, `continental`, `international`, or `other`
-   - `gender`: `men`, `women`, or `unknown`
-   - `age_level`: `senior`, `youth`, or `unknown`
-   - nullable positive `tier`, active flag, timestamps
-   - index `(country_code, competition_type, gender, age_level)`
+Purpose: one canonical internal player to one Sofascore player.
 
-8. `provider_competitions`
-   - `id`, `provider_id`, nullable `competition_id`, `provider_competition_id`
-   - provider display name, `mapping_status`, `mapping_source`, `manual_locked`
-   - JSON `raw_payload`, first/last-seen and update timestamps
-   - `unique (provider_id, provider_competition_id)`
-   - partial unique index `(provider_id, competition_id) where competition_id is not null and mapping_status in ('confirmed_auto', 'confirmed_manual')`
+Columns/interfaces:
 
-9. `competition_seasons`
-   - `id`, `competition_id`, `season_key`, `display_label`
-   - nullable `starts_on`, `ends_on` with end not before start
-   - `unique (competition_id, season_key)`
-   - index `(competition_id, starts_on desc)`
+- identity PK;
+- `player_id bigint NOT NULL REFERENCES players(id) ON DELETE RESTRICT`;
+- `provider text NOT NULL CHECK (provider = 'sofascore')`;
+- `provider_player_id text NOT NULL CHECK (provider_player_id ~ '^[0-9]+$')`;
+- `canonical_name text NOT NULL` with non-empty check;
+- `mapping_source text CHECK IN ('automatic','manual')`;
+- nullable `match_score`, `match_margin` with non-negative checks;
+- `resolver_version text NOT NULL`;
+- `evidence jsonb NOT NULL` object check;
+- `verified_at`, `last_seen_at`, `created_at`, `updated_at`.
 
-10. `provider_seasons`
-    - `id`, `provider_id`, `provider_competition_mapping_id references provider_competitions(id)`, nullable `competition_season_id`
-    - `provider_season_id`, provider label, nullable start/end dates
-    - `resolution_method`, `mapping_status`, JSON `raw_payload`
-    - `retrieved_at`, `verified_at`, `expires_at`
-    - `unique (provider_competition_mapping_id, provider_season_id)`
-    - partial index for current lookups on `(provider_competition_mapping_id, expires_at desc)` where confirmed
+Restart safety:
 
-11. `provider_club_seasons`
-    - `id`, `provider_club_mapping_id references provider_clubs(id)`, `provider_season_mapping_id references provider_seasons(id)`
-    - `is_primary_domestic boolean`
-    - `resolution_method`, `mapping_status`, nullable confidence, JSON evidence
-    - `verified_at`, `expires_at`
-    - `unique (provider_club_mapping_id, provider_season_mapping_id)`
-    - index `(provider_club_mapping_id, expires_at desc)`
-    - season scoping prevents a relegated/promoted club's old league from being reused
+- unique `(provider, provider_player_id)`;
+- unique `(player_id, provider)`;
+- canonical-name lookup index;
+- updated-at trigger.
 
-12. `player_provider_profiles`
-    - one current last-good row per `player_provider_mapping_id`
-    - normalized nullable fields: canonical name, provider club row, nationality name/code, date of birth, primary position, height cm, preferred foot, proposed market value, currency
-    - stable source ID, nullable source URL
-    - `retrieved_at`, `fresh_until`, `stale_until`, schema version, 64-character content SHA-256, JSON raw profile
-    - checks for non-negative value, uppercase three-letter currency when present, sensible height range, and ordered freshness timestamps
-    - `unique (player_provider_mapping_id)`
-    - index `(fresh_until)` for batch expiry lookup
+#### `player_aliases`
 
-13. `player_season_snapshots`
-    - `id`, `player_provider_mapping_id`, `provider_competition_mapping_id`, `provider_season_mapping_id`
-    - `scope` fixed initially to `selected_league_all_clubs`
-    - nullable appearances, starts, minutes, goals, xG, assists, xA, rating
-    - nullable low-cost fields: total shots, shots on target, key passes, big chances created
-    - minutes per game is derived on read and is not persisted independently
-    - `retrieved_at`, `fresh_until`, `stale_until`, schema version, 64-character content SHA-256, JSON raw statistics
-    - non-negative stat checks; starts may not exceed appearances when both are present; ordered freshness timestamps
-    - `unique (player_provider_mapping_id, provider_competition_mapping_id, provider_season_mapping_id, content_sha256)`
-    - latest-snapshot index `(player_provider_mapping_id, provider_season_mapping_id, retrieved_at desc)`
-    - replay uses `on conflict ... do update` to advance retrieval/freshness timestamps for identical content instead of duplicating rows
+Purpose: verified provider/report/manual names and explicit transliterations without treating a common alias as globally unique.
 
-14. `player_enrichment_attempts`
-    - `id`, unique non-empty `request_key`
-    - nullable workflow run, required canonical player and provider references
-    - state: `pending`, `running`, `succeeded`, `stale_used`, `unresolved`, `ambiguous`, `unsupported_competition`, `rate_limited`, `provider_unavailable`, `schema_changed`, `deadline_exceeded`, or `failed`
-    - `attempt_count`, started/finished/retry timestamps, nullable error code/message, JSON evidence
-    - `unique (workflow_run_id, player_id, provider_id)` when workflow run is present
-    - indexes `(state, retry_after)` and `(player_id, created_at desc)`
-    - n8n upserts by request key, so a restart updates one logical attempt
+Columns/interfaces:
 
-Foreign keys use `on delete restrict` for provider mappings, seasons, profiles, and snapshots whose provenance must remain valid. Alias rows may cascade with their provider-neutral parent. The migration must test each delete behavior explicitly.
+- `player_id` FK to `players` with `ON DELETE CASCADE`;
+- checked provider;
+- `alias`, `unicode_key`, `folded_key`, all non-empty;
+- `alias_type` in `provider`, `report`, `manual`, `transliteration`;
+- source/evidence, active flag, timestamps.
 
-### Provenance and retention
+Restart safety:
 
-- Keep confirmed player/club/competition mappings indefinitely.
-- Keep the normalized current profile indefinitely while its player exists; retain only the latest raw profile.
-- Keep normalized snapshots for the current and previous domestic seasons.
-- Keep raw statistic payloads for those retained seasons; purge older raw JSON before deleting older snapshot rows.
-- Keep normal successful attempts for 90 days.
-- Keep ambiguous/manual-resolution evidence for 365 days.
-- Run retention from a later n8n maintenance node or documented SQL after rollout; do not add an unrequested database scheduler in migration `002`.
+- unique `(player_id, provider, unicode_key)`;
+- non-unique Unicode/folded lookup indexes;
+- no global unique alias constraint.
 
-### Rollback
+#### `player_identity_overrides`
 
-The operational rollback is application-first:
+Purpose: audited manual resolve/reject decisions for an exact report identity context.
 
-1. disable enrichment output/configuration;
-2. redeploy the previous n8n/service Compose version;
-3. leave migration `002` tables inert.
+Columns/interfaces:
 
-This preserves applied-migration history and makes rollback data-safe. A full DDL reversal is destructive and should only be performed on a disposable test database or by restoring a pre-migration backup after explicit approval. Do not create an automatic production down migration.
+- provider;
+- `reported_name_key`;
+- nullable current/destination club keys;
+- `override_action` in `resolve`, `reject_candidate`, `reject_all`;
+- nullable decimal `provider_player_id`;
+- `effective_at`, nullable `revoked_at`;
+- `reason`, `operator_name`, evidence, timestamps.
+
+Checks/uniqueness:
+
+- resolve/reject-candidate require a provider player ID;
+- reject-all requires null provider player ID;
+- revoked time cannot precede effective time;
+- one active terminal resolve/reject-all per exact context;
+- one active reject-candidate per context/provider ID.
+
+Nullable context columns in these active partial unique indexes must use PostgreSQL `NULLS NOT DISTINCT` or equivalent immutable expressions so two logically identical null-scoped overrides cannot coexist after a restart.
+
+#### `transfer_report_player_resolutions`
+
+Purpose: bind each transfer report's exact context to a validated provider player and prevent common-name conflation.
+
+Columns/interfaces:
+
+- `transfer_report_id` unique FK `ON DELETE CASCADE`;
+- `player_provider_id` FK `ON DELETE RESTRICT`;
+- `resolution_source` automatic/manual;
+- score, margin, resolver version, evidence;
+- verified/created timestamps.
+
+Indexes:
+
+- unique/primary report lookup;
+- provider-player lookup for reuse.
+
+#### `provider_teams`
+
+Purpose: normalized Sofascore team identity and structural metadata.
+
+Columns/interfaces:
+
+- checked provider and decimal provider team ID;
+- canonical name, Unicode/folded keys;
+- nullable country/category;
+- `entity_scope` in `club`, `national`, `unknown`;
+- `gender` in `men`, `women`, `unknown`;
+- `age_group` in `senior`, `youth`, `reserve`, `unknown`;
+- raw metadata hash/schema version, last-seen/timestamps.
+
+Constraints/indexes:
+
+- unique `(provider, provider_team_id)`;
+- Unicode/folded name lookup indexes;
+- updated-at trigger.
+
+#### `team_aliases`
+
+Purpose: contextual club aliases linked to one provider team.
+
+Columns/interfaces:
+
+- team FK;
+- alias plus Unicode/folded keys;
+- nullable country/competition context;
+- source automatic/manual, evidence, active flag, timestamps.
+
+Constraints/indexes:
+
+- unique team/context/Unicode-key combination;
+- non-unique context/name lookup indexes;
+- no global alias uniqueness.
+
+Nullable alias-context columns use `NULLS NOT DISTINCT` or equivalent immutable expressions for restart-safe uniqueness.
+
+#### `provider_competitions`
+
+Purpose: normalized Sofascore unique-tournament identity and structural eligibility.
+
+Columns/interfaces:
+
+- checked provider and decimal unique-tournament ID;
+- name, country/category;
+- `competition_kind` in `domestic_league`, `domestic_cup`, `continental_club`, `international_club`, `national_team`, `friendly`, `preseason`, `unknown`;
+- team scope, gender, age group;
+- nullable positive tier;
+- `eligibility` in `eligible`, `ineligible`, `pending`;
+- classification source automatic/manual;
+- rule version, evidence, manual operator/reason, last-seen/timestamps.
+
+Constraints/indexes:
+
+- unique `(provider, provider_unique_tournament_id)`;
+- eligibility/kind index;
+- country/tier index;
+- only `domestic_league + club + men + senior + tier 1 + eligible` can be auto-selected.
+
+#### `provider_seasons`
+
+Purpose: store provider seasons and one selected reporting season per competition.
+
+Columns/interfaces:
+
+- competition FK `ON DELETE RESTRICT`;
+- decimal provider season ID;
+- label/year, nullable start/end dates;
+- observed provider order;
+- `season_state` in `future`, `active`, `latest_completed`, `historical`, `unknown`;
+- `is_selected boolean`;
+- selection source automatic/manual;
+- provider list hash, resolver version/evidence;
+- selected/superseded/retrieved/fresh-until/created timestamps;
+- manual reason/operator.
+
+Constraints/indexes:
+
+- unique `(provider_competition_id, provider_season_id)`;
+- partial unique `(provider_competition_id) WHERE is_selected`;
+- selected rows must be `active` or `latest_completed`;
+- end cannot precede start;
+- stale-selected lookup index.
+
+#### `team_competition_mappings`
+
+Purpose: effective-dated mapping from current provider team to primary senior men's domestic league.
+
+Columns/interfaces:
+
+- team and competition FKs `ON DELETE RESTRICT`;
+- automatic/manual source, rule version/evidence;
+- `effective_from`, nullable `effective_to`, nullable `superseded_at`;
+- verified/fresh-until/created timestamps;
+- manual reason/operator.
+
+Constraints/indexes:
+
+- one non-superseded mapping per team through a partial unique index;
+- competition and freshness indexes;
+- effective end cannot precede start.
+
+The persistence transaction, not an invalid cross-row check constraint, verifies that an automatic mapping targets an eligible structural competition.
+
+#### `player_profile_snapshots`
+
+Purpose: immutable successful normalized profile snapshots.
+
+Normalized nullable fields:
+
+- canonical name, current provider-team FK, nationality;
+- date of birth, derived age;
+- primary position, height cm, preferred foot;
+- market value and currency.
+
+Provenance:
+
+- player-provider FK `ON DELETE RESTRICT`;
+- stable source identifier;
+- provider retrieval time and `fresh_until`;
+- normalized schema/resolver versions;
+- normalized/raw SHA-256 hashes;
+- raw cache key;
+- nullable validated raw profile object;
+- `derived_fields` object;
+- created timestamp.
+
+Checks/uniqueness:
+
+- non-negative value and age;
+- plausible height range;
+- ISO-like currency when present;
+- SHA-256 format and JSON object shape;
+- unique `(player_provider_id, provider_retrieved_at, content_sha256)`;
+- current lookup `(player_provider_id, provider_retrieved_at DESC)`.
+
+#### `player_season_stat_snapshots`
+
+Purpose: immutable selected-domestic-league snapshots.
+
+Provenance:
+
+- player-provider, current team, selected competition, and selected season FKs `ON DELETE RESTRICT`;
+- `aggregation_scope='selected_domestic_league_all_clubs'`;
+- retrieval/freshness and schema/rule versions;
+- content/raw hashes, raw cache key;
+- nullable validated raw statistics object;
+- `derived_fields` object.
+
+Nullable fields:
+
+- appearances, starts, minutes played, derived minutes per appearance;
+- goals, expected goals, assists, expected assists, average rating;
+- yellow cards, red cards;
+- goalkeeper clean sheets and saves.
+
+Checks/uniqueness:
+
+- counts/expected values non-negative;
+- starts cannot exceed appearances when both exist;
+- rating 0–10 when present;
+- valid hashes/JSON;
+- unique `(player_provider_id, provider_season_id, aggregation_scope, provider_retrieved_at, content_sha256)`;
+- current lookup `(player_provider_id, provider_season_id, provider_retrieved_at DESC)`.
+
+#### `player_enrichment_attempts`
+
+Purpose: restart-safe per-report attempt, ambiguity, failure, and stale-fallback audit. Do not reuse `retry_states`.
+
+Columns/interfaces:
+
+- deterministic unique `request_key`;
+- batch request/item keys;
+- nullable workflow-run and transfer-report FKs `ON DELETE SET NULL`;
+- nullable player/provider mapping FKs `ON DELETE SET NULL`;
+- status in `cache_hit`, `fresh`, `partial`, `unresolved`, `ambiguous`, `deferred`, `provider_failure`, `rate_limited`, `timeout`, `schema_failure`, `unsupported_competition`, `missing_season`, `club_conflict`, `unattached`;
+- retryable flag and nullable next retry;
+- score/margin, provider-call/cache-hit counts;
+- stale-profile/stats flags;
+- request context/evidence JSON objects;
+- sanitized error code/fingerprint/message;
+- started/completed/created timestamps.
+
+Constraints/indexes:
+
+- unique `request_key`;
+- completed time cannot precede start;
+- non-negative counts;
+- partial `(status, next_retry_at)` index for retryable rows;
+- transfer-report/latest index;
+- error-fingerprint index.
+
+One service result may serve several report contexts. n8n expands it into one attempt per report before persistence.
+
+With soccerdata 1.9.1, exhausted HTTP statuses normally collapse to generic `ConnectionError`; record `rate_limited` only when structured rate-limit evidence remains observable. Otherwise record `provider_failure` and do not invent a 429 classification.
+
+### New view and cleanup function
+
+`current_player_enrichment` view:
+
+- starts from `transfer_report_player_resolutions`;
+- selects latest profile and selected-season statistics laterally;
+- exposes snapshot/provider/team/competition/season IDs, normalized values, source identifier, retrieval time, and `fresh_until`;
+- does not hide stale rows or make time-dependent display decisions.
+
+`app_prune_player_enrichment` function:
+
+- returns affected row counts;
+- nulls raw profile/stat JSON after 30 days;
+- deletes ordinary attempts after 90 days;
+- retains the latest unresolved/ambiguous attempt per report until resolved/overridden;
+- retains normalized snapshots for 24 months;
+- never deletes the newest profile per provider player or newest selected-season stats per provider player;
+- retains provider IDs, aliases, overrides, mappings, and resolution audit indefinitely unless explicitly superseded/revoked.
+
+Invoke it initially through a documented operator command. Do not add a new scheduler or make six-hour digest execution depend on retention.
+
+### Provenance and restart safety
+
+Do not add a scalar field-provenance table. Profile fields share one profile response; stats share one overall response. Store snapshot-level provider, endpoint/cache, retrieval, hashes, schema/rule versions, and a `derived_fields` object for age/minutes-per-appearance inputs.
+
+Every persistence batch runs transactionally. Conflict-safe upserts reuse unique provider IDs, exact report resolutions, immutable snapshot keys, selected-season mapping uniqueness, and attempt request keys. No failed/partial provider row replaces a valid last-good snapshot.
+
+### Migration and rollback behavior
+
+Forward:
+
+1. export workflows and record current image/commit digests;
+2. take and checksum a logical pre-002 backup;
+3. apply 002 under the existing migration lock;
+4. repeat and concurrently invoke migration clients in a disposable test to prove lock/idempotency;
+5. run SQL tests and pre-feature query compatibility;
+6. deploy service/workflow with mode `off`.
+
+Operational rollback:
+
+1. set mode `off` and recreate n8n;
+2. restore prior generated workflows/images if needed;
+3. stop the optional service;
+4. retain additive 002 and its ledger row.
+
+Do not create an in-place destructive down migration. Disaster restoration uses the verified pre-002 backup in a new database/volume and reruns 001 safety tests before switching.
 
 ## 7. Service/API contract
 
-### Runtime
+### Runtime and process
 
-- Python `3.12` on `python:3.12-slim`, matching the existing compatible service baseline.
-- Exact `soccerdata==1.9.1` and a fully hash-locked dependency file generated from a human-readable input.
-- Standard-library HTTP server unless implementation evidence shows an existing dependency is materially simpler; do not add FastAPI only for two endpoints.
-- One supervisor process and one replaceable provider worker process.
-- Graceful shutdown: stop accepting requests, allow the current batch up to the configured grace period, then terminate the worker.
+- Python `3.13.14-slim`, matching the repository's pinned base-image pattern; pin the exact base digest during implementation.
+- Direct requirements: exact `soccerdata==1.9.1` and exact `aiohttp`.
+- Compile a universal hash lock with `uv pip compile --python-version 3.13 --universal --generate-hashes`.
+- Install with `pip --require-hashes`; do not use unsupported `--no-deps` packaging.
+- Bake and verify the native TLS asset/checksum and set `TLS_LIBRARY_PATH`.
+- Run as non-root; no browser binary and no public port.
 
-### Endpoints
+Process model:
 
-#### `GET /health`
-
-Liveness only. Returns `200` when the supervisor loop is running. It must not call Sofascore.
-
-```json
-{"status":"ok","service":"sofascore-enrichment"}
+```text
+aiohttp parent
+  -> validate/dedupe batch
+  -> one serialized provider queue
+  -> replaceable child with one Sofascore reader and cache writer
+  -> endpoint adapter validation/normalization
+  -> bounded response
 ```
 
-#### `GET /ready`
+Startup verifies exact package version, native asset/load, writable cache, fixture/schema manifest, and child startup without a live provider call. Shutdown stops intake, marks unfinished items deferred, terminates/joins the child, and flushes logs.
 
-Returns `200` only when the package version is correct, the cache directory is writable, and a provider worker can be started. It must not call Sofascore.
+### `POST /v1/enrich`
+
+Valid batch behavior:
+
+- internal only;
+- maximum 25 distinct items;
+- required `request_id` and per-item `item_key` echoed;
+- service deduplicates identical keys inside one request;
+- HTTP 200 even when all items fail;
+- top-level `complete` or `partial` plus per-item states;
+- HTTP 400 invalid JSON/contract;
+- HTTP 413 over limit/body limit;
+- HTTP 503 only when local prerequisites are unavailable before work starts;
+- no durable cross-restart response idempotency claim.
+
+Request:
 
 ```json
 {
-  "status": "ready",
-  "soccerdata_version": "1.9.1",
-  "cache_writable": true,
-  "worker_ready": true
-}
-```
-
-#### `POST /v1/enrich`
-
-Example request:
-
-```json
-{
-  "request_id": "workflow-run:1842",
-  "deadline_ms": 45000,
+  "request_id": "workflow-run:1042",
+  "deadline_ms": 75000,
   "players": [
     {
-      "canonical_player_id": "42",
-      "name": "Kylian Mbappé",
-      "current_club": "Real Madrid",
-      "identity_hint": {
-        "nationality": "France",
-        "position": "forward"
+      "item_key": "provider:826643",
+      "report_ids": ["381", "392"],
+      "reported_name": "Kylian Mbappé",
+      "identity_hint": null,
+      "current_club_name": "Real Madrid",
+      "destination_club_name": "Liverpool",
+      "classification": "rumor",
+      "move_type": "permanent",
+      "known_provider_player_id": "826643",
+      "aliases": [],
+      "identity_overrides": [],
+      "team_mapping": {
+        "provider_team_id": "2829",
+        "provider_unique_tournament_id": "8"
       },
-      "confirmed_provider_player_id": "826643",
-      "confirmed_competition": {
-        "provider_competition_id": "8",
-        "provider_season_id": "77559"
+      "season_mapping": {
+        "provider_season_id": "77559",
+        "state": "latest_completed"
       }
     }
   ]
 }
 ```
 
-`confirmed_*` values are optional and are sent only from locked or confirmed database mappings.
-
-Example successful partial-capable response:
+Success:
 
 ```json
 {
-  "request_id": "workflow-run:1842",
-  "soccerdata_version": "1.9.1",
-  "retrieved_at": "2026-07-30T00:30:00Z",
-  "results": [
+  "request_id": "workflow-run:1042",
+  "status": "complete",
+  "items": [
     {
-      "canonical_player_id": "42",
-      "status": "resolved",
-      "match": {
+      "item_key": "provider:826643",
+      "status": "fresh",
+      "provider_calls": 2,
+      "identity": {
         "provider": "sofascore",
-        "player_id": "826643",
-        "confidence": 1.0,
-        "evidence": ["confirmed_provider_player_id"]
+        "provider_player_id": "826643",
+        "stable_source_identifier": "sofascore:player:826643",
+        "score": 80,
+        "margin": 80,
+        "resolver_version": "identity-v1"
       },
       "profile": {
         "canonical_name": "Kylian Mbappé",
-        "current_club": {"provider_id": "2829", "name": "Real Madrid"},
-        "nationality": {"code": "FRA", "name": "France"},
-        "date_of_birth": "1998-12-20",
+        "current_club": {"provider_team_id": "2829", "name": "Real Madrid"},
+        "nationality": "France",
         "age": 27,
-        "primary_position": "F",
+        "date_of_birth": "1998-12-20",
+        "primary_position": "Forward",
         "height_cm": 180,
-        "preferred_foot": "right",
+        "preferred_foot": "Right",
         "market_value": 191000000,
         "market_value_currency": "EUR",
-        "source_id": "sofascore:826643",
-        "source_url": "https://www.sofascore.com/football/player/kylian-mbappe/826643"
-      },
-      "competition": {
-        "provider_competition_id": "8",
-        "name": "LaLiga",
-        "provider_season_id": "77559",
-        "season": "2025/26",
-        "scope": "selected_league_all_clubs"
+        "retrieved_at": "2026-07-30T03:00:00Z"
       },
       "statistics": {
+        "competition": "LaLiga",
+        "provider_unique_tournament_id": "8",
+        "season": "2025/26",
+        "provider_season_id": "77559",
+        "scope": "selected_domestic_league_all_clubs",
         "appearances": 31,
         "starts": 29,
         "minutes_played": 2604,
@@ -672,328 +1055,558 @@ Example successful partial-capable response:
         "expected_goals": 23.9453,
         "assists": 5,
         "expected_assists": 6.2019957,
-        "average_rating": 7.5612903225806
+        "average_rating": 7.5612903225806,
+        "retrieved_at": "2026-07-30T03:00:01Z"
       },
       "provenance": {
-        "cache": "miss",
-        "schema_version": 1,
-        "endpoint_kinds": ["player", "statistics"],
-        "content_hashes": {
-          "profile": "<sha256>",
-          "statistics": "<sha256>"
-        },
-        "raw_payloads": {
-          "profile": {"...": "validated provider JSON"},
-          "statistics": {"...": "validated provider JSON"}
-        }
-      }
+        "adapter_schema": "sofascore-player-v1",
+        "profile_cache": "miss",
+        "statistics_cache": "miss",
+        "raw_payloads": {"profile": {}, "statistics": {}}
+      },
+      "warnings": []
     }
-  ]
+  ],
+  "summary": {"requested": 1, "fresh": 1, "failed": 0, "deferred": 0}
 }
 ```
 
-Valid batches return HTTP `200` even when individual statuses are:
+The empty raw objects only show contract placement; real successful responses contain sanitized validated provider subtrees.
 
-- `partial`
-- `unresolved`
-- `ambiguous`
-- `unsupported_competition`
-- `provider_unavailable`
-- `rate_limited`
-- `schema_changed`
-- `deadline_exceeded`
-
-Top-level protocol errors:
-
-- `400`: malformed JSON or invalid contract;
-- `413`: more than 25 players or request body above the fixed size;
-- `503`: supervisor is not ready.
+Partial success:
 
 ```json
 {
-  "request_id": "workflow-run:1842",
-  "error": {
-    "code": "invalid_request",
-    "message": "players must be a non-empty array with at most 25 entries",
-    "retryable": false
-  }
+  "item_key": "provider:12345",
+  "status": "partial",
+  "identity": {
+    "provider": "sofascore",
+    "provider_player_id": "12345",
+    "stable_source_identifier": "sofascore:player:12345"
+  },
+  "profile": {
+    "canonical_name": "Example Player",
+    "current_club": null,
+    "nationality": null,
+    "age": null,
+    "date_of_birth": null,
+    "primary_position": null,
+    "height_cm": null,
+    "preferred_foot": null,
+    "market_value": null,
+    "market_value_currency": null,
+    "retrieved_at": "2026-07-30T03:00:00Z"
+  },
+  "statistics": null,
+  "warnings": [{"code": "missing_active_season", "retryable": true}]
 }
 ```
 
-Do not expose raw upstream response bodies in HTTP error messages. `raw_payloads` contains only the resolved player's validated profile/statistics/competition-season objects, not all search candidates. It is consumed by the persistence node on the private network and is never copied into Discord or logs. Logs are restricted to IDs, endpoint kinds, sizes, and hashes.
+Ambiguous player:
+
+```json
+{
+  "item_key": "name:john-smith|club:unknown",
+  "status": "ambiguous",
+  "identity": null,
+  "profile": null,
+  "statistics": null,
+  "candidates": [
+    {"provider_player_id": "2544168", "canonical_name": "John Smith", "score": 50},
+    {"provider_player_id": "2332241", "canonical_name": "John Smith", "score": 50}
+  ],
+  "error": {"code": "identity_margin_too_small", "retryable": false}
+}
+```
+
+Provider failure:
+
+```json
+{
+  "item_key": "provider:826643",
+  "status": "provider_failure",
+  "identity": {"provider": "sofascore", "provider_player_id": "826643"},
+  "profile": null,
+  "statistics": null,
+  "error": {"code": "provider_connection_failed", "retryable": true}
+}
+```
+
+Unresolved has the same nullable shape with `status: "unresolved"`, no candidates that passed safety rules, and a sanitized non-retryable/retry-after decision. `deferred`, `unsupported_competition`, `missing_season`, `schema_failure`, and `club_conflict` are also per-item states, never top-level HTTP failures for a valid batch.
+
+### `GET /healthz`
+
+Liveness only; it never contacts Sofascore.
+
+```json
+{
+  "status": "ok",
+  "service_version": "1",
+  "soccerdata_version": "1.9.1",
+  "requests_total": 142,
+  "items_total": 318
+}
+```
+
+### `GET /readyz`
+
+Returns 200 only when the exact package version is loaded, native TLS library loads from the verified fixed path, cache is writable, child is alive, and adapter fixture/schema self-checks load. It never contacts Sofascore.
+
+```json
+{
+  "status": "ready",
+  "cache_writable": true,
+  "worker_ready": true,
+  "circuit": "closed",
+  "last_provider_success_at": "2026-07-30T03:00:01Z"
+}
+```
+
+### Timeouts, caching, and idempotency
+
+- 15 seconds per child call, 75 seconds per batch, 85 seconds n8n HTTP timeout.
+- Single cache writer and in-request item dedupe.
+- Raw cache file names are deterministic by endpoint kind and stable provider IDs, never report text.
+- Quarantine a malformed file and perform one bypass refresh; a second failure ends the item.
+- `request_id`/`item_key` are correlation keys, not a durable service ledger.
+- Database unique constraints and upserts provide durable restart safety.
+- Logs contain IDs, endpoint family, counts, sizes, hashes, timing, circuit/cache state, and sanitized errors; never raw payload bodies, report bodies, cookies, or webhook URLs.
 
 ### Configuration
 
-Tracked Compose uses safe defaults; secrets are unnecessary.
-
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SOCCERDATA_DIR` | `/var/lib/soccerdata` | Persistent package data/cache root |
-| `SOFASCORE_SERVICE_PORT` | `8080` | Internal listen port |
-| `SOFASCORE_MIN_REQUEST_INTERVAL_SECONDS` | `1.0` | Provider rate gate |
-| `SOFASCORE_BATCH_LIMIT` | `25` | Bounded input |
-| `SOFASCORE_BATCH_DEADLINE_SECONDS` | `45` | Worker hard deadline |
-| `SOFASCORE_PROFILE_CACHE_HOURS` | `168` | Raw profile cache age |
-| `SOFASCORE_STATS_CACHE_HOURS` | `12` | Raw current stats cache age |
-| `SOFASCORE_MAPPING_CACHE_HOURS` | `168` | Tournament/season cache age |
-| `SOFASCORE_CIRCUIT_FAILURE_THRESHOLD` | `3` | Open circuit after repeated provider failures |
-| `SOFASCORE_CIRCUIT_COOLDOWN_SECONDS` | `300` | Cooldown before a probe |
+| `PORT` | `8080` | Internal listener |
+| `SOCCERDATA_DIR` | `/data/soccerdata` | Persistent raw cache |
+| `SOFASCORE_CALL_TIMEOUT_SECONDS` | `15` | Parent deadline per library call |
+| `SOFASCORE_BATCH_TIMEOUT_SECONDS` | `75` | Total work budget |
+| `SOFASCORE_MIN_INTERVAL_SECONDS` | `1.0` | Responsible serialized pacing |
+| `SOFASCORE_REQUEST_JITTER_SECONDS` | `0.25` | Bounded jitter |
+| `SOFASCORE_CIRCUIT_OPEN_SECONDS` | `600` | Cooldown after repeated terminal failure |
+| `SOFASCORE_PROFILE_MAX_AGE_HOURS` | `24` | Raw/profile refresh policy |
+| `SOFASCORE_STATS_MAX_AGE_HOURS` | `12` | Raw/stat refresh policy |
+| `SOFASCORE_MAPPING_MAX_AGE_HOURS` | `24` | Tournament/season policy |
 | `LOG_LEVEL` | `INFO` | Structured log level |
 
-The n8n-side URL is `SOFASCORE_ENRICHMENT_URL=http://sofascore-enrichment:8080`. It is not a secret and must not include a public hostname.
-
-### Schema-change detection
-
-Each endpoint normalizer has:
-
-- a fixture-backed expected-shape contract;
-- required structural keys for entity identity;
-- nullable value keys for optional fields;
-- explicit numeric/type/range validation;
-- a local schema version and canonical content hash.
-
-Unknown extra fields are retained in raw JSON and do not fail normalization. A missing or invalid identity/structural key produces `schema_changed`, retains the last-good database row, opens/advances the circuit, and emits a structured log. Optional field loss produces `partial`, not failure.
+Validate every value at startup. No secret is required.
 
 ## 8. Workflow integration
 
-Modify the generator only; regenerate `workflow/football-transfer-monitor.json` from it.
+### Exact insertion and modes
 
-Insert this fail-open sequence after `Set preferred report source` and before the existing digest-candidate path:
+Modify generator source only and regenerate JSON. Replace:
 
-1. **Prepare distinct enrichment candidates** — collect persisted canonical player IDs, report names, current-club evidence, and identity hints; deduplicate by player ID.
-2. **Load cached enrichment state** — one PostgreSQL query loads confirmed/manual mappings, fresh snapshots, permitted stale snapshots, and only candidates needing refresh. It always emits one aggregate item, even for an empty candidate set.
-3. **Build Sofascore enrichment request** — omit fresh candidates and cap the refresh list at 25. Preserve a passthrough digest context.
-4. **Enrich players via Sofascore** — call `POST /v1/enrich`, no node retry, 60-second timeout, and regular error output/`continueOnFail`.
-5. **Normalize enrichment outcome** — combine service successes with fresh cache and permitted stale fallback. Convert service/node errors into per-player attempt states. Always emit one item.
-6. **Persist enrichment results** — bulk JSONB PostgreSQL upsert for mappings/profiles/snapshots/attempts. Configure the node to continue when the enrichment-only write fails.
-7. **Continue after enrichment** — unconditional code node that restores the digest context regardless of call or persistence outcome.
-8. **Prepare digest candidates** — retain the current selection/revision rules and left join the latest usable profile/statistics for presentation only.
+```text
+Set preferred report source
+  -> Prepare digest candidates query
+```
 
-The exact generator areas are:
+with:
 
-- node construction near `workflow/build-workflows.mjs:677-706`;
-- connection construction near `workflow/build-workflows.mjs:754-760`;
-- candidate SQL near `workflow/build-workflows.mjs:219-271`;
-- shared story construction in `workflow/lib.mjs:418-492`.
+```text
+Set preferred report source
+  -> Prepare enrichment batch query
+  -> Enrichment enabled?
 
-Required semantics:
+  off ----------------------------------------------+
+                                                      v
+  shadow/active -> Load player enrichment contexts  Prepare digest candidates query
+                      |
+                      v
+                 Build soccerdata enrichment request
+                      |
+                      v
+                 Refresh required?
+                    |          |
+                   no         yes
+                    |          v
+                    |     Enrich players via soccerdata
+                    |          |
+                    |     Normalize soccerdata enrichment result
+                    |          |
+                    |     Persist soccerdata enrichment result
+                    |          |
+                    +----------+----> Prepare digest candidates query
+```
 
-- per-run deduplication is by canonical `player_id`;
-- cross-run deduplication uses confirmed provider mappings, TTL checks, snapshot hashes, and unique request keys;
-- an empty batch skips the HTTP call;
-- service errors, malformed responses, and database enrichment errors all continue to the existing digest query;
-- the digest candidate query uses `left join lateral` or equivalent and never filters out a transfer because enrichment is absent;
-- transfer report snapshot generation and `content_sha256` remain byte-for-byte independent of enrichment;
-- refreshed statistics alone create no `transfer_report_revision`, digest candidate, or delivery;
-- a later material transfer revision may display the freshest available player snapshot;
-- existing report merge, preferred-source, revision, reservation, and delivery idempotency remain unchanged.
+Environment:
+
+```text
+PLAYER_ENRICHMENT_MODE=off|shadow|active
+SOFASCORE_ENRICHMENT_BASE_URL=http://sofascore-enrichment:8080
+```
+
+- `off`: no context/service work; transfer-only behavior.
+- `shadow`: resolve/fetch/persist but never render.
+- `active`: persist and render eligible fresh/stale snapshots.
+- invalid mode or branch error degrades to transfer-only, not workflow abort.
+
+### Exact files, functions, and nodes
+
+`workflow/build-workflows.mjs`:
+
+- add SQL builders for context load and transactional persistence beside existing `candidatesSql()`/`mergeReportSql()` helpers;
+- update `mergeReportSql()` only to preserve an already-canonical `transfer_reports.player_id`;
+- extend `candidatesSql()` with a left join to `current_player_enrichment`, snapshot IDs/timestamps, mode, and explicit stale/season guards;
+- update `reserveDigestSql()` to insert and return frozen `request_payload` without replacing it on conflict;
+- update `digestCode()` to call the same tested helper logic as `workflow/lib.mjs` or maintain generated parity;
+- update `mainWorkflow()` node array and connection map at the existing `Set preferred report source` boundary;
+- never change Qwen prompt/schema construction, collection, source reliability, or material revision inputs.
+
+`workflow/lib.mjs`:
+
+- add Unicode-safe enrichment key/normalization helpers separate from `normalizeText()`;
+- add request grouping/response normalization helpers that are testable outside n8n;
+- extend `storyText()`/`buildDiscordDigest()` with the two-pass optional enrichment budget;
+- preserve transfer-only output when enrichment is absent/failed;
+- preserve existing retry/recovery helpers.
+
+Generated files:
+
+- run `node workflow/build-workflows.mjs` to regenerate both workflow JSON files;
+- never patch either JSON manually;
+- `--check` must be clean.
+
+### Context, deduplication, and acquisition
+
+`Prepare enrichment batch query` carries the current workflow-run ID/logical run key and transfer-report IDs produced after preferred-source persistence.
+
+`Load player enrichment contexts` returns one row per report with:
+
+- report/current placeholder player IDs;
+- reported name/identity hint/current/destination club/classification/move type;
+- current report resolution/provider ID;
+- aliases and active identity overrides;
+- provider team/competition/season mappings and evidence;
+- latest profile/stat IDs and freshness;
+- latest unresolved/ambiguous/retryable attempt.
+
+Do not deduplicate first by `players.id`.
+
+`Build soccerdata enrichment request` groups:
+
+1. known provider player ID;
+2. otherwise Unicode reported-name key plus verified current-club context;
+3. otherwise an official/loan destination context only under the identity rule.
+
+It carries all associated report IDs, omits fresh contexts, applies cooldowns, shares competition/season context, and caps at 25. Empty/no-refresh input bypasses HTTP.
+
+Across runs:
+
+- fresh snapshots: zero provider call;
+- known provider ID: no search;
+- fresh mapping: no tournament/season refresh;
+- recent unresolved cooldown: no repeated search;
+- ambiguity without new evidence/override: no unsafe repeat mapping.
+
+### HTTP, persistence, and failure paths
+
+`Enrich players via soccerdata`:
+
+- POST JSON to internal base URL;
+- `continueOnFail: true`/regular error output;
+- full response with never-error behavior;
+- 85-second timeout;
+- no `retryOnFail`.
+
+`Normalize soccerdata enrichment result` validates the service contract. A timeout, non-JSON response, node error, or invalid item becomes one sanitized failure result per requested item and rejoins the digest path.
+
+`Persist soccerdata enrichment result` runs one transaction per expanded logical batch:
+
+- upsert attempts by request key;
+- upsert validated teams/competitions/seasons/mappings;
+- canonicalize resolved report/player identity;
+- insert immutable profile/stat snapshots conflict-safely;
+- record stale decisions;
+- never change revision snapshot/hash;
+- return one pass-through aggregate item.
+
+An enrichment-only SQL error rolls back this transaction and still reaches `Prepare digest candidates query`. A global PostgreSQL outage remains a core failure because safe reservation depends on the database; do not bypass it.
+
+`candidatesSql()` retains all current pending/fresh revision and eligibility filters. It joins enrichment by transfer-report resolution, attaches only in `active`, uses fresh rows first, permits explicit stale windows, and never substitutes an old season after a confirmed season transition.
+
+Statistics-only refresh:
+
+- creates no transfer revision;
+- does not re-eligible a delivered revision;
+- does not resend a delivered story;
+- may appear only when a material transfer revision is still undelivered.
+
+### Reservation/recovery preservation
+
+- reservation stores exact request payload;
+- conflict/retry returns stored payload;
+- sending uses stored payload, not rebuilt data;
+- one-delivery-item-per-revision remains enforced;
+- startup keeps `sending -> unknown`;
+- `unknown` is never automatically resent;
+- enrichment availability is never a reservation condition.
 
 ## 9. Discord presentation
 
-Illustrative compact field:
+### Compact example
 
 ```text
-Kylian Mbappé — Rumour
-Real Madrid → Liverpool • €150m reported
-Profile: France • 27 • FW • 180 cm • right • €191m proposed
-LaLiga 2025/26: 31 apps (29 starts) • 2,604 min (84/game) • 25 G • 5 A • 23.95 xG • 6.20 xA • 7.56
-Source: @journalist
+1. Kylian Mbappé
+Real Madrid → Liverpool
+Classification: rumor
+Fee: 150,000,000 EUR
+Confidence: 88%
+Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m
+LaLiga 2025/26 · selected league, all clubs: 31 app · 2,604 min · 25 G · 5 A
+Advanced: 29 starts · 84 min/app · 23.95 xG · 6.20 xA · 7.56 rating
+[Journalist](https://x.com/example/status/123)
 ```
 
-The transfer line above is illustrative; the profile/statistics values are from the feasibility spike.
+The transfer destination/fee are illustrative. The Mbappé profile/stat values are verified spike values.
 
-Rules:
+### Formatting rules
 
-- preserve the transfer classification, club movement, fee/status, and journalist link as primary content;
-- omit every null field rather than showing `unknown`, `0`, or a placeholder;
-- label the provider value as `proposed`;
-- format a currency symbol only for a known code; otherwise use `191,000,000 EUR`;
-- always include competition and season when statistics are shown;
-- do not add a second field or embed for enrichment;
-- recalculate the existing 1,024-character field and 6,000-character aggregate budgets after optional lines are added.
+- transfer direction, classification, terms/status, confidence, and journalist link are primary;
+- no second enrichment field or embed;
+- omit null/unavailable fields and empty lines;
+- never render `unknown`, `N/A`, or an invented zero;
+- label proposed market value `Sofascore value`;
+- render value only with a verified currency; use a known symbol or explicit ISO code; never convert currencies;
+- statistics require competition, season, and scope label;
+- profile can render without stats;
+- ambiguity/unresolved/provider failure produces no error text in Discord.
 
-When space is limited, retain content in this order:
+Stale examples:
 
-1. player/transfer identity and journalist source link;
-2. transfer classification, clubs, fee, and status;
-3. competition/season, appearances, minutes, goals, and assists;
-4. position, age, nationality, and proposed market value;
-5. starts, xG, xA, rating, height, preferred foot, and extra statistics.
+```text
+LaLiga 2025/26 · selected league, all clubs · stale 18h: 31 app · 25 G · 5 A
+Last confirmed: LaLiga 2025/26 · stale 2d
+```
 
-Truncation removes whole optional tokens from the bottom of that order; it must never cut a URL, currency number, or Unicode sequence. Existing story count, 25-field, field-name, field-value, and aggregate embed limits remain authoritative.
+Never show data beyond its stale window.
+
+### Two-pass limits and priority
+
+Pass 1 builds/adopts the same transfer stories and reserves journalist links under the current limits. Pass 2 appends whole enrichment groups only when both per-field and aggregate budgets permit them.
+
+Enrichment priority:
+
+1. competition, season, scope, appearances, minutes, goals, assists;
+2. current club, nationality, age, position, market value;
+3. starts, minutes per game, xG, xA, rating;
+4. DOB, height, preferred foot;
+5. cards, goalkeeper clean sheets/saves.
+
+If one group does not fit, omit it and all lower-priority groups. Never truncate a URL, currency token, or Unicode sequence. Preserve:
+
+- maximum 18 selected stories under current selection logic;
+- 25 fields;
+- 256-character names;
+- 1,024-character values;
+- 6,000-character aggregate embed budget.
+
+With total enrichment failure, output contains only the normal transfer story, confidence, and journalist link, with no empty enrichment heading or provider error.
 
 ## 10. File-by-file implementation plan
 
-No active file is deleted. Historical Transfermarkt artifacts remain deleted and migration `001` remains untouched.
+No active file is deleted or archived. Historical browser-related material remains outside scope. The implementation adds the Sofascore feature and modifies only the surfaces below.
 
-| Path | Action | Responsibility / important interfaces | Tests affected |
+| Path | Action | Responsibility / important interfaces | Dependencies and tests affected |
 | --- | --- | --- | --- |
-| `deploy/n8n/sofascore/app.py` | Create | Standard-library HTTP supervisor, `/health`, `/ready`, `/v1/enrich`, request limits, worker lifecycle, structured errors/logs | New service contract tests |
-| `deploy/n8n/sofascore/adapter.py` | Create | Thin `soccerdata.Sofascore.get()` adapter, endpoint/cache paths, normalization, identity scoring, league/season selection, deadline-safe worker entrypoint | New adapter/fixture tests |
-| `deploy/n8n/sofascore/Dockerfile` | Create | Python 3.12-slim image, non-root user, hash-locked install, healthcheck command, no browser binary | Docker build/smoke |
-| `deploy/n8n/sofascore/requirements.in` | Create | Human-readable exact top-level `soccerdata==1.9.1` pin | Lock verification |
-| `deploy/n8n/sofascore/requirements.txt` | Create | Fully resolved, hash-locked dependency tree | Reproducible Docker build |
-| `deploy/n8n/sofascore/tests/fixtures/mbappe_search.json` | Create | Recorded search fixture | Identity success |
-| `deploy/n8n/sofascore/tests/fixtures/mbappe_profile.json` | Create | Recorded profile fixture | Full profile normalization |
-| `deploy/n8n/sofascore/tests/fixtures/laliga_seasons.json` | Create | Recorded season fixture | Active-season selection |
-| `deploy/n8n/sofascore/tests/fixtures/mbappe_laliga_stats.json` | Create | Recorded rich stats fixture | Full stats normalization |
-| `deploy/n8n/sofascore/tests/fixtures/john_smith_search.json` | Create | Duplicate/mixed-sport fixture | Ambiguity rejection |
-| `deploy/n8n/sofascore/tests/fixtures/quang_hai_profile.json` | Create | Non-top-five profile and conflicting tournament evidence | Primary-tournament rule |
-| `deploy/n8n/sofascore/tests/fixtures/vleague_seasons.json` | Create | Non-top-five season fixture | Generic season resolution |
-| `deploy/n8n/sofascore/tests/fixtures/quang_hai_vleague_stats.json` | Create | Sparse stats fixture | Nullable xG/xA |
-| `deploy/n8n/sofascore/tests/fixtures/schema_changed.json` | Create | Malformed structural response | Last-good/schema guard |
-| `deploy/n8n/sofascore/tests/test_adapter.py` | Create | Normalization, matching, cache-path, league/season, request-budget, and failure tests | New Python unit suite |
-| `deploy/n8n/sofascore/tests/test_app.py` | Create | HTTP validation, partial results, health/readiness, deadline, shutdown, and log-redaction tests | New Python contract suite |
-| `deploy/n8n/sofascore/tests/test_live.py` | Create | Explicitly gated Mbappé/duplicate/non-top-five acceptance probe | Never normal CI |
-| `deploy/n8n/compose.yaml` | Modify | Add private `sofascore-enrichment` service using image `transfers-n8n-sofascore:local`, health dependency, n8n internal URL, and named cache volume; no host port | Compose config and smoke |
-| `deploy/n8n/README.md` | Modify | Service operations, config, cache, health, troubleshooting, manual circuit/rollback procedure | Documentation check |
-| `database/migrations/002_soccerdata_sofascore_enrichment.sql` | Create | Tables, constraints, indexes, provider seed, timestamps | New SQL tests |
-| `database/migrate.sql` | Modify | Register migration `002` after `001` under existing advisory lock | Migration replay test |
-| `database/tests/003_soccerdata_sofascore_enrichment.sql` | Create | Transactional constraints, mapping replay, snapshot hashes, attempts, delete behavior | SQL test runner |
-| `database/README.md` | Modify | Schema purpose, TTL/retention SQL, manual mapping SQL, forward-only rollback | Documentation check |
-| `workflow/build-workflows.mjs` | Modify | Generated fail-open nodes/connections, cache/upsert SQL, optional enrichment join | Generator/unit/E2E |
-| `workflow/lib.mjs` | Modify | Nullable enrichment normalization for Discord and whole-token priority truncation | Workflow library tests |
-| `workflow/football-transfer-monitor.json` | Regenerate | Generated output only; never edit manually | `--check` |
-| `workflow/README.md` | Modify | Node flow, failure behavior, stats revision semantics | Documentation check |
-| `tests/unit/workflow-lib.test.mjs` | Modify | Enrichment formatting, null omission, limits, stale/failure behavior, unchanged report hash | Node unit tests |
-| `tests/e2e/compose.yaml` | Modify | Include mock enrichment endpoint/service networking without public exposure | E2E |
-| `tests/e2e/mock/server.mjs` | Modify | Fixture-backed success, ambiguity, sparse, 429, malformed, and timeout responses | E2E |
-| `tests/e2e/scenario.mjs` | Modify | Verify enrichment display and all-failure digest delivery/idempotency | E2E |
-| `tests/e2e/run.sh` | Modify | Run migration `003` and service/Compose smoke in existing sequence | Full E2E |
-| `tests/README.md` | Modify | Fixture/live flags and commands | Documentation check |
-| `README.md` | Modify | Replace historical concept with supported Sofascore enrichment and fail-open behavior | Documentation check |
+| `deploy/n8n/sofascore/__init__.py` | Create | Package marker and service version only | Imported by all Python tests |
+| `deploy/n8n/sofascore/app.py` | Create | aiohttp app factory, `/v1/enrich`, `/healthz`, `/readyz`, queue/child lifecycle, deadline/circuit, structured counters/logs | `tests/test_app.py`, Docker smoke |
+| `deploy/n8n/sofascore/adapter.py` | Create | Only soccerdata adapter; targeted endpoint/cache paths, `Sofascore.get()` calls, envelope/type normalization, raw hashes, quarantine/bypass | `tests/test_adapter.py`, fixture tests, cache tests |
+| `deploy/n8n/sofascore/identity.py` | Create | Unicode keys, aliases, bounded candidate generation, score/threshold/margin, manual override evaluation | `tests/test_identity.py` |
+| `deploy/n8n/sofascore/competition.py` | Create | Team/primary-domestic-league eligibility, exclusions, season selection, movement scope | `tests/test_competition.py`, `test_season.py`, `test_movement.py` |
+| `deploy/n8n/sofascore/models.py` | Create | Small request/response validators and normalized nullable dataclasses/typed structures; no web framework abstraction | Contract and normalization tests |
+| `deploy/n8n/sofascore/requirements.in` | Create | Exact top-level `soccerdata==1.9.1` and aiohttp pin | Lock regeneration check |
+| `deploy/n8n/sofascore/requirements.txt` | Create | Complete hash-locked supported dependency tree | Reproducible image build |
+| `deploy/n8n/sofascore/Dockerfile` | Create | Digest-pinned Python 3.13.14 slim, native TLS asset/SHA verification, hash install, non-root runtime, no browser | Docker smoke/tests |
+| `deploy/n8n/sofascore/tests/__init__.py` | Create | Test package marker | Default unittest discovery |
+| `deploy/n8n/sofascore/tests/fixture_transport.py` | Create | Fake public `Sofascore.get()` boundary; fails on unregistered network access | All fixture-backed provider tests |
+| `deploy/n8n/sofascore/tests/fixtures/manifest.json` | Create | Capture date/version/endpoints/IDs/redaction/SHA/schema metadata | Fixture integrity test |
+| `deploy/n8n/sofascore/tests/fixtures/mbappe.json` | Create | Sanitized search/profile/LaLiga seasons/tournament/stats reference | Rich normalization/request count |
+| `deploy/n8n/sofascore/tests/fixtures/john_smith.json` | Create | Mixed-sport duplicate exact-name candidates | Ambiguity safety |
+| `deploy/n8n/sofascore/tests/fixtures/quang_hai.json` | Create | V-League profile, misleading tournament, sparse stats | Non-top-five/nullability |
+| `deploy/n8n/sofascore/tests/fixtures/courtois.json` | Create | Goalkeeper profile/stats including clean sheets/saves | Goalkeeper optional fields |
+| `deploy/n8n/sofascore/tests/fixtures/semenyo.json` | Create | Same-league movement evidence and aggregate stats | Movement scope |
+| `deploy/n8n/sofascore/tests/fixtures/wirtz.json` | Create | Cross-league movement/current league evidence | Movement scope |
+| `deploy/n8n/sofascore/tests/fixtures/failures.json` | Create | Clearly marked synthetic malformed/type/future-order/HTTP/cache/timeout responses | Failure/schema/cache tests |
+| `deploy/n8n/sofascore/tests/test_characterization.py` | Create, then retain or absorb | Minimum early endpoint/contract characterization only | Milestone 1 safety; final suite may split it without losing coverage |
+| `deploy/n8n/sofascore/tests/test_adapter.py` | Create in final test milestone | All required fields, derivations, endpoints, nulls, provenance, request counts | Adapter |
+| `deploy/n8n/sofascore/tests/test_identity.py` | Create in final test milestone | Normalization, aliases, duplicates, score/margin, overrides | Identity |
+| `deploy/n8n/sofascore/tests/test_competition.py` | Create in final test milestone | Eligibility/exclusions/non-top-five/promotion/manual mapping | Competition |
+| `deploy/n8n/sofascore/tests/test_season.py` | Create in final test milestone | Future-first, active/completed, boundary, missing/override | Season |
+| `deploy/n8n/sofascore/tests/test_movement.py` | Create in final test milestone | Same/cross-league moves, loans, unattached, provenance/label | Movement |
+| `deploy/n8n/sofascore/tests/test_cache.py` | Create in final test milestone | soccerdata cache semantics, TTL/stale, one writer, quarantine/bypass | Adapter/service |
+| `deploy/n8n/sofascore/tests/test_app.py` | Create in final test milestone | HTTP contract, all-item failure 200, deadlines, child replacement, readiness/shutdown | Service |
+| `deploy/n8n/sofascore/tests/live_acceptance.py` | Create in final test milestone | Explicitly gated serial six-subject read-only acceptance; excluded from default discovery | Manual live gate only |
+| `deploy/n8n/compose.yaml` | Modify | Add private service, n8n mode/base URL, named raw-cache volume, readyz health; no port/no hard n8n dependency | Compose rendering, Docker smoke |
+| `deploy/n8n/README.md` | Modify | Build/start/health/logs/cache/reset/resources/modes/upgrade/rollback | Documentation validation |
+| `database/migrations/002_soccerdata_enrichment.sql` | Create | Add delivery payload, 12 tables, constraints/indexes/triggers, view, cleanup function | SQL/migration suite |
+| `database/migrate.sql` | Modify | Explicit advisory-lock-protected 002 ledger/application block | Repeat/concurrent migration tests |
+| `database/tests/003_soccerdata_enrichment.sql` | Create minimally, finish in final test milestone | Feature constraints/upserts/canonicalization/view/cleanup/payload/revision safety | SQL suite |
+| `database/tests/004_enrichment_rollback_compatibility.sql` | Create in final test milestone | Pre-feature queries/workflow behavior against additive 002 | Rollback compatibility |
+| `database/README.md` | Modify | New objects, mapping/override SQL, freshness/retention, forward rollback | Documentation validation |
+| `workflow/lib.mjs` | Modify | Unicode enrichment helpers, response normalization, two-pass Discord append/truncation | Unit/Discord tests |
+| `workflow/build-workflows.mjs` | Modify | Context/persistence SQL, modes/nodes/connections, candidate join, canonical player preservation, frozen payload | Generator/unit/E2E |
+| `workflow/football-transfer-monitor.json` | Regenerate | Generated main workflow only | `--check`, n8n import |
+| `workflow/football-transfer-monitor-errors.json` | Regenerate if generator output changes | Generated error workflow; expected semantics unchanged | `--check`, n8n import |
+| `workflow/README.md` | Modify | Optional node flow, modes, fail-open paths, no stats revisions/resends | Documentation validation |
+| `tests/unit/workflow-lib.test.mjs` | Modify minimally, finish in final test milestone | Enrichment normalization, modes, hash independence, Discord limits, frozen payload helpers | Node unit suite |
+| `tests/migrations/run.sh` | Create in final test milestone | Disposable 001→002 repeat/concurrent migration, backup/restore, SQL 001–004 | Migration/rollback suite |
+| `tests/docker/sofascore-smoke.sh` | Create in final test milestone | Offline native load, health/readiness, cache persistence, no port/non-root/resources/shutdown | Docker smoke |
+| `tests/e2e/compose.yaml` | Modify | Fixture-mode enrichment service/mock wiring, disposable DB; no public service port | E2E/import smoke |
+| `tests/e2e/mock/server.mjs` | Modify | Success/sparse/ambiguous/malformed/timeout/all-failure fixtures | E2E scenarios |
+| `tests/e2e/scenario.mjs` | Modify in final test milestone | off/shadow/active, frozen payload, fail-open, replay, Discord behavior | E2E data-flow scenarios |
+| `tests/e2e/run.sh` | Modify in final test milestone | Run migrations/SQL/service/import/scenarios and clean only disposable resources | Full offline E2E |
+| `tests/README.md` | Modify | Default offline commands, migration/Docker/live separation, honest E2E description | Documentation validation |
+| `README.md` | Modify | Optional soccerdata/Sofascore enrichment, modes, fail-open guarantee | Documentation validation |
 
 Do not modify:
 
 - `database/migrations/001_initial_schema.sql`;
-- Qwen prompt or response schema;
-- report merge/material hash rules except tests proving they remain independent;
-- current X collection providers;
-- public network/port configuration;
+- `workflow/qwen-system-prompt.md`;
+- `workflow/qwen-response-schema.json`;
+- X collector code/configuration and source registry;
+- Qwen deployment;
+- n8n runner dependencies;
+- PostgreSQL host exposure;
+- Discord/X/Qwen secrets;
 - `graphify-out`;
-- any unrelated formatting or dead code.
+- unrelated code, formatting, generated caches, or historical files.
 
 ## 11. Ordered milestones
 
-### Milestone 1 — Fixture-backed adapter and service contract
+Each milestone is implemented on `feature/sfc_scrape`, ends in a self-contained uncommitted checkpoint, and stops for user continuation. A milestone is committed only after its stated checks pass; never commit a partially completed milestone. The permanent automated feature suite is completed in the **final implementation milestone (Milestone 7)**. Earlier milestones add only the minimum characterization checks needed to change behavior safely and keep `PLAYER_ENRICHMENT_MODE=off`.
+
+### Milestone 1: provider adapter and private service core
 
 Changes:
 
-- create only `deploy/n8n/sofascore/`;
-- pin/hash-lock soccerdata 1.9.1;
-- implement targeted adapter, normalized nullable contract, player matching, league/season selection, health/readiness, worker deadline, fixtures, and unit/contract tests;
-- no Compose, database, workflow, or Discord changes.
+- create `deploy/n8n/sofascore/{__init__.py,app.py,adapter.py,identity.py,competition.py,models.py,Dockerfile,requirements.in,requirements.txt}`;
+- add the seven sanitized fixture bundles, manifest, fixture transport, and only `test_characterization.py` as the minimum early characterization surface;
+- implement public `Sofascore.get()` endpoints, nullable normalization, deterministic resolution, one child/cache writer, deadlines/rate/circuit/quarantine, `/healthz`, `/readyz`, and `/v1/enrich`;
+- bake/verify the pinned native TLS asset and run non-root without a browser.
 
-Dependencies: none beyond Python/Docker and the verified package release.
+Exact files: the Milestone 1 `deploy/n8n/sofascore/` runtime, lock, fixture, manifest, fixture-transport, and characterization paths listed in Section 10.
+
+Dependencies: verified soccerdata 1.9.1 evidence only; no repository feature dependency.
 
 Verification:
 
 ```bash
-docker build -t transfers-sofascore:test deploy/n8n/sofascore
-docker run --rm --read-only --tmpfs /tmp \
-  -v sofascore-test-cache:/var/lib/soccerdata \
-  transfers-sofascore:test python -m unittest discover -s tests -p 'test_*.py'
-docker volume rm sofascore-test-cache
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+docker build -t transfers-sofascore:m1 deploy/n8n/sofascore
+docker run --rm --network none --read-only --tmpfs /tmp \
+  transfers-sofascore:m1 python -m unittest \
+  tests.test_characterization -v
 ```
 
-Acceptance:
+Acceptance criteria:
 
-- Mbappé normalizes all observed profile/stat fields;
-- John Smith is not automatically matched;
-- Nguyễn Quang Hải resolves V-League 1 through `primaryUniqueTournament` and retains null xG/xA;
-- malformed structural fixtures produce `schema_changed`;
-- optional fields remain null, not invented;
-- a simulated hung call returns by the deadline and the next request gets a fresh worker;
-- tests prove the service invokes only `soccerdata.Sofascore` and no browser runtime.
+- Mbappé rich response and Quang Hải sparse response normalize without invented fields;
+- John Smith does not auto-resolve;
+- no private soccerdata method/browser/second provider is called;
+- malformed cache receives exactly one bypass and never replaces last-good;
+- simulated hang ends within the outer test deadline and next request uses a replacement child;
+- health/readiness make no network call;
+- existing generator/unit baseline passes.
 
-Rollback point: delete the newly created `deploy/n8n/sofascore/` directory before it is referenced anywhere.
+Rollback point: remove the new unreferenced directory; no Compose/database/workflow behavior exists yet.
 
-### Milestone 2 — Restart-safe database model
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-01.md`.
+
+Expected commit boundary: one service-core/characterization commit after acceptance; checkpoint excluded.
+
+### Milestone 2: restart-safe database model
 
 Changes:
 
-- add/register migration `002`;
-- add SQL test `003`;
-- document mappings, manual override SQL, freshness, retention, and application-first rollback.
+- create `database/migrations/002_soccerdata_enrichment.sql`;
+- register 002 in `database/migrate.sql`;
+- create the minimum initial `database/tests/003_soccerdata_enrichment.sql` checks for migration replay, provider-ID uniqueness, report-context uniqueness, canonical player preservation, snapshot replay, and frozen request payload;
+- update `database/README.md` with object responsibilities and forward rollback.
 
-Dependencies: Milestone 1 contract and normalized field names are frozen.
+Exact files: the four database paths above only.
+
+Dependencies: Milestone 1's normalized field/status contract is frozen.
 
 Verification:
 
 ```bash
-docker compose -f tests/e2e/compose.yaml up -d --wait postgres
-docker compose -f tests/e2e/compose.yaml exec -T postgres \
-  psql -U transfers_e2e -d transfers_e2e -v ON_ERROR_STOP=1 -f /database/migrate.sql
-docker compose -f tests/e2e/compose.yaml exec -T postgres \
-  psql -U transfers_e2e -d transfers_e2e -v ON_ERROR_STOP=1 -f /database/migrate.sql
-for test_file in /database/tests/001_dedup_restart_safety.sql \
-  /database/tests/002_workflow_safety.sql \
-  /database/tests/003_soccerdata_sofascore_enrichment.sql; do
-  docker compose -f tests/e2e/compose.yaml exec -T postgres \
-    psql -U transfers_e2e -d transfers_e2e -v ON_ERROR_STOP=1 -f "$test_file"
-done
-docker compose -f tests/e2e/compose.yaml down --volumes --remove-orphans
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+./tests/e2e/run.sh
 ```
 
-Acceptance:
+During the milestone, additionally use the E2E disposable PostgreSQL service to apply `migrate.sql` twice and execute `database/tests/003_soccerdata_enrichment.sql`; document the exact Compose/psql command in the checkpoint rather than adding the final migration runner early.
 
-- both migration runs succeed with one recorded `002`;
-- duplicate provider IDs, manual mappings, logical attempts, and same-content snapshots cannot duplicate;
-- promoted/relegated club mappings coexist by season;
-- every rollback-based SQL test returns the database to its pre-test state;
-- migration `001` is unchanged.
+Acceptance criteria:
 
-Rollback point: before production application, discard migration `002`; after application, deploy without feature use and leave its tables inert.
+- 001 checksum/content is unchanged;
+- 002 applies transactionally, records one ledger row, and reruns safely;
+- every table has the specified FK/check/unique/index strategy;
+- duplicate provider IDs/report contexts/snapshot keys/attempt keys cannot duplicate;
+- merge preservation and frozen payload characterization pass;
+- current offline E2E remains green.
 
-### Milestone 3 — Private deployment and service smoke
+Rollback point: before production, revert 002/ledger registration; after any applied environment, mode remains off and additive objects remain inert.
+
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-02.md`.
+
+Expected commit boundary: one database-model commit after acceptance; checkpoint excluded.
+
+### Milestone 3: private deployment boundary
 
 Changes:
 
-- add the service, n8n URL, health dependency, resource limits, and persistent cache volume to `deploy/n8n/compose.yaml`;
-- update deployment documentation.
+- modify `deploy/n8n/compose.yaml` to add the private service, raw-cache named volume, n8n mode/base URL, readyz health, resource starting limits, and graceful stop;
+- update `deploy/n8n/README.md` for build/start/health/readiness/log/cache commands;
+- keep mode `off`, no host port, no n8n hard health dependency, and no database credentials in the service.
 
-Dependencies: Milestones 1 and 2.
+Exact files: `deploy/n8n/compose.yaml`, `deploy/n8n/README.md`; Milestone 1 Docker/lock may change only for deployment defects discovered by these checks.
+
+Dependencies: Milestones 1–2.
 
 Verification:
 
 ```bash
-export N8N_RUNNERS_AUTH_TOKEN=test X_COLLECTOR=twscrape
-export DISCORD_TRANSFERS_WEBHOOK_URL=http://invalid
-export DISCORD_ERRORS_WEBHOOK_URL=http://invalid
-export TWSCRAPE_AUTH_TOKEN=test TWSCRAPE_CT0=test
-export POSTGRES_USER=test POSTGRES_PASSWORD=test
 docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
+docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
-docker run -d --name transfers-sofascore-smoke \
-  --read-only --tmpfs /tmp -v sofascore-smoke-cache:/var/lib/soccerdata \
-  transfers-n8n-sofascore:local
-docker exec transfers-sofascore-smoke python -c \
-  "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2).read().decode())"
-docker inspect transfers-sofascore-smoke \
-  --format 'user={{.Config.User}} ports={{json .HostConfig.PortBindings}}'
-docker rm -f transfers-sofascore-smoke
-docker volume rm sofascore-smoke-cache
+docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment -m unittest \
+  tests.test_characterization -v
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
 ```
 
-Acceptance:
+Acceptance criteria:
 
-- readiness succeeds from the private network;
-- no host port is published;
-- the container runs non-root, starts without secrets or browser binaries, and reuses the named cache after restart;
-- idle target is approximately 0.5 CPU or less, 512 MiB memory, and a 1 GiB monitored cache-volume budget.
+- service is attached only to `transfers_net` with no published port;
+- n8n starts independently when the service is unhealthy;
+- readiness validates package/native/cache/child offline;
+- cache sentinel survives service recreation;
+- service runs non-root with no secret/browser;
+- Compose and current baseline pass.
 
-Rollback point: remove the service stanza, n8n URL, and named volume reference; preserve the volume until explicit deletion approval.
+Rollback point: revert the service/environment/volume references; retain the named cache until explicit deletion.
 
-### Milestone 4 — Fail-open workflow persistence
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-03.md`.
+
+Expected commit boundary: one deployment-boundary commit after acceptance; checkpoint excluded.
+
+### Milestone 4: fail-open workflow persistence and payload freeze
 
 Changes:
 
-- add generator nodes/connections for distinct lookup, cache load, service call, outcome normalization, conflict-safe persistence, and unconditional continuation;
-- left join optional enrichment into digest candidates;
-- regenerate workflow JSON.
+- modify `workflow/build-workflows.mjs` and `workflow/lib.mjs` for the exact off/shadow/active insertion, context grouping, HTTP 85s/no retry, response normalization, transactional persistence, candidate left join, canonical `player_id` preservation, and frozen reservation payload;
+- regenerate both workflow JSON files only through the generator;
+- add only minimum characterization assertions to `tests/unit/workflow-lib.test.mjs` for node placement/error rejoin/hash independence/frozen payload;
+- update `workflow/README.md`.
 
-Dependencies: Milestones 1–3.
+Exact files: `workflow/build-workflows.mjs`, `workflow/lib.mjs`, two generated workflow JSON files, `tests/unit/workflow-lib.test.mjs`, `workflow/README.md`.
+
+Dependencies: Milestones 1–3 and applied schema 002 in disposable tests.
 
 Verification:
 
@@ -1001,270 +1614,657 @@ Verification:
 node workflow/build-workflows.mjs
 node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
-```
-
-Acceptance:
-
-- one service request contains each canonical player at most once;
-- fresh cache skips the HTTP call;
-- replay upserts one logical enrichment attempt/snapshot;
-- service 429, 503, timeout, invalid JSON, and enrichment-database failure all reach the existing digest candidate and delivery path;
-- transfer report hashes and revision counts are unchanged by statistics refresh;
-- generated JSON matches the generator.
-
-Rollback point: revert only the generator/regenerated JSON changes; service and tables remain inert.
-
-### Milestone 5 — Bounded Discord presentation
-
-Changes:
-
-- add optional profile/stat lines in `workflow/lib.mjs`;
-- add null, currency, Unicode, field, aggregate, and priority tests.
-
-Dependencies: Milestone 4 supplies optional normalized rows.
-
-Verification:
-
-```bash
-node --test tests/unit/workflow-lib.test.mjs
-node workflow/build-workflows.mjs --check
-```
-
-Acceptance:
-
-- primary transfer and journalist content is never displaced by enrichment;
-- null values are omitted;
-- competition/season and proposed-value labeling are present when relevant;
-- every field stays within 256/1,024 characters, at most 25 fields are emitted, and aggregate embed text remains at most 6,000 characters;
-- all-enrichment-failed output equals the current transfer-only layout.
-
-Rollback point: revert only the library/generator presentation change; collection and persistence may remain enabled in shadow mode.
-
-### Milestone 6 — End-to-end shadow rollout and activation
-
-Changes:
-
-- add fixture-backed E2E cases and operational instructions;
-- deploy with persistence enabled but Discord rendering disabled;
-- enable test Discord, then production rendering only after activation criteria pass.
-
-Dependencies: Milestones 1–5 and an approved deployment window.
-
-Verification:
-
-```bash
 ./tests/e2e/run.sh
-docker run --rm -e SOFASCORE_LIVE_TEST=1 \
-  -v sofascore-live-cache:/var/lib/soccerdata \
-  transfers-n8n-sofascore:local \
-  python -m unittest discover -s tests -p 'test_live.py'
-docker volume rm sofascore-live-cache
-docker compose -f deploy/n8n/compose.yaml logs --since=24h sofascore-enrichment
 ```
 
-Acceptance:
+Acceptance criteria:
 
-- normal CI and E2E use recorded fixtures only;
-- the gated live test resolves the three spike cases without unsafe matching;
-- shadow runs complete for at least 48 hours with zero digest blocks, acceptable cache hit rate, no sustained circuit opening, and reviewed ambiguous mappings;
-- test Discord passes limit/link review;
-- disabling the rendering/config flag returns transfer-only output without a migration rollback.
+- insertion is after `Set preferred report source` and before `Prepare digest candidates query`;
+- off makes no enrichment request;
+- in-run grouping is by provider ID or Unicode name+club context, never placeholder `players.id` alone;
+- every service/contract/SQL failure edge rejoins candidates;
+- statistics never affect transfer hashes/revisions/re-delivery;
+- reserved payload is immutable and used for send;
+- generated JSON is synchronized/importable;
+- current X/Qwen/merge/recovery behavior remains green.
 
-Rollback point: disable enrichment rendering first, then service calls; redeploy the previous workflow/Compose version while leaving database objects and cache volume intact.
+Rollback point: revert generator/library/generated-workflow changes; keep service and additive schema inert/off.
+
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-04.md`.
+
+Expected commit boundary: one fail-open workflow commit after acceptance; checkpoint excluded.
+
+### Milestone 5: bounded Discord presentation
+
+Changes:
+
+- finish two-pass enrichment append behavior in `workflow/lib.mjs` and generator parity in `workflow/build-workflows.mjs`;
+- regenerate workflow JSON;
+- add minimum characterization cases in `tests/unit/workflow-lib.test.mjs` for rich/null/failure/limit priority;
+- do not yet complete the permanent boundary matrix reserved for Milestone 7.
+
+Exact files: `workflow/lib.mjs`, `workflow/build-workflows.mjs`, generated workflow JSON files, `tests/unit/workflow-lib.test.mjs`.
+
+Dependencies: Milestone 4 normalized candidate shape.
+
+Verification:
+
+```bash
+node workflow/build-workflows.mjs
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+./tests/e2e/run.sh
+```
+
+Acceptance criteria:
+
+- journalist link and transfer content are never displaced;
+- nulls/unavailable fields disappear cleanly;
+- competition/season/scope and honest value labels render when present;
+- stale label appears only in allowed window;
+- total failure is transfer-only with no empty/error line;
+- characterization payloads stay under current Discord limits.
+
+Rollback point: revert presentation changes while leaving shadow persistence available; set mode shadow/off.
+
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-05.md`.
+
+Expected commit boundary: one Discord-presentation commit after acceptance; checkpoint excluded.
+
+### Milestone 6: documentation and rollout-ready operations
+
+Changes:
+
+- update `README.md`, `tests/README.md`, `deploy/n8n/README.md`, `database/README.md`, and `workflow/README.md` with modes, failure behavior, build/migrate/health/cache/shadow/activation/rollback/upgrade commands;
+- ensure Compose starts in mode off and no activation occurs;
+- document manual identity/team/competition/season override SQL and retention invocation;
+- document provider-policy approval and resource measurement as activation blockers.
+
+Exact files: the five documentation paths; Compose/service files only if a documented command exposes a feature-related defect.
+
+Dependencies: Milestones 1–5 interfaces are stable.
+
+Verification:
+
+```bash
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+docker compose -f deploy/n8n/compose.yaml config --quiet
+docker compose -f deploy/support/compose.yaml config --quiet
+docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+./tests/e2e/run.sh
+git diff --check
+```
+
+Acceptance criteria:
+
+- documented commands match actual services/paths/environment;
+- no broad destructive volume command is recommended;
+- live acceptance is described as gated but is not yet added to the default suite;
+- off/shadow/active, stale policy, manual override, rollback, and dependency update are clear;
+- mode remains off and no deployment/live/Discord activation occurs.
+
+Rollback point: revert documentation and any strictly related correction; runtime remains off.
+
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-06.md`.
+
+Expected commit boundary: one operations/documentation commit after acceptance; checkpoint excluded.
+
+### Milestone 7: complete permanent automated test suite and final review
+
+This is the **final implementation milestone**. No implementation milestone follows it.
+
+Changes:
+
+- add or finish every permanent test and fixture file listed in Section 10;
+- complete Python unit tests, fixture provider tests, cache tests, HTTP contract tests, SQL/constraint tests, migration/rollback tests, workflow-generation tests, Discord-limit tests, Docker smoke tests, E2E/import/data-flow scenarios, and explicitly gated live acceptance;
+- add regression tests for every bug or edge case discovered in Milestones 1–6;
+- fix only feature-related failures in implementation files;
+- finish default offline commands and optional live command documentation;
+- run the complete relevant suite after all tests are written;
+- perform a final implementation review after everything passes.
+
+Exact files:
+
+- all `deploy/n8n/sofascore/tests/` and fixture paths from Section 10;
+- `database/tests/003_soccerdata_enrichment.sql` and `004_enrichment_rollback_compatibility.sql`;
+- `tests/migrations/run.sh`, `tests/docker/sofascore-smoke.sh`;
+- `tests/unit/workflow-lib.test.mjs`;
+- `tests/e2e/{compose.yaml,mock/server.mjs,scenario.mjs,run.sh}`;
+- `tests/README.md`;
+- any feature implementation file from Sections 6–10 only when a new permanent regression test proves a defect.
+
+Dependencies: completed Milestones 1–6; provider-policy approval is needed only for the optional live command, not the default suite.
+
+Verification commands:
+
+```bash
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+docker compose -f deploy/n8n/compose.yaml config --quiet
+docker compose -f deploy/support/compose.yaml config --quiet
+docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment \
+  -m unittest discover -s tests -v
+tests/migrations/run.sh
+tests/docker/sofascore-smoke.sh
+tests/e2e/run.sh
+git diff --check
+```
+
+Optional, explicitly gated and never normal CI:
+
+```bash
+SOFASCORE_LIVE_ACCEPTANCE=1 \
+  docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment \
+  -m unittest tests.live_acceptance -v
+```
+
+Acceptance criteria:
+
+- every required field and nullable/derivation rule has fixture coverage;
+- identity, aliases, ambiguity, manual overrides, league, season, movement, and schema normalization pass;
+- all 12 tables/additive column/view/function and every unique/FK/check/index behavior are exercised;
+- migration starts at 001, repeats/concurrently applies 002, proves old-app compatibility, and restores a pre-002 backup only into a new disposable DB;
+- HTTP contract, deadlines, circuit, cache, stale, all-item failure, and child replacement pass offline;
+- generated workflow nodes/error paths/import pass, and stats refresh creates no revision/resend;
+- Discord boundaries include 10 embeds, 25 fields/embed, 1,024 value, and 6,000 aggregate limits with core/source priority;
+- Docker proves native checksum/offline load, non-root, no port, cache persistence, readiness, shutdown, and measured 25-item CPU/RSS;
+- injected total enrichment failure sends/reserves exactly one transfer-only digest in the available mock/data-flow harness;
+- normal/default suite makes no live Sofascore request;
+- optional live acceptance is isolated, serial, read-only, and requires explicit approval/flag;
+- all feature-related failures are fixed and complete suite passes before review;
+- final review finds no scope expansion, secret/public port, generated JSON hand edit, migration-001 change, or weakened idempotency.
+
+Rollback point: keep mode off and revert the complete feature commits if the final suite cannot pass; do not activate or destructively remove 002.
+
+Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-07.md`, including every command/result and final review findings.
+
+Expected commit boundary: one final tests-and-fixes commit after the complete suite and final review pass; checkpoint excluded. Stop before merge, push, publication, or pull request.
 
 ## 12. Test strategy
 
-### Python unit and fixture tests
+### Fixture policy and mocking boundary
 
-- Record sanitized JSON fixtures with endpoint kind, retrieval date, and package version; do not include cookies or headers.
-- Cover Mbappé rich data, John Smith ambiguity, Nguyễn Quang Hải sparse data, missing team/DOB/value/foot/height/starts/xG/xA/rating, unexpected extra fields, wrong types, and missing identity keys.
-- Mock `Sofascore.get()`; assert endpoint/cache paths and the maximum request budget.
-- Cover accents, punctuation, transliterations, club aliases, score threshold, runner-up margin, manual lock, and changed club evidence.
-- Cover `primaryUniqueTournament` versus `team.tournament`, top-five and non-top-five mappings, promoted/relegated season scoping, cross-league moves, cups, continental, international, youth, reserve, and women's exclusions.
-- Cover rate gate, circuit breaker, stale cache, worker deadline/restart, partial result, and log redaction.
+Captured fixture subjects are Mbappé, duplicate-name John Smith, Nguyễn Quang Hải/V-League, Courtois, Semenyo, and Wirtz. Synthetic fixtures cover malformed/mistyped/missing envelopes, future-first and reversed seasons, provider failure, timeout, rate-limit-like exhaustion, and corrupt cache.
+
+Every captured fixture manifest entry includes capture date, soccerdata version, endpoint family, stable IDs, subject/competition/season IDs, minimization/redaction notes, response SHA-256, and normalized schema version. Store only parser-relevant subtrees and no headers/cookies/secrets. Synthetic entries are explicitly marked synthetic.
+
+Mock the inherited public `Sofascore.get()` boundary. Do not mock or copy private transport internals. The fixture transport must fail immediately if an unregistered endpoint would reach the network.
+
+### Unit tests
+
+Python unit coverage:
+
+- all 24 required fields, nullable behavior, types/ranges, age/minutes derivations, value/currency labeling, source identifier, retrieval provenance;
+- exact endpoint/cache paths and cold `3U + T` request model;
+- NFKC/accent keys, aliases, explicit transliterations, common names, score >=80, lead >=15, independent discriminator, current/destination rules, negative/manual overrides, and no fuzzy acceptance;
+- domestic-league structural eligibility and all excluded competition types;
+- V-League/misleading tournament, promotion/relegation, cross-border/manual mapping;
+- future-first, active/latest-completed, ordering failure, missing season, boundary refresh;
+- every movement scenario and required scope/provenance.
+
+Node unit coverage:
+
+- existing X/Qwen parsing/merge/material-revision/retry/recovery behavior;
+- enrichment request grouping/response normalization;
+- off/shadow/active semantics;
+- stats independence from material hash/revisions;
+- frozen reservation payload helpers;
+- Discord formatting/limits and transfer-only fallback.
 
 ### SQL tests
 
-- Run inside `begin`/`rollback`, following existing tests.
-- Verify every unique/check/foreign-key constraint and each partial index with positive and negative cases.
-- Replay the same workflow request, mapping, profile, and snapshot.
-- Verify content-hash upsert advances freshness without duplicate rows.
-- Verify one provider external ID cannot map to two canonical players.
-- Verify manual locks survive automatic conflicts and old-season mappings cannot resolve a new season.
-- Verify application rollback needs no table deletion.
+`database/tests/003_soccerdata_enrichment.sql` remains transaction-wrapped and covers:
+
+- all provider/ID/status/JSON/timestamp/range checks;
+- every FK delete behavior;
+- unique and partial-unique constraints;
+- provider ID, alias, override, report-resolution, team, competition, season, mapping, snapshot, and attempt replay;
+- common-name report contexts cannot share an unsafe mapping;
+- canonical provider-backed player creation and report-only reassignment;
+- later merge preserves canonical `player_id`;
+- view returns latest rows without silently hiding stale data;
+- cleanup boundary/exception behavior;
+- request payload immutability;
+- stats refresh creates no transfer revision or resend eligibility.
+
+### Migration tests
+
+`tests/migrations/run.sh` uses disposable PostgreSQL 16:
+
+1. initialize at 001 and seed representative pre-feature data;
+2. create/checksum logical pre-002 backup;
+3. apply 002 through `migrate.sql`;
+4. repeat it and run two concurrent migration clients;
+5. run SQL 001–004;
+6. run pre-feature merge/revision/reservation/recovery queries against schema 002 with mode off;
+7. restore the backup into a new disposable DB/volume and rerun 001–002 baseline tests.
+
+No destructive in-place down migration. Never use a production volume.
 
 ### Service contract tests
 
-- Test valid batch, empty/oversized/malformed body, individual partial errors, top-level readiness error, and stable JSON types.
-- Test `200` for mixed results and `400/413/503` only for protocol/service failures.
-- Test process shutdown and replacement after a hung provider call.
-- Test no raw provider payload or report text leaks into error logs.
+Use aiohttp test clients and fixture transport only:
+
+- valid success/partial/unresolved/ambiguous/stale/deferred/provider/schema results;
+- mixed/all-failure valid batch returns HTTP 200;
+- invalid/oversized/unready returns 400/413/503;
+- stable JSON types, ordering, dedupe, provenance, and log redaction;
+- 15s child deadline, 75s batch budget, child kill/replacement, 10m circuit;
+- shutdown defers unfinished work;
+- health/readiness never contact provider and readiness verifies package/native/cache/fixture/child;
+- service makes no durable response-idempotency claim.
 
 ### Workflow-generation tests
 
-- Verify exact node names, order, failure edges, timeouts, and unconditional continuation.
-- Verify empty-candidate flow avoids the service.
-- Verify statistics refresh does not affect merge snapshot/hash/revision selection.
-- Verify cache/stale rows are left joined and never filter digest candidates.
-- Run generator `--check`; never patch generated JSON manually.
+Assert:
 
-### Discord tests
+- exact insertion after `Set preferred report source` and before `Prepare digest candidates query`;
+- off/shadow/active branches and empty/no-refresh bypass;
+- finite 85s HTTP timeout, `continueOnFail`, no n8n retry;
+- provider-ID or Unicode name+club dedupe, not placeholder `players.id`;
+- every enrichment error edge rejoins candidates;
+- unchanged Qwen, source priority, merge, material hash, and revision behavior;
+- stats-only refresh no revision/re-delivery;
+- candidate join cannot filter transfer stories;
+- reservation freezes payload and retry reads it;
+- total service failure reaches reservation/send;
+- generator `--check` and import into pinned n8n pass.
 
-- Assert null omission, decimal rounding, ISO currency handling, stale metadata behavior, and Unicode-safe whole-token truncation.
-- Test field-name 256, field-value 1,024, 25 fields, and 6,000 aggregate characters at boundaries.
-- Assert the journalist link and core transfer text remain when all optional data is removed.
+### Discord formatting tests
 
-### Docker and E2E tests
+Cover:
 
-- Build from a clean cache with hash checking.
-- Assert no published port, non-root user, health/readiness, cache persistence across restart, and graceful shutdown.
-- Mock success, ambiguity, sparse response, 429, malformed schema, timeout, and total service outage.
-- Assert total enrichment outage still reserves, sends, and finalizes the transfer digest exactly once.
+- rich, sparse, null, stale, ambiguous, all-failure, Unicode, and unknown-currency cases;
+- exact group priority and whole-group omission;
+- journalist link and transfer fields remain primary;
+- no empty headings/placeholders/zero from null;
+- 10 embeds, 25 fields per embed, 256 field name, 1,024 field value, and 6,000 aggregate characters;
+- no URL/currency/Unicode truncation;
+- transfer-only output when enrichment fails.
 
-### Gated live test
+### Cache tests
 
-- Disabled unless `SOFASCORE_LIVE_TEST=1`.
-- Run sequentially with the production rate gate.
-- Check only durable identity and structural invariants; tolerate nullable metrics.
-- Never run in normal CI.
-- A live failure blocks activation, not transfer-only tests or digest delivery.
+Cover raw miss/write/hit, `max_age`, `no_cache`, `no_store`; profile 24h, stats 12h, mapping 24h; stale just inside/outside 72h; unattached just inside/outside 7d; cache persistence across restart; single writer; in-batch dedupe; shared tournament request; fresh DB snapshot zero provider calls; malformed quarantine plus exactly one bypass with no loop; normalized last-good preservation.
+
+### Docker smoke tests
+
+- clean hash-locked build from digest-pinned Python 3.13.14 slim;
+- exact soccerdata version;
+- exact native asset SHA-256 and offline load from fixed `TLS_LIBRARY_PATH`;
+- fixture mode health/readiness with provider network blocked;
+- unwritable cache rejection and sentinel persistence across restart;
+- non-root, no host port, only `transfers_net`;
+- graceful shutdown;
+- record cold and 25-item CPU/RSS and verify the initial 1 CPU/1 GiB budget.
+
+### E2E/import/data-flow tests
+
+The repository's existing harness imports generated workflows and directly evaluates generated code/data flow. Unless a true trigger is deliberately added, do not call it a full n8n execution test.
+
+Cover off/no call, shadow/persist/no render, active render, sparse/null/stale, ambiguity, provider timeout/all-failure, enrichment SQL rollback, reserved-payload immutability, replay/no duplicate revision/send, and interrupted Discord remaining unknown. The transfer-only digest must reserve/send exactly once when every enrichment item fails and core DB is healthy.
+
+### Gated live tests
+
+`live_acceptance.py` is not matched by default discovery and runs only with `SOFASCORE_LIVE_ACCEPTANCE=1` plus recorded operator provider-policy approval. It uses a disposable cache, serial calls, configured delay/jitter, no DB/Discord writes, at most the six justified subjects, and outputs only sanitized summaries.
+
+It validates endpoint reachability/IDs/envelopes, nullable parsing, duplicate ambiguity, V-League sparse coverage, goalkeeper extras, future-season guard, and movement semantics. A live failure blocks shadow/activation only. Normal tests and any future CI never set the flag and must block live provider access.
+
+### Default and optional commands
+
+Default offline suite:
+
+```bash
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+docker compose -f deploy/n8n/compose.yaml config --quiet
+docker compose -f deploy/support/compose.yaml config --quiet
+docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment \
+  -m unittest discover -s tests -v
+tests/migrations/run.sh
+tests/docker/sofascore-smoke.sh
+tests/e2e/run.sh
+```
+
+Optional live command:
+
+```bash
+SOFASCORE_LIVE_ACCEPTANCE=1 \
+  docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment \
+  -m unittest tests.live_acceptance -v
+```
 
 ## 13. Operations and rollout
 
-### Deployment
+### Build and deployment commands
 
-- Build the hash-locked Python 3.12 image.
-- Join only `transfers_net`; publish no host port.
-- Mount the named soccerdata cache at `/var/lib/soccerdata`.
-- Give only the n8n container the internal URL.
-- Do not add credentials; Sofascore access in the verified design is unauthenticated.
-- Back up PostgreSQL before applying migration `002`.
-- Apply migrations under the existing advisory lock, then start the service and check readiness from n8n.
+Document and verify after implementation:
 
-### Observability
+```bash
+docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+docker compose -f deploy/support/compose.yaml --profile maintenance run --rm transfers-db-migrate
+docker compose -f deploy/n8n/compose.yaml up -d sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n
+docker compose -f deploy/n8n/compose.yaml ps
+docker compose -f deploy/n8n/compose.yaml logs --tail=200 sofascore-enrichment
+```
 
-Emit one-line structured JSON logs with:
+Health/readiness from inside the private container/network:
 
-- request ID and workflow run ID;
-- canonical/provider player IDs when resolved;
-- endpoint kind, cache hit/miss/stale, duration, attempt result, and schema version;
-- circuit state and worker replacement;
-- counts for resolved, partial, ambiguous, unresolved, stale-used, and failed players.
+```bash
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read().decode())"
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
+```
 
-Never log cookies, full raw payloads, report bodies, or Discord webhook URLs.
+Service deployment requirements:
+
+- only `transfers_net`, no published port;
+- named `sofascore_cache` volume at `/data/soccerdata`;
+- no PostgreSQL/Discord/X/Qwen secret;
+- n8n has internal base URL and mode only;
+- n8n does not hard-depend on service readiness;
+- initial limit 1 CPU/1 GiB; measured floor target 0.5 CPU/768 MiB, adjusted only from evidence;
+- no GPU.
+
+### Logging and monitoring
+
+Structured JSON logs/counters:
+
+- request/workflow/item/provider IDs;
+- endpoint family, duration, call/cache count, schema version;
+- result counts: fresh, partial, stale, unresolved, ambiguous, deferred, failed;
+- queue depth, circuit state/opens, child kills/restarts;
+- cache hit/miss/quarantine/bypass;
+- last provider success.
+
+Never log raw payloads, cookies, query text containing player names, report bodies, or webhooks.
 
 Monitor:
 
-- service readiness and restarts;
-- batch latency and deadline rate;
-- provider call count and cache-hit ratio;
-- 403/429/5xx/generic connection failures;
-- schema-change/partial-field rates;
-- ambiguous/unresolved rate;
-- age of last-good profiles/statistics;
-- enrichment database failures;
-- digest completion rate, which must remain unchanged.
+- readiness/restarts;
+- p50/p95 batch latency and deadline rate;
+- provider calls/cache hit ratio;
+- generic connection failures and schema failures;
+- ambiguity/unresolved rate;
+- age of last-good rows;
+- enrichment SQL failure count;
+- digest completion/duplicate behavior;
+- CPU/RSS/cache growth.
 
-### Rollout sequence
-
-1. Run fixture-backed unit, SQL, contract, workflow, Discord, and Docker tests locally.
-2. Run the explicit live read-only acceptance probe.
-3. Deploy in shadow mode: resolve/persist/log but do not alter Discord.
-4. Observe at least 48 hours/two days of six-hour runs and review ambiguous mappings, request volume, cache hits, stale use, and digest completion.
-5. Enable enrichment in a test Discord destination and inspect limits, currency labels, links, and null omission.
-6. Enable production rendering only after the activation criteria below pass.
-
-Activation criteria:
-
-- no unsafe duplicate-name resolution in fixture/live cases;
-- no cup/international/youth/reserve/women selection;
-- no schema-change failures in the current live fixtures;
-- service p95 batch time under the n8n timeout;
-- no digest failure caused by enrichment;
-- confirmed restart-safe database replay;
-- acceptable provider call volume with no sustained rate limiting;
-- test Discord stays inside all limits.
+No metrics dependency is required initially; logs/health counters are sufficient. Add metrics only after evidence shows they are insufficient.
 
 ### Failure handling
 
-| Failure | Behavior |
-| --- | --- |
-| Sofascore unavailable / 403 / 5xx | Open/advance circuit, return per-player error, use permitted stale row, continue digest |
-| Rate limiting / 429 | Record retry time when available, no same-run outer retry, use stale row, continue digest |
-| Malformed/changed response | `schema_changed`, retain raw hash/evidence and last-good normalized row, continue digest |
-| Unsupported competition | Persist pending mapping/attempt, omit stats, continue with profile/transfer |
-| Unresolved player | Persist attempt only, omit enrichment |
-| Ambiguous player | Persist candidate evidence, require manual override, never fuzzy-select |
-| Stale cache | Use only within stated stale windows and record `stale_used`; otherwise omit |
-| Partial fields | Persist valid values, keep absent values null, omit null Discord tokens |
-| Service timeout | n8n continues; supervisor terminates/replaces worker |
-| Enrichment database interruption | Continue with in-memory/fresh transfer context; do not block digest |
-| soccerdata regression | Pin/rollback image version, open circuit, preserve last-good snapshots, keep transfer-only delivery |
+| Failure | Service/adapter response | Database/workflow behavior | Discord/operations behavior |
+| --- | --- | --- | --- |
+| Sofascore unavailable | Typed provider failure, circuit after repeated terminal errors, valid last-good candidate | Persist attempt if DB works; no outer retry | Stale within window or transfer-only; retry next run |
+| Rate limiting | Cannot promise exact 429 after soccerdata collapses errors; serial pacing/circuit/defer | No n8n retry | Stale/transfer-only; inspect provider policy |
+| Malformed response/cache | Reject/quarantine; exactly one bypass | Never overwrite last-good; schema attempt | Stale/transfer-only; adapter review |
+| Changed schema | Reject invalid structural keys/types; optional absence stays null | Persist schema version/fingerprint | Stale/transfer-only; gated package/adapter update |
+| Unsupported competition | Profile plus unresolved/pending competition | Persist pending mapping/attempt | Profile-only; manual/metadata resolution |
+| Unresolved player | Stop after bounded deterministic search | Cooldown; no mapping | No enrichment; await evidence/override |
+| Ambiguous player | Return bounded candidates; no selection | Persist ambiguity; no mapping | No enrichment; audited override |
+| Incorrect/suspect club mapping | `club_conflict`/structural failure | Supersede/pending mapping, retain history | Omit fresh stats; correct/re-resolve |
+| Stale cache | Use normalized last-good only <=72h; unattached <=7d | Keep original season/team/time | Explicit stale label or omit |
+| Partial fields | Validate identity, leave missing values null | Persist nullable partial snapshot | Omit null tokens |
+| Service timeout | Kill/replace child; defer unfinished | HTTP error rejoins candidates; preloaded stale may be used | Stale/transfer-only; later run |
+| Enrichment DB interruption | No service DB credential | Roll back enrichment transaction; continue candidates | Digest continues if core DB works |
+| Global PostgreSQL outage | No workaround | Core persistence/reservation fails safely | Do not send without reservation; restore/rerun |
+| Package regression | Readiness/version/native/fixture gate fails | Optional branch bypassed/off | Transfer-only; roll back image/lock |
+| Corrupt raw cache | Quarantine, one bypass, then fail item | Preserve normalized last-good | Reset only raw cache if necessary |
+| Missing active season | Profile plus `missing_season`; no future/first guess | Pending attempt/mapping | Profile-only; boundary refresh/override |
+| Entire batch fails | HTTP 200 item failures or fail-open HTTP error | No revision/hash change; candidates/reservation run | One transfer-only digest |
+| Discord interrupted | No provider action | Frozen payload; `sending -> unknown` | Never automatic resend |
+
+Core invariants: failed data never replaces last-good; ambiguity never maps; missing never becomes zero; competition/season is never guessed from display name; total enrichment failure cannot block delivery while core DB is healthy; a core DB outage is not disguised as an enrichment failure.
+
+### Cache management
+
+Raw-cache reset:
+
+1. set mode off/shadow and stop `sofascore-enrichment`;
+2. record counters and preserve only necessary sanitized quarantine evidence outside the repo;
+3. remove only the exact Compose-resolved soccerdata cache volume documented at implementation;
+4. recreate and verify readiness;
+5. run one approved small refresh and inspect calls before active.
+
+Never run a broad `down --volumes`; never delete PostgreSQL/n8n volumes. Raw reset leaves normalized snapshots intact. Force a targeted refresh by audited expiry, not broad historical deletion.
+
+### Rollout stages
+
+#### Stage 0: fixture-backed local validation
+
+Complete Milestone 7 default suite with provider network blocked, load native library offline, mode off.
+
+#### Stage 1: approved live read-only spike
+
+After provider access-policy approval, run the gated six-subject serial acceptance with disposable cache, no DB/Discord writes, and sanitized output. Failure blocks shadow only.
+
+#### Stage 2: dark deployment
+
+Export workflows, record digests, verify backup, apply 002, deploy private service/cache, check health/readiness, and keep mode off. Provider-call counter must remain zero.
+
+#### Stage 3: shadow
+
+Run shadow for at least 7 days / 28 scheduled six-hour runs. Persist but render transfer-only. Manually review every initial automatic identity and every unusual/manual competition/season mapping. Measure calls/cache/schema/ambiguity/deadline/child/resource data.
+
+#### Stage 4: test Discord
+
+Use a test webhook/database/sample. Exercise rich, sparse, stale, null, ambiguous, all-failure, and maximum-size digests. Verify journalist link/core content and exact stored-versus-sent request payload.
+
+#### Stage 5: production active
+
+Activation criteria:
+
+- final offline suite passes at the activation commit;
+- approved gated live acceptance passes;
+- 28 shadow runs have zero enrichment-caused digest failures;
+- every initial auto-resolution is reviewed with zero known wrong identity;
+- low-confidence/ambiguous cases remain unmapped;
+- no unexplained schema/cache loop;
+- repeated fresh-snapshot run makes zero provider calls;
+- request volume remains within cold `3U + T` plus bounded metadata/profile ambiguity and cap 25;
+- p95 batch <=60s and no batch exceeds 75s service budget;
+- measured 25-item load fits 1 CPU/1 GiB without OOM/churn;
+- no public service/PostgreSQL port;
+- forced all-enrichment failure sends exactly one transfer-only digest.
+
+Enable active for one run, inspect reservation/send/counters, monitor 24 hours, then review after 7 days.
+
+Immediate rollback triggers: wrong identity, enrichment-caused digest failure/duplicate, reserved payload mutation, core schema mismatch, repeated timeout/circuit, request amplification, native checksum anomaly, OOM, or provider-policy concern.
 
 ### Rollback
 
-1. Disable Discord enrichment rendering.
-2. Disable n8n service calls if necessary.
-3. Redeploy the last known-good workflow and Compose definitions.
-4. Keep migration `002` tables and cache volume until recovery is understood.
-5. Roll back the service image pin independently.
+1. set `PLAYER_ENRICHMENT_MODE=off` and recreate n8n;
+2. confirm a transfer-only reservation/send path in the test environment;
+3. stop the optional service if necessary;
+4. restore recorded prior workflow/n8n/service image artifacts;
+5. retain migration 002, snapshots, attempts, and cache for diagnosis unless separately approved for deletion;
+6. never release delivery items or resend `unknown`.
 
-No rollback step rewrites historical migrations, deletes provider data automatically, or changes current transfer revisions/deliveries.
+### Dependency update procedure
+
+1. retain current image and isolate the update;
+2. inspect new soccerdata tag/source/tests/Python compatibility;
+3. reinspect adapter endpoint schemas and high-level methods;
+4. update `requirements.in`, regenerate/review hash lock;
+5. re-evaluate wrapper/native asset version, provenance, SHA, path, and offline load;
+6. run complete default suite;
+7. run approved gated live and compare schemas/request counts;
+8. refresh fixtures only for reviewed intentional changes;
+9. deploy off, repeat shadow gates, then active;
+10. roll back image/lock on regression; retain additive DB schema.
+
+Never float soccerdata, Python/base image, native library, aiohttp, or n8n versions.
 
 ## 14. Risks and unresolved questions
 
-### Blockers before production activation
+| Rank | Item | Type | Severity | Probability | Impact | Mitigation | Blocker? |
+| ---: | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Player endpoints/schemas outside high-level soccerdata API/tests | Verified limitation | Critical | Medium | All enrichment can break | Thin validator, fixtures, schema versions, last-good, shadow/live gates | Active-mode blocker until gates pass |
+| 2 | Provider access policy/terms not established | Unresolved question | High | Unknown | Live use may be inappropriate | Operator review; no fallback or evasion | Live/shadow blocker |
+| 3 | Name-only current placeholder identity | Verified limitation | Critical | Medium | Wrong person can be shown | Report-context resolution, >=80/15 scoring, club/DOB discriminator, manual audit | Per-player blocker when ambiguous |
+| 4 | Generic five attempts/no timeout/status-aware backoff | Verified limitation | High | Medium | Hangs/amplified calls/weak diagnosis | Single child, 15/75/85s deadlines, pacing, no outer retry, circuit | Active blocker if SLO fails |
+| 5 | Malformed/non-atomic raw cache | Verified limitation | High | Medium | Poisoned/reused data | Single writer, quarantine, one bypass, normalized last-good | Active blocker if recurring |
+| 6 | Future season can be first | Verified limitation | High | Season-boundary high | Wrong season shown | Date/order resolver, persisted/manual mapping, boundary tests | Stats blocked per unresolved case |
+| 7 | Native TLS runtime auto-download lacks checksum | Verified limitation | Critical | Low after design | Supply-chain/startup failure | Bake exact asset/SHA/path; offline load/readiness | Build/release blocker |
+| 8 | Mutable enrichment after Discord reservation | Discovered design risk | Critical | Low after design | Retry content/idempotency violation | Store immutable request payload; SQL/E2E tests | Release blocker |
+| 9 | xG/xA and other advanced metrics are sparse | Verified limitation | Medium | High | Reduced content outside covered leagues | Nullable/omit; no provider fallback | Non-blocker |
+| 10 | 25-item resource peak unmeasured | Unresolved assumption | Medium | Medium | OOM/restart/timeout | Docker measurement, initial 1 CPU/1 GiB | Active blocker until measured |
+| 11 | Wrong manual club/competition mapping | Operational risk | High | Low–medium | Wrong stats provenance | Effective/audited overrides, structural checks, shadow review | Individual mapping blocker |
+| 12 | Serialized worker throughput | Design tradeoff | Medium | Medium | Cold work deferred | DB/raw caches, shared seasons, cap/budget, six-hour retry | Non-blocker unless SLO fails |
+| 13 | Global PostgreSQL outage | Existing core risk | Critical | Low | No safe reservation/digest | Existing backup/recovery/idempotency | Existing core blocker |
+| 14 | Current E2E does not execute a triggered n8n run | Verified limitation | Medium | Medium | Wiring defect could escape direct scenarios | Generator/import/contract/data-flow coverage; optional true trigger later | Non-blocker if required tests pass |
+| 15 | Stable human player URL not verified | Verified limitation | Low | Medium | Convenience link drift | Use stable `sofascore:player:<id>` identifier | Non-blocker |
+| 16 | Package dependency tree includes unused SeleniumBase | Verified limitation | Medium | High | Larger image/update surface | Hash-lock supported tree; no browser/import/use; scan image | Non-blocker |
 
-1. **High — undocumented player endpoint/schema stability.** Player enrichment is not supported by soccerdata's high-level Sofascore methods. Activation requires the fixture contract, live gated test, schema guard, and successful shadow window.
-2. **High — request/error behavior.** The inherited reader has generic retries and no explicit timeout argument. Activation requires hard worker-process deadline tests and conservative rate/circuit settings.
-3. **High — incomplete competition metadata outside common leagues.** A league without enough provider evidence must remain `unsupported_competition` until a stored manual mapping is reviewed.
-4. **High — provider-access policy/availability.** Direct curl returned 403 and there is no provider SLA. Operations must confirm the intended read-only use remains acceptable before production activation; there is deliberately no automatic provider fallback.
+Assumptions requiring implementation evidence:
 
-### Non-blocking risks
+- generic Linux amd64 native asset loads in final pinned slim image;
+- 1 CPU/1 GiB and 15/75/85-second deadlines are sufficient;
+- 25 distinct contexts cover normal six-hour runs;
+- provider season metadata remains sufficient for deterministic automatic mapping;
+- 28 shadow runs represent production request/cache behavior;
+- generated fail-open branch behaves correctly under n8n execution semantics.
 
-1. **Medium — nullable coverage.** Sparse leagues may lack starts, xG, xA, rating, height, foot, or proposed value. The data model and Discord output already preserve nullability.
-2. **Medium — large transitive dependency tree.** soccerdata's package dependencies include SeleniumBase even though this service uses no browser. Hash-locking and image scanning are required; replacing or partially installing the package is out of scope.
-3. **Medium — stale current-club evidence.** A provider profile may lag a transfer report. Club-backed matching uses report evidence, does not overwrite manual locks, and refreshes season mappings.
-4. **Low — source URL format drift.** The stable provider/player ID remains authoritative if the convenience URL changes.
-5. **Low — extra-stat display value.** Shots/key-pass fields are cheap to retain but optional to display. They should remain behind the existing content-priority budget.
+Operator decisions/input required:
 
-No user decision blocks Milestone 1. TTLs, resource limits, and confidence thresholds are explicit starting values and may be tuned only from shadow evidence without changing safety rules.
+- provider access-policy approval before any live/shadow request;
+- manual resolution of ambiguous players and unusual/cross-border league mappings;
+- production resource limits after measurement;
+- production active approval after the complete shadow review.
+
+Optional improvements, explicitly outside initial scope:
+
+- true triggered n8n E2E if maintainable;
+- repository CI for the offline default suite;
+- metrics exporter if logs/counters are insufficient;
+- scheduled cleanup after manual operation is proven;
+- cache warmer calling the same service for already-known players;
+- display of extra raw statistics beyond cards/GK fields.
+
+None of these optional items may delay transfer-only delivery or introduce another provider.
 
 ## 15. Implementation handoff
 
-Use this exact next Codex prompt:
+Use the following exact prompt for the implementation run:
 
 ```text
-Implement Milestone 1 only from docs/plans/sfc_scrape_plan.md on branch
-feature/sfc_scrape.
+$autopilot Goal:
+Implement docs/plans/sfc_scrape_plan.md in milestone order inside the existing
+OMX worktree:
 
-Scope:
-- Create only deploy/n8n/sofascore/ and the files assigned to Milestone 1.
-- Use Python 3.12 and hash-lock soccerdata==1.9.1 with its supported dependency tree.
-- Import and use soccerdata.Sofascore only.
-- Implement the thin targeted JSON adapter through inherited Sofascore.get(),
-  normalized nullable schemas, deterministic identity/league/season rules,
-  stdlib HTTP endpoints, one replaceable provider worker, deadline/rate/circuit
-  behavior, recorded fixtures, and unit/contract tests.
-- Use the Mbappé, John Smith, and Nguyễn Quang Hải cases defined in the plan.
+/home/louistran/projects/transfers_n8n.omx-worktrees/launch-feature-sfc-scrape
 
-Do not:
-- modify Compose, database, workflow, Discord, README, deployment, migration,
-  or generated workflow files;
-- add Playwright, Selenium usage/browser binaries, ScraperFC, another Sofascore
-  package, another football provider, rendered-HTML scraping, or live CI;
-- auto-match John Smith or invent absent fields.
+Use branch feature/sfc_scrape only.
 
-Before editing, restate Milestone 1 assumptions and the file-level checklist.
-Then implement the smallest code matching the plan. Run:
+Agent constraints:
+- Use GPT-5.6 Sol at High reasoning as the single coordinator.
+- Use GPT-5.6 Terra at Medium reasoning as the only permitted worker.
+- Never exceed two total agents at any time: Sol plus at most one Terra.
+- Never spawn another Sol, a second worker, nested agents, reviewers, or swarms.
+- Terra may perform only one bounded task at a time.
+- Sol owns decomposition, architecture, conflict resolution, final decisions,
+  checkpoint creation, verification, and final review.
+- Sol must review each Terra result against repository/source evidence before
+  using it.
+- Do not let Sol and Terra edit the same file concurrently.
+- Do not delegate merely to increase parallelism.
 
-docker build -t transfers-sofascore:test deploy/n8n/sofascore
-docker run --rm --read-only --tmpfs /tmp \
-  -v sofascore-test-cache:/var/lib/soccerdata \
-  transfers-sofascore:test python -m unittest discover -s tests -p 'test_*.py'
-docker volume rm sofascore-test-cache
+Execution:
+1. Read the latest planning checkpoint and docs/plans/sfc_scrape_plan.md.
+2. Implement Milestones 1 through 7 exactly in order. Do not start a later
+   milestone early.
+3. Before each milestone, show a numbered file-level checklist with a concrete
+   verification check for every step and state material assumptions.
+4. Make the smallest changes specified by that milestone. Do not add unrelated
+   refactors, providers, abstractions, configuration, or cleanup.
+5. Keep PLAYER_ENRICHMENT_MODE=off throughout implementation and testing. Do
+   not activate shadow/active against production.
+6. Run every milestone's verification commands and meet every acceptance
+   criterion.
+7. After completing each milestone, stop all further work and write a
+   self-contained checkpoint to:
 
-Stop when Milestone 1 acceptance criteria pass. Report changed files, exact test
-results, remaining package/API risks, and git status. Do not start Milestone 2,
-commit, push, or open a pull request unless explicitly asked.
+   .omx/checkpoints/sfc_scrape/implementation-milestone-XX.md
+
+   Include completed work, files, commands/results, decisions, rejected
+   assumptions, unresolved items, risks, temporary files, current git status,
+   non-checkpoint changes, rollback point, and next milestone.
+8. Display a concise checkpoint summary and print exactly:
+
+   CHECKPOINT COMPLETE: implementation-milestone-XX
+   Safe to run /compact before continuing.
+
+9. Wait for the user to run /compact or explicitly continue. Never start the
+   next milestone automatically.
+10. After compaction, read the newest checkpoint and any dependent earlier
+    checkpoints before resuming.
+11. Do not commit an unfinished milestone. After a milestone passes and its
+    checkpoint exists, commit only that milestone's intended tracked files with
+    a clear message. Never commit checkpoints or temporary probes.
+12. Delete disposable scripts, probe payloads, and runtime artifacts before
+    each milestone checkpoint. Keep required fixtures and checkpoints.
+
+Permanent-test ordering:
+- Earlier milestones may add only the minimum characterization checks specified
+  in the plan.
+- Milestone 7 is the final implementation milestone and must add or finish the
+  complete permanent automated test suite.
+- Milestone 7 must add regression tests for every discovered feature bug/edge
+  case and cover Python unit tests, SQL/constraints, migrations/rollback,
+  identity/aliases/ambiguity, league/season/movement, schema normalization,
+  HTTP contracts, workflow generation, Discord limits, caching/stale fallback,
+  Docker smoke, fixture provider behavior, E2E/import/data-flow, and a separately
+  gated optional live acceptance test.
+- Normal/default tests and any future CI must never access live Sofascore.
+- After all permanent tests are written, run the complete relevant suite, fix
+  feature-related failures only, document every command/result, and perform a
+  final review. No implementation milestone follows Milestone 7.
+
+Hard boundaries:
+- Use soccerdata==1.9.1 and soccerdata.Sofascore only for football data.
+- Use inherited public Sofascore.get(); do not copy/call private transport
+  internals.
+- Do not add ScraperFC, browser automation, rendered-HTML scraping, standalone
+  Sofascore packages, paid APIs, or another provider/fallback.
+- Preserve current X collection, source reliability, Qwen prompt/schema,
+  report merging, material revision semantics, retries/recovery, PostgreSQL
+  restart safety, and Discord delivery idempotency.
+- Enrichment must remain optional. With core PostgreSQL healthy, the digest
+  must complete when every enrichment operation fails.
+- Statistics-only refreshes create no transfer revision or resend.
+- Do not edit generated workflow JSON manually; change the generator and
+  regenerate.
+- Do not edit historical migration 001 or create a destructive in-place down
+  migration.
+- Do not expose PostgreSQL or the enrichment service publicly.
+- Do not put secrets in tracked files or give database credentials to the
+  enrichment service.
+- Do not investigate or restore historical browser/Transfermarkt work; there
+  is no active implementation to remove.
+- Do not modify graphify-out or unrelated files.
+- Do not guess unavailable fields, identities, leagues, seasons, or missing
+  statistics.
+
+Stop conditions:
+- Stop after every milestone checkpoint.
+- Stop before merging.
+- Stop before pushing.
+- Stop before publishing.
+- Stop before opening a pull request.
+- At the end of Milestone 7, report changed/committed files, commit SHAs,
+  complete validation results, optional live-test status, remaining activation
+  blockers, and confirmation that the permanent automated suite was completed
+  in the final implementation milestone.
 ```
