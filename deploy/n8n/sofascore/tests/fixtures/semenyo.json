@@ -1,0 +1,222 @@
+{
+  "endpoints": [
+    {
+      "endpoint": "search/all?q=Antoine%20Semenyo",
+      "response": {
+        "results": [
+          {
+            "entity": {
+              "country": {
+                "name": "Ghana"
+              },
+              "id": 934354,
+              "name": "Antoine Semenyo",
+              "position": "M",
+              "team": {
+                "gender": "M",
+                "id": 17,
+                "name": "Manchester City",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "player/934354",
+      "response": {
+        "player": {
+          "country": {
+            "name": "Ghana"
+          },
+          "dateOfBirthTimestamp": 947203200,
+          "height": 185,
+          "id": 934354,
+          "name": "Antoine Semenyo",
+          "position": "M",
+          "preferredFoot": "Right",
+          "proposedMarketValueRaw": {
+            "currency": "EUR",
+            "value": 85000000
+          },
+          "team": {
+            "gender": "M",
+            "id": 17,
+            "name": "Manchester City",
+            "national": false,
+            "primaryUniqueTournament": {
+              "category": {
+                "alpha2": "EN",
+                "name": "England",
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              },
+              "id": 17,
+              "name": "Premier League",
+              "slug": "premier-league"
+            },
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          }
+        }
+      }
+    },
+    {
+      "endpoint": "unique-tournament/17/seasons",
+      "response": {
+        "seasons": [
+          {
+            "endDateTimestamp": null,
+            "id": 96668,
+            "name": "Premier League 26/27",
+            "startDateTimestamp": null,
+            "year": "26/27"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 76986,
+            "name": "Premier League 25/26",
+            "startDateTimestamp": null,
+            "year": "25/26"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 61627,
+            "name": "Premier League 24/25",
+            "startDateTimestamp": null,
+            "year": "24/25"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 52186,
+            "name": "Premier League 23/24",
+            "startDateTimestamp": null,
+            "year": "23/24"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 41886,
+            "name": "Premier League 22/23",
+            "startDateTimestamp": null,
+            "year": "22/23"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 37036,
+            "name": "Premier League 21/22",
+            "startDateTimestamp": null,
+            "year": "21/22"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "unique-tournament/17",
+      "response": {
+        "uniqueTournament": {
+          "category": {
+            "alpha2": "EN",
+            "name": "England",
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          },
+          "endDateTimestamp": 1811635200,
+          "gender": "M",
+          "id": 17,
+          "name": "Premier League",
+          "slug": "premier-league",
+          "startDateTimestamp": 1787270400,
+          "tier": 1
+        }
+      }
+    },
+    {
+      "endpoint": "player/934354/unique-tournament/17/season/76986/statistics/overall",
+      "response": {
+        "statistics": {
+          "appearances": 37,
+          "assists": 4,
+          "cleanSheet": 11,
+          "expectedAssists": 3.1198385,
+          "expectedGoals": 11.0931,
+          "goals": 17,
+          "matchesStarted": 37,
+          "minutesPlayed": 3200,
+          "rating": 7.0189189189189,
+          "saves": 0
+        }
+      }
+    },
+    {
+      "endpoint": "player/934354/transfer-history",
+      "response": {
+        "transferHistory": [
+          {
+            "fromTeamName": "Bournemouth",
+            "id": 2674794,
+            "toTeamName": "Manchester City",
+            "transferDateTimestamp": 1767916800,
+            "transferFrom": {
+              "id": 60,
+              "name": "Bournemouth"
+            },
+            "transferTo": {
+              "id": 17,
+              "name": "Manchester City"
+            },
+            "type": 3
+          },
+          {
+            "fromTeamName": "Bristol City",
+            "id": 1550668,
+            "toTeamName": "Bournemouth",
+            "transferDateTimestamp": 1674777600,
+            "transferFrom": {
+              "id": 58,
+              "name": "Bristol City"
+            },
+            "transferTo": {
+              "id": 60,
+              "name": "Bournemouth"
+            },
+            "type": 3
+          },
+          {
+            "fromTeamName": "Sunderland",
+            "id": 972230,
+            "toTeamName": "Bristol City",
+            "transferDateTimestamp": 1590883200,
+            "transferFrom": {
+              "id": 41,
+              "name": "Sunderland"
+            },
+            "transferTo": {
+              "id": 58,
+              "name": "Bristol City"
+            },
+            "type": 2
+          }
+        ]
+      }
+    }
+  ],
+  "subject": {
+    "name": "Antoine Semenyo",
+    "provider_player_id": "934354",
+    "provider_season_id": "76986",
+    "provider_unique_tournament_id": "17"
+  }
+}

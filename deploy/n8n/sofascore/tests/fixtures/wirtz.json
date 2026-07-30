@@ -1,0 +1,207 @@
+{
+  "endpoints": [
+    {
+      "endpoint": "search/all?q=Florian%20Wirtz",
+      "response": {
+        "results": [
+          {
+            "entity": {
+              "country": {
+                "name": "Germany"
+              },
+              "id": 1019322,
+              "name": "Florian Wirtz",
+              "position": "M",
+              "team": {
+                "gender": "M",
+                "id": 44,
+                "name": "Liverpool FC",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "player/1019322",
+      "response": {
+        "player": {
+          "country": {
+            "name": "Germany"
+          },
+          "dateOfBirthTimestamp": 1051920000,
+          "height": 175,
+          "id": 1019322,
+          "name": "Florian Wirtz",
+          "position": "M",
+          "preferredFoot": "Right",
+          "proposedMarketValueRaw": {
+            "currency": "EUR",
+            "value": 95000000
+          },
+          "team": {
+            "gender": "M",
+            "id": 44,
+            "name": "Liverpool FC",
+            "national": false,
+            "primaryUniqueTournament": {
+              "category": {
+                "alpha2": "EN",
+                "name": "England",
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              },
+              "id": 17,
+              "name": "Premier League",
+              "slug": "premier-league"
+            },
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          }
+        }
+      }
+    },
+    {
+      "endpoint": "unique-tournament/17/seasons",
+      "response": {
+        "seasons": [
+          {
+            "endDateTimestamp": null,
+            "id": 96668,
+            "name": "Premier League 26/27",
+            "startDateTimestamp": null,
+            "year": "26/27"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 76986,
+            "name": "Premier League 25/26",
+            "startDateTimestamp": null,
+            "year": "25/26"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 61627,
+            "name": "Premier League 24/25",
+            "startDateTimestamp": null,
+            "year": "24/25"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 52186,
+            "name": "Premier League 23/24",
+            "startDateTimestamp": null,
+            "year": "23/24"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 41886,
+            "name": "Premier League 22/23",
+            "startDateTimestamp": null,
+            "year": "22/23"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 37036,
+            "name": "Premier League 21/22",
+            "startDateTimestamp": null,
+            "year": "21/22"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "unique-tournament/17",
+      "response": {
+        "uniqueTournament": {
+          "category": {
+            "alpha2": "EN",
+            "name": "England",
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          },
+          "endDateTimestamp": 1811635200,
+          "gender": "M",
+          "id": 17,
+          "name": "Premier League",
+          "slug": "premier-league",
+          "startDateTimestamp": 1787270400,
+          "tier": 1
+        }
+      }
+    },
+    {
+      "endpoint": "player/1019322/unique-tournament/17/season/76986/statistics/overall",
+      "response": {
+        "statistics": {
+          "appearances": 33,
+          "assists": 3,
+          "cleanSheet": 2,
+          "expectedAssists": 5.17107858,
+          "expectedGoals": 7.025,
+          "goals": 5,
+          "matchesStarted": 27,
+          "minutesPlayed": 2388,
+          "rating": 6.8484848484848,
+          "saves": 0
+        }
+      }
+    },
+    {
+      "endpoint": "player/1019322/transfer-history",
+      "response": {
+        "transferHistory": [
+          {
+            "fromTeamName": "Bayer 04 Leverkusen",
+            "id": 2356647,
+            "toTeamName": "Liverpool FC",
+            "transferDateTimestamp": 1751328000,
+            "transferFrom": {
+              "id": 2681,
+              "name": "Bayer 04 Leverkusen"
+            },
+            "transferTo": {
+              "id": 44,
+              "name": "Liverpool FC"
+            },
+            "type": 3
+          },
+          {
+            "fromTeamName": "Bayer Leverkusen U19",
+            "id": 981966,
+            "toTeamName": "Bayer 04 Leverkusen",
+            "transferDateTimestamp": 1593561600,
+            "transferFrom": {
+              "id": 43716,
+              "name": "Bayer Leverkusen U19"
+            },
+            "transferTo": {
+              "id": 2681,
+              "name": "Bayer 04 Leverkusen"
+            },
+            "type": 3
+          }
+        ]
+      }
+    }
+  ],
+  "subject": {
+    "name": "Florian Wirtz",
+    "provider_player_id": "1019322",
+    "provider_season_id": "76986",
+    "provider_unique_tournament_id": "17"
+  }
+}

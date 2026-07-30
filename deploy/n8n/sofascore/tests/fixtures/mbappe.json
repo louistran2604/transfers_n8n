@@ -1,0 +1,170 @@
+{
+  "endpoints": [
+    {
+      "endpoint": "search/all?q=Kylian%20Mbapp%C3%A9",
+      "response": {
+        "results": [
+          {
+            "entity": {
+              "country": {
+                "name": "France"
+              },
+              "id": 826643,
+              "name": "Kylian Mbappé",
+              "position": "F",
+              "team": {
+                "gender": "M",
+                "id": 2829,
+                "name": "Real Madrid",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "player/826643",
+      "response": {
+        "player": {
+          "country": {
+            "name": "France"
+          },
+          "dateOfBirthTimestamp": 914112000,
+          "height": 180,
+          "id": 826643,
+          "name": "Kylian Mbappé",
+          "position": "F",
+          "preferredFoot": "Right",
+          "proposedMarketValueRaw": {
+            "currency": "EUR",
+            "value": 191000000
+          },
+          "team": {
+            "gender": "M",
+            "id": 2829,
+            "name": "Real Madrid",
+            "national": false,
+            "primaryUniqueTournament": {
+              "category": {
+                "alpha2": "ES",
+                "name": "Spain",
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              },
+              "id": 8,
+              "name": "LaLiga",
+              "slug": "laliga"
+            },
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          }
+        }
+      }
+    },
+    {
+      "endpoint": "unique-tournament/8/seasons",
+      "response": {
+        "seasons": [
+          {
+            "endDateTimestamp": null,
+            "id": 97268,
+            "name": "LaLiga 26/27",
+            "startDateTimestamp": null,
+            "year": "26/27"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 77559,
+            "name": "LaLiga 25/26",
+            "startDateTimestamp": null,
+            "year": "25/26"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 61643,
+            "name": "LaLiga 24/25",
+            "startDateTimestamp": null,
+            "year": "24/25"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 52376,
+            "name": "LaLiga 23/24",
+            "startDateTimestamp": null,
+            "year": "23/24"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 42409,
+            "name": "LaLiga 22/23",
+            "startDateTimestamp": null,
+            "year": "22/23"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 37223,
+            "name": "LaLiga 21/22",
+            "startDateTimestamp": null,
+            "year": "21/22"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "unique-tournament/8",
+      "response": {
+        "uniqueTournament": {
+          "category": {
+            "alpha2": "ES",
+            "name": "Spain",
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          },
+          "endDateTimestamp": 1818460800,
+          "gender": "M",
+          "id": 8,
+          "name": "LaLiga",
+          "slug": "laliga",
+          "startDateTimestamp": 1786838400,
+          "tier": 1
+        }
+      }
+    },
+    {
+      "endpoint": "player/826643/unique-tournament/8/season/77559/statistics/overall",
+      "response": {
+        "statistics": {
+          "appearances": 31,
+          "assists": 5,
+          "cleanSheet": 8,
+          "expectedAssists": 6.2019957,
+          "expectedGoals": 23.9453,
+          "goals": 25,
+          "matchesStarted": 29,
+          "minutesPlayed": 2604,
+          "rating": 7.5612903225806,
+          "saves": 0
+        }
+      }
+    }
+  ],
+  "subject": {
+    "name": "Kylian Mbappé",
+    "provider_player_id": "826643",
+    "provider_season_id": "77559",
+    "provider_unique_tournament_id": "8"
+  }
+}

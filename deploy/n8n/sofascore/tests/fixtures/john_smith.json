@@ -1,0 +1,297 @@
+{
+  "endpoints": [
+    {
+      "endpoint": "search/all?q=John%20Smith",
+      "response": {
+        "results": [
+          {
+            "entity": {
+              "country": {
+                "name": "Australia"
+              },
+              "id": 17038,
+              "name": "John-Patrick Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "team"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "England"
+              },
+              "id": 2544168,
+              "name": "John Smith",
+              "position": "M",
+              "team": {
+                "gender": null,
+                "id": 241802,
+                "name": "No team",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 2332241,
+              "name": "John Smith",
+              "position": "G",
+              "team": {
+                "gender": "M",
+                "id": 329917,
+                "name": "Holy Cross Crusaders",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 12161616,
+              "name": "Michael, John - Smith, Jeff",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 303909,
+              "name": "Johnson C. Smith Golden Bulls",
+              "position": null,
+              "team": null
+            },
+            "type": "team"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 453625,
+              "name": "Johnson C. Smith Golden Bulls",
+              "position": null,
+              "team": null
+            },
+            "type": "team"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "Scotland"
+              },
+              "id": 536518,
+              "name": "Liam Smith",
+              "position": "D",
+              "team": {
+                "gender": "M",
+                "id": 2348,
+                "name": "St. Johnstone",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 7860075,
+              "name": "Norman, John - Smith, Jeff",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 16569338,
+              "name": "Colton Smith - Jeffrey John Wolf",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 305885,
+              "name": "Johnson C. Smith Golden Bulls",
+              "position": null,
+              "team": null
+            },
+            "type": "team"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 813462,
+              "name": "John Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "manager"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 14466746,
+              "name": "Garrett Johns - Colton Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 8549223,
+              "name": "Guido Pella - John-Patrick Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 8262684,
+              "name": "John-Patrick Smith - Nicolas Mahut",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 8265142,
+              "name": "John-Patrick Smith - Salvatore Caruso",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": "USA"
+              },
+              "id": 1207882,
+              "name": "Tameia Shaw",
+              "position": "G",
+              "team": {
+                "gender": "F",
+                "id": 305885,
+                "name": "Johnson C. Smith Golden Bulls",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 2,
+                  "slug": "basketball"
+                }
+              }
+            },
+            "type": "player"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 9273802,
+              "name": "John-Patrick Smith - Paolo Lorenzi",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 16004005,
+              "name": "Colton Smith - Garrett Johns",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 9279582,
+              "name": "Bernard Tomić - John-Patrick Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          },
+          {
+            "entity": {
+              "country": {
+                "name": null
+              },
+              "id": 9277335,
+              "name": "Tallon Griekspoor - John-Patrick Smith",
+              "position": null,
+              "team": null
+            },
+            "type": "event"
+          }
+        ]
+      }
+    }
+  ],
+  "subject": {
+    "name": "John Smith",
+    "provider_player_id": null,
+    "provider_season_id": null,
+    "provider_unique_tournament_id": null
+  }
+}

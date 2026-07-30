@@ -1,0 +1,50 @@
+{
+  "cases": {
+    "corrupt_cache": "{broken-cache",
+    "future_first_seasons": {
+      "seasons": [
+        {
+          "id": 97268,
+          "name": "LaLiga 26/27",
+          "year": "26/27"
+        },
+        {
+          "id": 77559,
+          "name": "LaLiga 25/26",
+          "year": "25/26"
+        }
+      ]
+    },
+    "malformed_json": "{not-json",
+    "missing_profile_envelope": {
+      "unexpected": {}
+    },
+    "mistyped_profile": {
+      "player": []
+    },
+    "provider_failure": {
+      "exception": "ConnectionError"
+    },
+    "rate_limit_exhaustion": {
+      "exception": "RateLimitError"
+    },
+    "reversed_seasons": {
+      "seasons": [
+        {
+          "id": 61643,
+          "name": "LaLiga 24/25",
+          "year": "24/25"
+        },
+        {
+          "id": 77559,
+          "name": "LaLiga 25/26",
+          "year": "25/26"
+        }
+      ]
+    },
+    "timeout": {
+      "sleep_seconds": 30
+    }
+  },
+  "synthetic": true
+}
