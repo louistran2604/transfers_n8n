@@ -715,7 +715,7 @@ function isDigestEligible(report) {
     && hasNamedClub(report.destination_club_name);
 }
 
-function storyText(report) {
+function storyLines(report) {
   const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
   const details = [
     `Classification: ${report.classification.replaceAll('_', ' ')}`,
@@ -734,12 +734,152 @@ function storyText(report) {
   ];
   const source = report.preferred_source?.display_name ?? report.source?.display_name ?? 'Source';
   const sourceUrl = report.sources?.[0]?.post_url ?? report.post_url;
-  return [clubDirection, ...details, `Confidence: ${Math.round(report.confidence * 100)}%`, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean).join('\n');
+  return [clubDirection, ...details, `Confidence: ${Math.round(report.confidence * 100)}%`, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
 }
 
 function truncate(value, maximum) {
   const text = String(value ?? '');
-  return text.length <= maximum ? text : `${text.slice(0, Math.max(0, maximum - 1))}…`;
+  if (text.length <= maximum) return text;
+  const segments = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(({ segment }) => segment)
+    : [...text];
+  let result = '';
+  for (const segment of segments) {
+    if (result.length + segment.length + 1 > maximum) break;
+    result += segment;
+  }
+  return `${result}…`;
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function namedEnrichmentValue(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text && !/^(unknown|n\/?a|not[ _-]?reported)$/i.test(text) ? text : null;
+}
+
+function staleLabel(snapshot, now, maximumAgeMs) {
+  if (snapshot?.stale !== true) return '';
+  const retrievedAt = Date.parse(String(snapshot.retrieved_at ?? ''));
+  const ageMs = now - retrievedAt;
+  if (!Number.isFinite(retrievedAt) || ageMs < 0 || ageMs > maximumAgeMs) return null;
+  if (ageMs < 60 * 60 * 1000) return 'stale <1h';
+  const hours = Math.floor(ageMs / (60 * 60 * 1000));
+  return hours >= 48 ? `stale ${Math.floor(hours / 24)}d` : `stale ${hours}h`;
+}
+
+function compactValue(value, currency) {
+  const amount = finiteNumber(value);
+  const code = String(currency ?? '').trim().toUpperCase();
+  if (amount === null || amount < 0 || !ISO_CURRENCY.test(code)) return null;
+  const units = amount >= 1_000_000
+    ? `${Number((amount / 1_000_000).toFixed(1))}m`
+    : (amount >= 1_000 ? `${Number((amount / 1_000).toFixed(1))}k` : String(amount));
+  const symbols = { EUR: '€', GBP: '£', USD: '$' };
+  return symbols[code] ? `${symbols[code]}${units}` : `${units} ${code}`;
+}
+
+function integerStatistic(value, label) {
+  const number = finiteNumber(value);
+  return number === null ? null : `${Math.trunc(number).toLocaleString('en-US')} ${label}`;
+}
+
+function decimalStatistic(value, label) {
+  const number = finiteNumber(value);
+  return number === null ? null : `${number.toFixed(2)} ${label}`;
+}
+
+function enrichmentGroups(enrichment, now) {
+  if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) return [];
+  const profile = enrichment.profile && typeof enrichment.profile === 'object' && !Array.isArray(enrichment.profile)
+    ? enrichment.profile
+    : null;
+  const statistics = enrichment.statistics && typeof enrichment.statistics === 'object' && !Array.isArray(enrichment.statistics)
+    ? enrichment.statistics
+    : null;
+
+  const profileClub = namedEnrichmentValue(profile?.current_club_name);
+  const profileStale = profile
+    ? staleLabel(profile, now, profileClub ? 72 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)
+    : null;
+  const statisticsStale = statistics
+    ? staleLabel(statistics, now, 72 * 60 * 60 * 1000)
+    : null;
+
+  const competition = namedEnrichmentValue(statistics?.competition_name);
+  const season = namedEnrichmentValue(statistics?.season_label);
+  const scope = statistics?.scope === 'selected_domestic_league_all_clubs'
+    ? 'selected league, all clubs'
+    : null;
+  const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
+  const primaryStatistics = statisticsValid ? [
+    integerStatistic(statistics.appearances, 'app'),
+    integerStatistic(statistics.minutes_played, 'min'),
+    integerStatistic(statistics.goals, 'G'),
+    integerStatistic(statistics.assists, 'A'),
+  ].filter(Boolean) : [];
+  const statisticsHeader = statisticsValid
+    ? `${competition} ${season} · ${scope}${statisticsStale ? ` · ${statisticsStale}` : ''}`
+    : null;
+
+  const profileParts = profile && profileStale !== null ? [
+    profileClub,
+    namedEnrichmentValue(profile.nationality),
+    finiteNumber(profile.age) === null ? null : String(Math.trunc(finiteNumber(profile.age))),
+    namedEnrichmentValue(profile.primary_position),
+    compactValue(profile.market_value, profile.market_value_currency)
+      ? `Sofascore value ${compactValue(profile.market_value, profile.market_value_currency)}`
+      : null,
+  ].filter(Boolean) : [];
+  const profileLine = profileParts.length
+    ? `Profile${profileStale ? ` · ${profileStale}` : ''}: ${profileParts.join(' · ')}`
+    : null;
+
+  const advancedStatistics = statisticsValid ? [
+    integerStatistic(statistics.starts, 'starts'),
+    finiteNumber(statistics.minutes_per_appearance) === null
+      ? null
+      : `${Number(finiteNumber(statistics.minutes_per_appearance).toFixed(1))} min/app`,
+    decimalStatistic(statistics.expected_goals, 'xG'),
+    decimalStatistic(statistics.expected_assists, 'xA'),
+    decimalStatistic(statistics.average_rating, 'rating'),
+  ].filter(Boolean) : [];
+
+  const profileDetails = profile && profileStale !== null ? [
+    namedEnrichmentValue(profile.date_of_birth) ? `Born ${profile.date_of_birth.trim()}` : null,
+    finiteNumber(profile.height_cm) === null ? null : `${Math.trunc(finiteNumber(profile.height_cm))} cm`,
+    namedEnrichmentValue(profile.preferred_foot) ? `${profile.preferred_foot.trim()} foot` : null,
+  ].filter(Boolean) : [];
+
+  const lowerPriorityStatistics = statisticsValid ? [
+    integerStatistic(statistics.yellow_cards, 'yellow'),
+    integerStatistic(statistics.red_cards, 'red'),
+    integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
+    integerStatistic(statistics.goalkeeper_saves, 'saves'),
+  ].filter(Boolean) : [];
+  const statisticsContextLine = statisticsHeader && (
+    primaryStatistics.length
+    || advancedStatistics.length
+    || lowerPriorityStatistics.length
+    || statisticsStale
+  )
+    ? (primaryStatistics.length
+      ? `${statisticsHeader}: ${primaryStatistics.join(' · ')}`
+      : (statisticsStale ? `Last confirmed: ${statisticsHeader}` : statisticsHeader))
+    : null;
+
+  return [
+    { priority: 1, displayOrder: 2, line: statisticsContextLine },
+    { priority: 2, displayOrder: 1, line: profileLine },
+    { priority: 3, displayOrder: 3, line: advancedStatistics.length ? `Advanced: ${advancedStatistics.join(' · ')}` : null },
+    { priority: 4, displayOrder: 4, line: profileDetails.length ? `Details: ${profileDetails.join(' · ')}` : null },
+    { priority: 5, displayOrder: 5, line: lowerPriorityStatistics.length ? `Other: ${lowerPriorityStatistics.join(' · ')}` : null },
+  ];
 }
 
 export function selectDigestReports(reports) {
@@ -768,26 +908,59 @@ export function selectDigestReports(reports) {
   return [...normal, ...extra];
 }
 
-export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt } = {}) {
+export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, now = Date.now() } = {}) {
   const selected = selectDigestReports(reports);
+  const range = windowStartedAt && windowEndedAt ? ` (${windowStartedAt} to ${windowEndedAt})` : '';
+  const title = truncate(`Football transfer digest${range}`, 256);
+  const footerText = (count) => `${count} new material report${count === 1 ? '' : 's'}`;
   const fields = [];
-  let totalCharacters = 45;
   for (const report of selected) {
     if (fields.length >= 25) break;
     const name = truncate(`${fields.length + 1}. ${report.player_name}`, 256);
-    const value = truncate(storyText(report), 1024);
-    if (totalCharacters + name.length + value.length > 6000) continue;
-    fields.push({ name, value, inline: false });
-    totalCharacters += name.length + value.length;
+    const lines = storyLines(report);
+    const value = lines.join('\n');
+    const currentCharacters = title.length + footerText(fields.length).length
+      + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+    const candidateCharacters = currentCharacters - footerText(fields.length).length
+      + footerText(fields.length + 1).length + name.length + value.length;
+    if (value.length > 1024 || candidateCharacters > 6000) continue;
+    fields.push({ name, value, inline: false, lines, report });
   }
-  const range = windowStartedAt && windowEndedAt ? ` (${windowStartedAt} to ${windowEndedAt})` : '';
+
+  let totalCharacters = title.length + footerText(fields.length).length
+    + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+  for (const field of fields) {
+    const accepted = [];
+    const sourceLine = field.lines.at(-1);
+    const transferLines = field.lines.slice(0, -1);
+    for (const group of enrichmentGroups(field.report.enrichment, Number(now))) {
+      if (!group.line) continue;
+      const nextAccepted = [...accepted, group];
+      const enrichmentLines = nextAccepted
+        .toSorted((left, right) => left.displayOrder - right.displayOrder)
+        .map(({ line }) => line);
+      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      const difference = value.length - field.value.length;
+      if (value.length > 1024 || totalCharacters + difference > 6000) break;
+      accepted.push(group);
+    }
+    if (accepted.length) {
+      const enrichmentLines = accepted
+        .toSorted((left, right) => left.displayOrder - right.displayOrder)
+        .map(({ line }) => line);
+      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      totalCharacters += value.length - field.value.length;
+      field.value = value;
+    }
+  }
+
   return {
     allowed_mentions: { parse: [] },
     embeds: [{
-      title: truncate(`Football transfer digest${range}`, 256),
+      title,
       color: 0x1d9bf0,
-      fields,
-      footer: { text: `${fields.length} new material report${fields.length === 1 ? '' : 's'}` },
+      fields: fields.map(({ lines, report, ...field }) => field),
+      footer: { text: footerText(fields.length) },
     }],
   };
 }

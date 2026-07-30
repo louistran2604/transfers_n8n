@@ -1307,11 +1307,116 @@ return [{ json: {
 function digestCode() {
   return `
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
-const truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';
+const truncate = (value, maximum) => {
+  const text = String(value ?? '');
+  if (text.length <= maximum) return text;
+  const segments = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(({ segment }) => segment)
+    : [...text];
+  let result = '';
+  for (const segment of segments) {
+    if (result.length + segment.length + 1 > maximum) break;
+    result += segment;
+  }
+  return result + '…';
+};
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
+const finiteNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+const namedEnrichmentValue = (value) => {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text && !/^(unknown|n\\/?a|not[ _-]?reported)$/i.test(text) ? text : null;
+};
+const staleLabel = (snapshot, now, maximumAgeMs) => {
+  if (snapshot?.stale !== true) return '';
+  const retrievedAt = Date.parse(String(snapshot.retrieved_at ?? ''));
+  const ageMs = now - retrievedAt;
+  if (!Number.isFinite(retrievedAt) || ageMs < 0 || ageMs > maximumAgeMs) return null;
+  if (ageMs < 60 * 60 * 1000) return 'stale <1h';
+  const hours = Math.floor(ageMs / (60 * 60 * 1000));
+  return hours >= 48 ? 'stale ' + Math.floor(hours / 24) + 'd' : 'stale ' + hours + 'h';
+};
+const compactValue = (value, currency) => {
+  const marketValue = finiteNumber(value);
+  const code = String(currency ?? '').trim().toUpperCase();
+  if (marketValue === null || marketValue < 0 || !/^[A-Z]{3}$/.test(code)) return null;
+  const units = marketValue >= 1000000
+    ? Number((marketValue / 1000000).toFixed(1)) + 'm'
+    : (marketValue >= 1000 ? Number((marketValue / 1000).toFixed(1)) + 'k' : String(marketValue));
+  const symbols = { EUR: '€', GBP: '£', USD: '$' };
+  return symbols[code] ? symbols[code] + units : units + ' ' + code;
+};
+const integerStatistic = (value, label) => {
+  const number = finiteNumber(value);
+  return number === null ? null : Math.trunc(number).toLocaleString('en-US') + ' ' + label;
+};
+const decimalStatistic = (value, label) => {
+  const number = finiteNumber(value);
+  return number === null ? null : number.toFixed(2) + ' ' + label;
+};
+const enrichmentGroups = (enrichment, now) => {
+  if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) return [];
+  const profile = enrichment.profile && typeof enrichment.profile === 'object' && !Array.isArray(enrichment.profile) ? enrichment.profile : null;
+  const statistics = enrichment.statistics && typeof enrichment.statistics === 'object' && !Array.isArray(enrichment.statistics) ? enrichment.statistics : null;
+  const profileClub = namedEnrichmentValue(profile?.current_club_name);
+  const profileStale = profile ? staleLabel(profile, now, profileClub ? 72 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000) : null;
+  const statisticsStale = statistics ? staleLabel(statistics, now, 72 * 60 * 60 * 1000) : null;
+  const competition = namedEnrichmentValue(statistics?.competition_name);
+  const season = namedEnrichmentValue(statistics?.season_label);
+  const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'selected league, all clubs' : null;
+  const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
+  const primaryStatistics = statisticsValid ? [
+    integerStatistic(statistics.appearances, 'app'),
+    integerStatistic(statistics.minutes_played, 'min'),
+    integerStatistic(statistics.goals, 'G'),
+    integerStatistic(statistics.assists, 'A'),
+  ].filter(Boolean) : [];
+  const statisticsHeader = statisticsValid ? competition + ' ' + season + ' · ' + scope + (statisticsStale ? ' · ' + statisticsStale : '') : null;
+  const marketValue = profile ? compactValue(profile.market_value, profile.market_value_currency) : null;
+  const profileParts = profile && profileStale !== null ? [
+    profileClub,
+    namedEnrichmentValue(profile.nationality),
+    finiteNumber(profile.age) === null ? null : String(Math.trunc(finiteNumber(profile.age))),
+    namedEnrichmentValue(profile.primary_position),
+    marketValue ? 'Sofascore value ' + marketValue : null,
+  ].filter(Boolean) : [];
+  const profileLine = profileParts.length ? 'Profile' + (profileStale ? ' · ' + profileStale : '') + ': ' + profileParts.join(' · ') : null;
+  const advancedStatistics = statisticsValid ? [
+    integerStatistic(statistics.starts, 'starts'),
+    finiteNumber(statistics.minutes_per_appearance) === null ? null : Number(finiteNumber(statistics.minutes_per_appearance).toFixed(1)) + ' min/app',
+    decimalStatistic(statistics.expected_goals, 'xG'),
+    decimalStatistic(statistics.expected_assists, 'xA'),
+    decimalStatistic(statistics.average_rating, 'rating'),
+  ].filter(Boolean) : [];
+  const profileDetails = profile && profileStale !== null ? [
+    namedEnrichmentValue(profile.date_of_birth) ? 'Born ' + profile.date_of_birth.trim() : null,
+    finiteNumber(profile.height_cm) === null ? null : Math.trunc(finiteNumber(profile.height_cm)) + ' cm',
+    namedEnrichmentValue(profile.preferred_foot) ? profile.preferred_foot.trim() + ' foot' : null,
+  ].filter(Boolean) : [];
+  const lowerPriorityStatistics = statisticsValid ? [
+    integerStatistic(statistics.yellow_cards, 'yellow'),
+    integerStatistic(statistics.red_cards, 'red'),
+    integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
+    integerStatistic(statistics.goalkeeper_saves, 'saves'),
+  ].filter(Boolean) : [];
+  const statisticsContextLine = statisticsHeader && (primaryStatistics.length || advancedStatistics.length || lowerPriorityStatistics.length || statisticsStale)
+    ? (primaryStatistics.length ? statisticsHeader + ': ' + primaryStatistics.join(' · ') : (statisticsStale ? 'Last confirmed: ' + statisticsHeader : statisticsHeader))
+    : null;
+  return [
+    { priority: 1, displayOrder: 2, line: statisticsContextLine },
+    { priority: 2, displayOrder: 1, line: profileLine },
+    { priority: 3, displayOrder: 3, line: advancedStatistics.length ? 'Advanced: ' + advancedStatistics.join(' · ') : null },
+    { priority: 4, displayOrder: 4, line: profileDetails.length ? 'Details: ' + profileDetails.join(' · ') : null },
+    { priority: 5, displayOrder: 5, line: lowerPriorityStatistics.length ? 'Other: ' + lowerPriorityStatistics.join(' · ') : null },
+  ];
+};
 const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
-const digestStoryKey = (report) => String(report.player_name ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const digestStoryKey = (report) => String(report.player_name ?? '').normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const digestPriority = (report) => {
   if (report.classification === 'official_confirmed') return 0;
   const username = String(report.preferred_source.username ?? '').toLowerCase();
@@ -1342,11 +1447,15 @@ const distinctCandidateReports = candidateReports.filter((report) => {
   return true;
 });
 const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3)];
-let total = 45;
+const now = new Date();
+const title = 'Football transfer digest';
+const footerText = (count) => String(count) + ' new material report' + (count === 1 ? '' : 's');
 const fields = [];
 for (const report of selected) {
+  if (fields.length >= 25) break;
   const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);
-  const details = [
+  const sourceLine = report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name;
+  const lines = [
     report.current_club_name + ' → ' + report.destination_club_name,
     'Classification: ' + report.classification.replaceAll('_', ' '),
     report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
@@ -1362,17 +1471,38 @@ for (const report of selected) {
     report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,
     report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,
     'Confidence: ' + Math.round(report.confidence * 100) + '%',
-    report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name,
-  ];
-  const value = truncate(details.filter(Boolean).join('\\n'), 1024);
-  if (fields.length >= 25 || total + name.length + value.length > 6000) continue;
-  total += name.length + value.length;
-  fields.push({ name, value, inline: false, revision_id: report.revision_id });
+    sourceLine,
+  ].filter(Boolean);
+  const value = lines.join('\\n');
+  const currentCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+  const candidateCharacters = currentCharacters - footerText(fields.length).length + footerText(fields.length + 1).length + name.length + value.length;
+  if (value.length > 1024 || candidateCharacters > 6000) continue;
+  fields.push({ name, value, inline: false, revision_id: report.revision_id, lines, report });
 }
-const now = new Date();
+let totalCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+for (const field of fields) {
+  const accepted = [];
+  const sourceLine = field.lines.at(-1);
+  const transferLines = field.lines.slice(0, -1);
+  for (const group of enrichmentGroups(field.report.enrichment, now.valueOf())) {
+    if (!group.line) continue;
+    const nextAccepted = [...accepted, group];
+    const enrichmentLines = nextAccepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
+    const value = [...transferLines, ...enrichmentLines, sourceLine].join('\\n');
+    const difference = value.length - field.value.length;
+    if (value.length > 1024 || totalCharacters + difference > 6000) break;
+    accepted.push(group);
+  }
+  if (accepted.length) {
+    const enrichmentLines = accepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
+    const value = [...transferLines, ...enrichmentLines, sourceLine].join('\\n');
+    totalCharacters += value.length - field.value.length;
+    field.value = value;
+  }
+}
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
 const end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);
-const payload = { allowed_mentions: { parse: [] }, embeds: [{ title: 'Football transfer digest', color: 1948592, fields: fields.map(({ revision_id, ...field }) => field), footer: { text: String(fields.length) + ' new material report' + (fields.length === 1 ? '' : 's') } }] };
+const payload = { allowed_mentions: { parse: [] }, embeds: [{ title, color: 1948592, fields: fields.map(({ name, value, inline }) => ({ name, value, inline })), footer: { text: footerText(fields.length) } }] };
 let discordPayload = payload;
 if (pending) {
   try {
@@ -1386,7 +1516,6 @@ if (pending) {
 }
 return fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: discordPayload })] } }] : [];`;
 }
-
 function mainWorkflow({ registry, prompt, schema }) {
   const registryJson = JSON.stringify(registry);
   const schemaJson = JSON.stringify(schema);
