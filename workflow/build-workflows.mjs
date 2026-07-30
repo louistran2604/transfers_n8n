@@ -36,7 +36,7 @@ function codeNode(name, position, js) {
   });
 }
 
-function postgresNode(name, position, query, queryReplacement) {
+function postgresNode(name, position, query, queryReplacement, extras = {}) {
   const options = {
     queryBatching: 'transaction',
     outputLargeFormatNumbers: 'text',
@@ -46,7 +46,7 @@ function postgresNode(name, position, query, queryReplacement) {
     operation: 'executeQuery',
     query,
     options,
-  }, { credentials: postgresCredential });
+  }, { credentials: postgresCredential, ...extras });
 }
 
 function httpNode(name, position, parameters, extras = {}) {
@@ -152,7 +152,14 @@ report AS (
     COALESCE(payload->'normalized_data', '{}'::jsonb)
   FROM input
   ON CONFLICT (dedupe_key) DO UPDATE
-  SET player_id = EXCLUDED.player_id, reported_player_name = EXCLUDED.reported_player_name,
+  SET player_id = CASE
+        WHEN EXISTS (
+          SELECT 1 FROM transfer_report_player_resolutions
+          WHERE transfer_report_id = transfer_reports.id
+        ) THEN transfer_reports.player_id
+        ELSE EXCLUDED.player_id
+      END,
+      reported_player_name = EXCLUDED.reported_player_name,
       current_club_name = COALESCE(EXCLUDED.current_club_name, transfer_reports.current_club_name),
       destination_club_name = COALESCE(EXCLUDED.destination_club_name, transfer_reports.destination_club_name),
       classification = EXCLUDED.classification, move_type = EXCLUDED.move_type,
@@ -210,6 +217,518 @@ SELECT (SELECT id::text FROM report) AS transfer_report_id,
   (SELECT payload->>'preferred_raw_post_id' FROM input) AS preferred_raw_post_id;`.trim();
 }
 
+function enrichmentContextSql() {
+  return `
+WITH requested AS (
+  SELECT value::text::bigint AS transfer_report_id
+  FROM jsonb_array_elements_text($1::jsonb)
+)
+SELECT
+  tr.id::text AS transfer_report_id,
+  tr.player_id::text AS placeholder_player_id,
+  tr.reported_player_name,
+  tr.current_club_name,
+  tr.destination_club_name,
+  tr.classification,
+  tr.move_type,
+  provider_id.provider_player_id,
+  current.profile_snapshot_id::text,
+  current.current_provider_team_id::text AS profile_current_provider_team_id,
+  current.profile_fresh_until,
+  current.statistics_snapshot_id::text,
+  current.statistics_fresh_until,
+  COALESCE(aliases.rows, '[]'::jsonb) AS aliases,
+  COALESCE(overrides.rows, '[]'::jsonb) AS identity_overrides,
+  CASE WHEN current.provider_team_id IS NOT NULL
+         AND team_mapping.fresh_until > CURRENT_TIMESTAMP
+       THEN jsonb_build_object(
+         'provider_team_id', current.provider_team_id,
+         'provider_unique_tournament_id', competition.provider_unique_tournament_id
+       )
+       ELSE NULL
+  END AS team_mapping,
+  team_mapping.fresh_until > CURRENT_TIMESTAMP AS team_mapping_fresh,
+  CASE WHEN season.id IS NOT NULL AND season.fresh_until > CURRENT_TIMESTAMP
+       THEN jsonb_build_object(
+         'provider_season_id', season.provider_season_id,
+         'label', season.label,
+         'state', season.season_state
+       )
+       ELSE NULL
+  END AS season_mapping,
+  season.fresh_until > CURRENT_TIMESTAMP AS season_mapping_fresh,
+  latest_attempt.status AS latest_attempt_status,
+  latest_attempt.started_at AS latest_attempt_started_at,
+  latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
+  $2::text AS workflow_run_id
+FROM requested
+JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
+LEFT JOIN transfer_report_player_resolutions resolution
+  ON resolution.transfer_report_id = tr.id
+LEFT JOIN player_provider_ids provider_id
+  ON provider_id.id = resolution.player_provider_id
+LEFT JOIN current_player_enrichment current
+  ON current.transfer_report_id = tr.id
+LEFT JOIN provider_teams team
+  ON team.id = current.current_provider_team_id
+LEFT JOIN team_competition_mappings team_mapping
+  ON team_mapping.provider_team_id = team.id
+ AND team_mapping.superseded_at IS NULL
+LEFT JOIN provider_competitions competition
+  ON competition.id = team_mapping.provider_competition_id
+LEFT JOIN provider_seasons season
+  ON season.provider_competition_id = competition.id
+ AND season.is_selected
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(alias.alias ORDER BY alias.id) AS rows
+  FROM player_aliases alias
+  WHERE alias.player_id = provider_id.player_id
+    AND alias.provider = 'sofascore'
+    AND alias.is_active
+) aliases ON true
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'action', CASE identity_override.override_action
+      WHEN 'reject_candidate' THEN 'reject'
+      ELSE identity_override.override_action
+    END,
+    'provider_player_id', identity_override.provider_player_id,
+    'effective_from', identity_override.effective_at,
+    'revoked_at', identity_override.revoked_at,
+    'active', identity_override.revoked_at IS NULL
+  ) ORDER BY identity_override.id) AS rows
+  FROM player_identity_overrides identity_override
+  WHERE identity_override.provider = 'sofascore'
+    AND identity_override.revoked_at IS NULL
+    AND identity_override.effective_at <= CURRENT_TIMESTAMP
+    AND identity_override.reported_name_key = regexp_replace(
+      lower(btrim(tr.reported_player_name)), '[[:punct:][:space:]]+', ' ', 'g'
+    )
+) overrides ON true
+LEFT JOIN LATERAL (
+  SELECT attempt.status, attempt.started_at, attempt.next_retry_at
+  FROM player_enrichment_attempts attempt
+  WHERE attempt.transfer_report_id = tr.id
+  ORDER BY attempt.started_at DESC, attempt.id DESC
+  LIMIT 1
+) latest_attempt ON true
+ORDER BY tr.id;`.trim();
+}
+
+function persistEnrichmentSql() {
+  return `
+WITH input AS (
+  SELECT $1::jsonb AS payload, $2::bigint AS workflow_run_id
+),
+items AS (
+  SELECT item
+  FROM input, jsonb_array_elements(input.payload->'items') item
+),
+expanded AS (
+  SELECT item, report_id::text::bigint AS transfer_report_id
+  FROM items, jsonb_array_elements_text(item->'report_ids') report_id
+),
+resolved_items AS (
+  SELECT DISTINCT ON (item->'identity'->>'provider_player_id')
+    item,
+    item->'identity'->>'provider_player_id' AS provider_player_id,
+    item->'identity'->>'stable_source_identifier' AS stable_source_identifier,
+    item->'identity'->>'canonical_name' AS canonical_name
+  FROM expanded
+  WHERE item->'identity' IS NOT NULL
+    AND item->'identity'->>'provider' = 'sofascore'
+    AND item->'identity'->>'provider_player_id' ~ '^[0-9]+$'
+  ORDER BY item->'identity'->>'provider_player_id', transfer_report_id
+),
+canonical_players AS (
+  INSERT INTO players (identity_key, display_name, normalized_name)
+  SELECT stable_source_identifier, canonical_name,
+    COALESCE(NULLIF(item->'request_context'->>'reported_name_key', ''), lower(canonical_name))
+  FROM resolved_items
+  WHERE NULLIF(stable_source_identifier, '') IS NOT NULL
+    AND NULLIF(canonical_name, '') IS NOT NULL
+  ON CONFLICT (identity_key) DO UPDATE
+  SET display_name = EXCLUDED.display_name,
+      normalized_name = EXCLUDED.normalized_name
+  RETURNING id, identity_key
+),
+provider_ids AS (
+  INSERT INTO player_provider_ids (
+    player_id, provider, provider_player_id, canonical_name, mapping_source,
+    match_score, match_margin, resolver_version, evidence, verified_at, last_seen_at
+  )
+  SELECT player.id, 'sofascore', resolved.provider_player_id, resolved.canonical_name,
+    CASE WHEN resolved.item->'identity'->>'resolver_version' = 'manual-identity-v1'
+      THEN 'manual' ELSE 'automatic' END,
+    NULLIF(resolved.item->'identity'->>'score', '')::numeric,
+    NULLIF(resolved.item->'identity'->>'margin', '')::numeric,
+    resolved.item->'identity'->>'resolver_version',
+    jsonb_build_object('item_key', resolved.item->>'item_key'),
+    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  FROM resolved_items resolved
+  JOIN canonical_players player
+    ON player.identity_key = resolved.stable_source_identifier
+  ON CONFLICT (provider, provider_player_id) DO UPDATE
+  SET canonical_name = EXCLUDED.canonical_name,
+      match_score = EXCLUDED.match_score,
+      match_margin = EXCLUDED.match_margin,
+      resolver_version = EXCLUDED.resolver_version,
+      evidence = EXCLUDED.evidence,
+      verified_at = EXCLUDED.verified_at,
+      last_seen_at = EXCLUDED.last_seen_at
+  RETURNING id, player_id, provider_player_id
+),
+report_resolutions AS (
+  INSERT INTO transfer_report_player_resolutions (
+    transfer_report_id, player_provider_id, resolution_source, match_score,
+    match_margin, resolver_version, evidence, verified_at
+  )
+  SELECT expanded.transfer_report_id, provider_id.id,
+    CASE WHEN expanded.item->'identity'->>'resolver_version' = 'manual-identity-v1'
+      THEN 'manual' ELSE 'automatic' END,
+    NULLIF(expanded.item->'identity'->>'score', '')::numeric,
+    NULLIF(expanded.item->'identity'->>'margin', '')::numeric,
+    expanded.item->'identity'->>'resolver_version',
+    jsonb_build_object('item_key', expanded.item->>'item_key'),
+    CURRENT_TIMESTAMP
+  FROM expanded
+  JOIN provider_ids provider_id
+    ON provider_id.provider_player_id = expanded.item->'identity'->>'provider_player_id'
+  ON CONFLICT (transfer_report_id) DO UPDATE
+  SET player_provider_id = EXCLUDED.player_provider_id,
+      resolution_source = EXCLUDED.resolution_source,
+      match_score = EXCLUDED.match_score,
+      match_margin = EXCLUDED.match_margin,
+      resolver_version = EXCLUDED.resolver_version,
+      evidence = EXCLUDED.evidence,
+      verified_at = EXCLUDED.verified_at
+  RETURNING transfer_report_id, player_provider_id
+),
+canonical_reports AS (
+  UPDATE transfer_reports report
+  SET player_id = provider_id.player_id
+  FROM report_resolutions resolution
+  JOIN provider_ids provider_id
+    ON provider_id.id = resolution.player_provider_id
+  WHERE report.id = resolution.transfer_report_id
+  RETURNING report.id, report.player_id
+),
+aliases AS (
+  INSERT INTO player_aliases (
+    player_id, provider, alias, unicode_key, folded_key, alias_type, source, evidence
+  )
+  SELECT DISTINCT canonical.player_id, 'sofascore', report.reported_player_name,
+    expanded.item->'request_context'->>'reported_name_key',
+    expanded.item->'request_context'->>'reported_name_key',
+    'report', 'transfer_report',
+    jsonb_build_object('transfer_report_id', report.id::text)
+  FROM expanded
+  JOIN canonical_reports canonical ON canonical.id = expanded.transfer_report_id
+  JOIN transfer_reports report ON report.id = expanded.transfer_report_id
+  WHERE NULLIF(expanded.item->'request_context'->>'reported_name_key', '') IS NOT NULL
+  ON CONFLICT (player_id, provider, unicode_key) DO UPDATE
+  SET alias = EXCLUDED.alias, evidence = EXCLUDED.evidence, is_active = true
+  RETURNING id
+),
+teams AS (
+  INSERT INTO provider_teams (
+    provider, provider_team_id, canonical_name, unicode_key, folded_key,
+    country, category, entity_scope, gender, age_group,
+    raw_metadata_sha256, metadata_schema_version, last_seen_at
+  )
+  SELECT DISTINCT ON (item->'profile'->'current_club'->>'provider_team_id')
+    'sofascore',
+    item->'profile'->'current_club'->>'provider_team_id',
+    item->'profile'->'current_club'->>'name',
+    lower(item->'profile'->'current_club'->>'name'),
+    lower(item->'profile'->'current_club'->>'name'),
+    item->'profile'->'raw_payload'->'player'->'team'->'country'->>'name',
+    item->'profile'->'raw_payload'->'player'->'team'->'category'->>'name',
+    'club', 'men', 'senior',
+    item->'profile'->>'raw_sha256', 'sofascore-adapter-v1',
+    (item->'profile'->>'retrieved_at')::timestamptz
+  FROM items
+  WHERE item->'profile'->'current_club'->>'provider_team_id' ~ '^[0-9]+$'
+    AND NULLIF(item->'profile'->'current_club'->>'name', '') IS NOT NULL
+  ON CONFLICT (provider, provider_team_id) DO UPDATE
+  SET canonical_name = EXCLUDED.canonical_name,
+      unicode_key = EXCLUDED.unicode_key,
+      folded_key = EXCLUDED.folded_key,
+      country = EXCLUDED.country,
+      category = EXCLUDED.category,
+      raw_metadata_sha256 = EXCLUDED.raw_metadata_sha256,
+      metadata_schema_version = EXCLUDED.metadata_schema_version,
+      last_seen_at = EXCLUDED.last_seen_at
+  RETURNING id, provider_team_id
+),
+competitions AS (
+  INSERT INTO provider_competitions (
+    provider, provider_unique_tournament_id, name, competition_kind,
+    team_scope, gender, age_group, tier, eligibility, classification_source,
+    rule_version, evidence, last_seen_at
+  )
+  SELECT DISTINCT ON (item->'statistics'->>'provider_unique_tournament_id')
+    'sofascore',
+    item->'statistics'->>'provider_unique_tournament_id',
+    item->'statistics'->>'competition',
+    'domestic_league', 'club', 'men', 'senior', 1, 'eligible', 'automatic',
+    'competition-v1',
+    jsonb_build_object('validated_by_service', true, 'item_key', item->>'item_key'),
+    (item->'statistics'->>'retrieved_at')::timestamptz
+  FROM items
+  WHERE item->'statistics'->>'provider_unique_tournament_id' ~ '^[0-9]+$'
+    AND NULLIF(item->'statistics'->>'competition', '') IS NOT NULL
+  ON CONFLICT (provider, provider_unique_tournament_id) DO UPDATE
+  SET name = EXCLUDED.name,
+      evidence = EXCLUDED.evidence,
+      last_seen_at = EXCLUDED.last_seen_at
+  RETURNING id, provider_unique_tournament_id
+),
+incoming_seasons AS (
+  SELECT DISTINCT ON (
+    competition.id, item->'statistics'->>'provider_season_id'
+  ) competition.id AS provider_competition_id,
+    item->'statistics'->>'provider_season_id' AS provider_season_id,
+    item->'statistics'->>'season' AS label,
+    item->'statistics'->>'season_state' AS season_state,
+    item->'statistics'->>'content_sha256' AS provider_list_sha256,
+    (item->'statistics'->>'retrieved_at')::timestamptz AS retrieved_at
+  FROM items
+  JOIN competitions competition
+    ON competition.provider_unique_tournament_id =
+      item->'statistics'->>'provider_unique_tournament_id'
+  WHERE item->'statistics'->>'provider_season_id' ~ '^[0-9]+$'
+    AND item->'statistics'->>'season_state' IN ('active', 'latest_completed')
+    AND NULLIF(item->'statistics'->>'season', '') IS NOT NULL
+),
+deselected_seasons AS (
+  UPDATE provider_seasons season
+  SET is_selected = false, superseded_at = CURRENT_TIMESTAMP
+  FROM incoming_seasons incoming
+  WHERE season.provider_competition_id = incoming.provider_competition_id
+    AND season.is_selected
+    AND season.provider_season_id <> incoming.provider_season_id
+  RETURNING season.id
+),
+seasons AS (
+  INSERT INTO provider_seasons (
+    provider_competition_id, provider_season_id, label, observed_provider_order,
+    season_state, is_selected, selection_source, provider_list_sha256,
+    resolver_version, evidence, selected_at, retrieved_at, fresh_until
+  )
+  SELECT incoming.provider_competition_id, incoming.provider_season_id, incoming.label,
+    0, incoming.season_state, true, 'automatic', incoming.provider_list_sha256,
+    'season-v1', jsonb_build_object('validated_by_service', true),
+    CURRENT_TIMESTAMP, incoming.retrieved_at, incoming.retrieved_at + interval '24 hours'
+  FROM incoming_seasons incoming
+  CROSS JOIN (SELECT count(*) FROM deselected_seasons) completed
+  ON CONFLICT (provider_competition_id, provider_season_id) DO UPDATE
+  SET label = EXCLUDED.label,
+      season_state = EXCLUDED.season_state,
+      is_selected = true,
+      selected_at = EXCLUDED.selected_at,
+      superseded_at = NULL,
+      provider_list_sha256 = EXCLUDED.provider_list_sha256,
+      evidence = EXCLUDED.evidence,
+      retrieved_at = EXCLUDED.retrieved_at,
+      fresh_until = EXCLUDED.fresh_until
+  RETURNING id, provider_competition_id, provider_season_id
+),
+team_mappings AS (
+  INSERT INTO team_competition_mappings (
+    provider_team_id, provider_competition_id, mapping_source, rule_version,
+    evidence, effective_from, verified_at, fresh_until
+  )
+  SELECT DISTINCT team.id, competition.id, 'automatic', 'competition-v1',
+    jsonb_build_object('validated_by_service', true),
+    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '24 hours'
+  FROM items
+  JOIN teams team
+    ON team.provider_team_id = item->'profile'->'current_club'->>'provider_team_id'
+  JOIN competitions competition
+    ON competition.provider_unique_tournament_id =
+      item->'statistics'->>'provider_unique_tournament_id'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM team_competition_mappings existing
+    WHERE existing.provider_team_id = team.id
+      AND existing.superseded_at IS NULL
+      AND existing.provider_competition_id <> competition.id
+  )
+  ON CONFLICT (provider_team_id) WHERE superseded_at IS NULL DO UPDATE
+  SET provider_competition_id = EXCLUDED.provider_competition_id,
+      rule_version = EXCLUDED.rule_version,
+      evidence = EXCLUDED.evidence,
+      verified_at = EXCLUDED.verified_at,
+      fresh_until = EXCLUDED.fresh_until
+  RETURNING id
+),
+profiles AS (
+  INSERT INTO player_profile_snapshots (
+    player_provider_id, canonical_name, current_provider_team_id, nationality,
+    date_of_birth, age, primary_position, height_cm, preferred_foot,
+    market_value, market_value_currency, stable_source_identifier,
+    provider_retrieved_at, fresh_until, normalized_schema_version,
+    resolver_version, content_sha256, raw_sha256, raw_cache_key,
+    raw_profile, derived_fields
+  )
+  SELECT provider_id.id,
+    item->'profile'->>'canonical_name',
+    team.id,
+    item->'profile'->>'nationality',
+    NULLIF(item->'profile'->>'date_of_birth', '')::date,
+    NULLIF(item->'profile'->>'age', '')::smallint,
+    item->'profile'->>'primary_position',
+    NULLIF(item->'profile'->>'height_cm', '')::smallint,
+    item->'profile'->>'preferred_foot',
+    NULLIF(item->'profile'->>'market_value', '')::numeric,
+    NULLIF(item->'profile'->>'market_value_currency', ''),
+    item->'identity'->>'stable_source_identifier',
+    (item->'profile'->>'retrieved_at')::timestamptz,
+    (item->'profile'->>'retrieved_at')::timestamptz + interval '24 hours',
+    'enrichment-v1', item->'identity'->>'resolver_version',
+    item->'profile'->>'content_sha256',
+    item->'profile'->>'raw_sha256',
+    item->'profile'->>'raw_cache_key',
+    item->'profile'->'raw_payload',
+    '{}'::jsonb
+  FROM items
+  JOIN provider_ids provider_id
+    ON provider_id.provider_player_id = item->'identity'->>'provider_player_id'
+  LEFT JOIN teams team
+    ON team.provider_team_id = item->'profile'->'current_club'->>'provider_team_id'
+  WHERE jsonb_typeof(item->'profile') = 'object'
+  ON CONFLICT (player_provider_id, provider_retrieved_at, content_sha256) DO NOTHING
+  RETURNING id
+),
+statistics AS (
+  INSERT INTO player_season_stat_snapshots (
+    player_provider_id, current_provider_team_id, provider_competition_id,
+    provider_season_id, aggregation_scope, provider_retrieved_at, fresh_until,
+    normalized_schema_version, resolver_version, content_sha256, raw_sha256,
+    raw_cache_key, raw_statistics, derived_fields, appearances, starts,
+    minutes_played, minutes_per_appearance, goals, expected_goals, assists,
+    expected_assists, average_rating, yellow_cards, red_cards,
+    goalkeeper_clean_sheets, goalkeeper_saves
+  )
+  SELECT provider_id.id, team.id, competition.id, season.id,
+    item->'statistics'->>'scope',
+    (item->'statistics'->>'retrieved_at')::timestamptz,
+    (item->'statistics'->>'retrieved_at')::timestamptz + interval '12 hours',
+    'enrichment-v1', item->'identity'->>'resolver_version',
+    item->'statistics'->>'content_sha256',
+    item->'statistics'->>'raw_sha256',
+    item->'statistics'->>'raw_cache_key',
+    item->'statistics'->'raw_payload',
+    '{}'::jsonb,
+    NULLIF(item->'statistics'->>'appearances', '')::integer,
+    NULLIF(item->'statistics'->>'starts', '')::integer,
+    NULLIF(item->'statistics'->>'minutes_played', '')::integer,
+    NULLIF(item->'statistics'->>'minutes_per_game', '')::numeric,
+    NULLIF(item->'statistics'->>'goals', '')::integer,
+    NULLIF(item->'statistics'->>'expected_goals', '')::numeric,
+    NULLIF(item->'statistics'->>'assists', '')::integer,
+    NULLIF(item->'statistics'->>'expected_assists', '')::numeric,
+    NULLIF(item->'statistics'->>'average_rating', '')::numeric,
+    NULLIF(item->'statistics'->>'yellow_cards', '')::integer,
+    NULLIF(item->'statistics'->>'red_cards', '')::integer,
+    NULLIF(item->'statistics'->>'clean_sheets', '')::integer,
+    NULLIF(item->'statistics'->>'saves', '')::integer
+  FROM items
+  JOIN provider_ids provider_id
+    ON provider_id.provider_player_id = item->'identity'->>'provider_player_id'
+  JOIN teams team
+    ON team.provider_team_id = item->'profile'->'current_club'->>'provider_team_id'
+  JOIN competitions competition
+    ON competition.provider_unique_tournament_id =
+      item->'statistics'->>'provider_unique_tournament_id'
+  JOIN seasons season
+    ON season.provider_competition_id = competition.id
+   AND season.provider_season_id = item->'statistics'->>'provider_season_id'
+  WHERE jsonb_typeof(item->'statistics') = 'object'
+    AND item->'statistics'->>'scope' = 'selected_domestic_league_all_clubs'
+  ON CONFLICT (
+    player_provider_id, provider_season_id, aggregation_scope,
+    provider_retrieved_at, content_sha256
+  ) DO NOTHING
+  RETURNING id
+),
+attempts AS (
+  INSERT INTO player_enrichment_attempts (
+    request_key, batch_request_key, item_key, workflow_run_id,
+    transfer_report_id, player_id, player_provider_id, status, retryable,
+    next_retry_at, match_score, match_margin, provider_call_count,
+    cache_hit_count, request_context, evidence, error_code, error_fingerprint,
+    error_message, started_at, completed_at
+  )
+  SELECT
+    (input.payload->>'request_id') || ':' || (expanded.item->>'item_key') || ':' ||
+      expanded.transfer_report_id::text,
+    input.payload->>'request_id',
+    expanded.item->>'item_key',
+    input.workflow_run_id,
+    expanded.transfer_report_id,
+    canonical.player_id,
+    provider_id.id,
+    CASE
+      WHEN expanded.item->>'status' = 'partial'
+       AND expanded.item->'warning_codes' ? 'unattached' THEN 'unattached'
+      WHEN expanded.item->>'status' = 'partial'
+       AND expanded.item->'warning_codes' ? 'missing_season' THEN 'missing_season'
+      ELSE expanded.item->>'status'
+    END,
+    COALESCE((expanded.item->>'retryable')::boolean, false),
+    CASE WHEN COALESCE((expanded.item->>'retryable')::boolean, false)
+      THEN CURRENT_TIMESTAMP + interval '10 minutes' ELSE NULL END,
+    NULLIF(expanded.item->'identity'->>'score', '')::numeric,
+    NULLIF(expanded.item->'identity'->>'margin', '')::numeric,
+    COALESCE((expanded.item->>'provider_calls')::integer, 0),
+    COALESCE((expanded.item->>'cache_hits')::integer, 0),
+    COALESCE(expanded.item->'request_context', '{}'::jsonb),
+    jsonb_build_object('warning_codes', COALESCE(expanded.item->'warning_codes', '[]'::jsonb)),
+    expanded.item->'error'->>'code',
+    CASE WHEN expanded.item->'error'->>'code' IS NULL THEN NULL
+      ELSE (expanded.item->>'item_key') || ':' || (expanded.item->'error'->>'code') END,
+    expanded.item->'error'->>'code',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  FROM input
+  CROSS JOIN expanded
+  LEFT JOIN canonical_reports canonical
+    ON canonical.id = expanded.transfer_report_id
+  LEFT JOIN provider_ids provider_id
+    ON provider_id.provider_player_id =
+      expanded.item->'identity'->>'provider_player_id'
+  CROSS JOIN (
+    SELECT count(*) FROM aliases
+  ) alias_completion
+  CROSS JOIN (
+    SELECT count(*) FROM team_mappings
+  ) mapping_completion
+  CROSS JOIN (
+    SELECT count(*) FROM profiles
+  ) profile_completion
+  CROSS JOIN (
+    SELECT count(*) FROM statistics
+  ) statistics_completion
+  ON CONFLICT (request_key) DO UPDATE
+  SET status = EXCLUDED.status,
+      retryable = EXCLUDED.retryable,
+      next_retry_at = EXCLUDED.next_retry_at,
+      provider_call_count = EXCLUDED.provider_call_count,
+      cache_hit_count = EXCLUDED.cache_hit_count,
+      evidence = EXCLUDED.evidence,
+      error_code = EXCLUDED.error_code,
+      error_fingerprint = EXCLUDED.error_fingerprint,
+      error_message = EXCLUDED.error_message,
+      completed_at = EXCLUDED.completed_at
+  RETURNING id
+)
+SELECT true AS enrichment_persisted,
+  (SELECT count(*) FROM attempts)::integer AS attempt_count,
+  input.payload->>'request_id' AS request_id
+FROM input;`.trim();
+}
+
 function candidatesSql() {
   return `
 WITH pending_candidates AS (
@@ -218,7 +737,9 @@ WITH pending_candidates AS (
     p.post_url, p.posted_at,
     dd.idempotency_key AS pending_idempotency_key,
     dd.window_started_at AS pending_window_started_at,
-    dd.window_ended_at AS pending_window_ended_at
+    dd.window_ended_at AS pending_window_ended_at,
+    dd.request_payload AS pending_request_payload,
+    NULL::jsonb AS enrichment
   FROM digest_deliveries dd
   JOIN digest_items di ON di.digest_delivery_id = dd.id
   JOIN transfer_report_revisions r ON r.id = di.transfer_report_revision_id
@@ -239,13 +760,87 @@ fresh_candidates AS (
   p.post_url, p.posted_at,
   NULL::text AS pending_idempotency_key,
   NULL::timestamptz AS pending_window_started_at,
-  NULL::timestamptz AS pending_window_ended_at
+  NULL::timestamptz AS pending_window_ended_at,
+  NULL::jsonb AS pending_request_payload,
+  CASE WHEN $3::text = 'active' THEN NULLIF(jsonb_strip_nulls(jsonb_build_object(
+    'profile', CASE WHEN
+      current.profile_fresh_until > CURRENT_TIMESTAMP
+      OR (
+        current.profile_retrieved_at >= CURRENT_TIMESTAMP - interval '72 hours'
+        AND latest_attempt.status IN (
+          'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'deferred'
+        )
+        AND latest_attempt.started_at >= current.profile_fresh_until
+      )
+      OR (
+        current.current_provider_team_id IS NULL
+        AND latest_attempt.status = 'unattached'
+        AND current.profile_retrieved_at >= CURRENT_TIMESTAMP - interval '7 days'
+      )
+    THEN jsonb_strip_nulls(jsonb_build_object(
+      'snapshot_id', current.profile_snapshot_id::text,
+      'canonical_name', current.canonical_name,
+      'current_club_name', current.current_club_name,
+      'nationality', current.nationality,
+      'date_of_birth', current.date_of_birth,
+      'age', current.age,
+      'primary_position', current.primary_position,
+      'height_cm', current.height_cm,
+      'preferred_foot', current.preferred_foot,
+      'market_value', current.market_value,
+      'market_value_currency', current.market_value_currency,
+      'retrieved_at', current.profile_retrieved_at,
+      'fresh_until', current.profile_fresh_until,
+      'stale', current.profile_fresh_until <= CURRENT_TIMESTAMP
+    )) ELSE NULL END,
+    'statistics', CASE WHEN
+      current.statistics_fresh_until > CURRENT_TIMESTAMP
+      OR (
+        current.statistics_retrieved_at >= CURRENT_TIMESTAMP - interval '72 hours'
+        AND latest_attempt.status IN (
+          'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'deferred'
+        )
+        AND latest_attempt.started_at >= current.statistics_fresh_until
+      )
+    THEN jsonb_strip_nulls(jsonb_build_object(
+      'snapshot_id', current.statistics_snapshot_id::text,
+      'competition_name', current.competition_name,
+      'season_label', current.season_label,
+      'season_state', current.season_state,
+      'scope', current.aggregation_scope,
+      'appearances', current.appearances,
+      'starts', current.starts,
+      'minutes_played', current.minutes_played,
+      'minutes_per_appearance', current.minutes_per_appearance,
+      'goals', current.goals,
+      'expected_goals', current.expected_goals,
+      'assists', current.assists,
+      'expected_assists', current.expected_assists,
+      'average_rating', current.average_rating,
+      'yellow_cards', current.yellow_cards,
+      'red_cards', current.red_cards,
+      'goalkeeper_clean_sheets', current.goalkeeper_clean_sheets,
+      'goalkeeper_saves', current.goalkeeper_saves,
+      'retrieved_at', current.statistics_retrieved_at,
+      'fresh_until', current.statistics_fresh_until,
+      'stale', current.statistics_fresh_until <= CURRENT_TIMESTAMP
+    )) ELSE NULL END
+  )), '{}'::jsonb) ELSE NULL END AS enrichment
 FROM latest_revisions r
 JOIN transfer_reports tr ON tr.id = r.transfer_report_id
 JOIN transfer_report_sources trs ON trs.transfer_report_id = tr.id AND trs.is_preferred
 JOIN raw_posts p ON p.id = trs.raw_post_id
 JOIN source_accounts s ON s.id = p.source_account_id
 LEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id
+LEFT JOIN current_player_enrichment current
+  ON current.transfer_report_id = tr.id
+LEFT JOIN LATERAL (
+  SELECT attempt.status, attempt.started_at
+  FROM player_enrichment_attempts attempt
+  WHERE attempt.transfer_report_id = tr.id
+  ORDER BY attempt.started_at DESC, attempt.id DESC
+  LIMIT 1
+) latest_attempt ON true
 WHERE di.id IS NULL
   AND tr.last_reported_at >= $1::timestamptz
   AND tr.last_reported_at <= $2::timestamptz
@@ -277,17 +872,17 @@ WITH input AS (SELECT $1::jsonb AS payload),
 delivery AS (
   INSERT INTO digest_deliveries (
     idempotency_key, channel_key, window_started_at, window_ended_at,
-    status, attempt_count, first_attempted_at, last_attempted_at
+    status, attempt_count, request_payload, first_attempted_at, last_attempted_at
   )
   SELECT payload->>'idempotency_key', 'transfers', (payload->>'window_started_at')::timestamptz, (payload->>'window_ended_at')::timestamptz,
-    'sending', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    'sending', 1, payload->'discord_payload', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
   FROM input
   ON CONFLICT (idempotency_key) DO UPDATE
   SET status = 'sending', attempt_count = digest_deliveries.attempt_count + 1,
       first_attempted_at = COALESCE(digest_deliveries.first_attempted_at, CURRENT_TIMESTAMP),
       last_attempted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
   WHERE digest_deliveries.status = 'pending'
-  RETURNING id, status
+  RETURNING id, status, request_payload
 ),
 claimed AS (
   INSERT INTO digest_items (digest_delivery_id, transfer_report_revision_id, position)
@@ -297,7 +892,7 @@ claimed AS (
   ON CONFLICT (transfer_report_revision_id) DO NOTHING
   RETURNING id
 )
-SELECT id::text AS digest_delivery_id, status FROM delivery
+SELECT id::text AS digest_delivery_id, status, request_payload FROM delivery
 WHERE EXISTS (SELECT 1 FROM claimed)
    OR EXISTS (SELECT 1 FROM digest_items WHERE digest_delivery_id = delivery.id);`.trim();
 }
@@ -506,6 +1101,209 @@ for (const reports of groups.values()) {
 return outputs;`;
 }
 
+function prepareEnrichmentBatchCode() {
+  return `
+const selected = String($env.PLAYER_ENRICHMENT_MODE ?? 'off').trim().toLowerCase();
+const mode = ['shadow', 'active'].includes(selected) ? selected : 'off';
+const reportIds = [...new Set($input.all()
+  .map((item) => String(item.json.transfer_report_id ?? ''))
+  .filter((value) => /^\\d+$/.test(value)))];
+const workflowRunId = $('Register workflow run').isExecuted
+  ? $('Register workflow run').first().json.workflow_run_id
+  : $('Register sample workflow run').first().json.workflow_run_id;
+return [{ json: {
+  mode,
+  workflow_run_id: String(workflowRunId),
+  params: [JSON.stringify(reportIds), String(workflowRunId)],
+} }];`;
+}
+
+function buildEnrichmentRequestCode() {
+  return `
+const prepared = $('Prepare enrichment batch query').first().json;
+const mode = ['shadow', 'active'].includes(prepared.mode) ? prepared.mode : 'off';
+const now = Date.now();
+const parseValue = (value, fallback) => {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+};
+const unicodeKey = (value) => String(value ?? '')
+  .normalize('NFKC')
+  .toLocaleLowerCase('und')
+  .replace(/[\\p{P}\\p{Z}]+/gu, ' ')
+  .trim()
+  .replace(/\\s+/gu, ' ');
+const namedContext = (value) => {
+  const normalized = unicodeKey(value);
+  return normalized && !/^(not reported|unknown|n a)$/u.test(normalized) ? normalized : null;
+};
+const fresh = (value) => {
+  const timestamp = Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) && timestamp > now;
+};
+const groups = new Map();
+if (mode !== 'off') {
+  for (const input of $input.all()) {
+    const context = input.json ?? {};
+    const reportId = String(context.transfer_report_id ?? '');
+    const reportedName = typeof context.reported_player_name === 'string' ? context.reported_player_name.trim() : '';
+    const providerId = String(context.provider_player_id ?? '');
+    if (!/^\\d+$/.test(reportId) || !reportedName || (providerId && !/^\\d+$/.test(providerId))) continue;
+    const aliases = parseValue(context.aliases, []);
+    const overrides = parseValue(context.identity_overrides, []);
+    const latestStatus = String(context.latest_attempt_status ?? '');
+    const latestStarted = Date.parse(String(context.latest_attempt_started_at ?? ''));
+    const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
+    if ((Number.isFinite(retryAt) && retryAt > now)
+      || (!providerId && overrides.length === 0
+        && ['ambiguous', 'unresolved'].includes(latestStatus)
+        && Number.isFinite(latestStarted)
+        && latestStarted > now - 86400000)) continue;
+    if (providerId && fresh(context.profile_fresh_until)
+      && (fresh(context.statistics_fresh_until)
+        || context.profile_current_provider_team_id === null
+        || latestStatus === 'unattached')) continue;
+    const currentClubKey = namedContext(context.current_club_name);
+    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
+      || context.move_type === 'loan' ? namedContext(context.destination_club_name) : null;
+    const clubKey = currentClubKey ?? destinationClubKey;
+    const reportedNameKey = unicodeKey(reportedName);
+    if (!providerId && (!reportedNameKey || !clubKey)) continue;
+    const itemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
+    const existing = groups.get(itemKey);
+    if (existing) {
+      existing.report_ids.push(reportId);
+      for (const alias of aliases) if (typeof alias === 'string' && alias.trim() && !existing.aliases.includes(alias.trim())) existing.aliases.push(alias.trim());
+      for (const override of overrides) if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) existing.identity_overrides.push(override);
+      continue;
+    }
+    groups.set(itemKey, {
+      item_key: itemKey,
+      reported_name: reportedName,
+      known_provider_player_id: providerId || null,
+      report_ids: [reportId],
+      aliases: [...new Set(aliases.filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
+      identity_overrides: overrides,
+      team_mapping: context.team_mapping_fresh === true ? parseValue(context.team_mapping, null) : null,
+      season_mapping: context.season_mapping_fresh === true ? parseValue(context.season_mapping, null) : null,
+      request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, destination_club_key: destinationClubKey },
+    });
+  }
+}
+const players = [...groups.values()].slice(0, 25);
+const request = players.length ? {
+  request_id: 'sofascore:' + prepared.workflow_run_id,
+  deadline_ms: 75000,
+  players,
+} : null;
+return [{ json: {
+  mode,
+  workflow_run_id: prepared.workflow_run_id,
+  refresh_required: request !== null,
+  request,
+} }];`;
+}
+
+function normalizeEnrichmentCode() {
+  return `
+${runtimeHelpers()}
+const requestItem = $('Build soccerdata enrichment request').first().json;
+const request = requestItem.request;
+const players = Array.isArray(request?.players) ? request.players : [];
+const failure = (player, code) => ({
+  item_key: player.item_key,
+  report_ids: player.report_ids,
+  request_context: player.request_context ?? {},
+  status: 'schema_failure',
+  retryable: true,
+  provider_calls: 0,
+  cache_hits: 0,
+  identity: null,
+  profile: null,
+  statistics: null,
+  error: { code },
+});
+const failAll = (code) => ({ request_id: request?.request_id ?? '', items: players.map((player) => failure(player, code)) });
+const allowed = new Set(['cache_hit', 'fresh', 'partial', 'unresolved', 'ambiguous', 'deferred', 'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'unsupported_competition', 'missing_season', 'club_conflict', 'unattached']);
+let normalized;
+const statusCode = Number($json.statusCode ?? (typeof $json.status === 'number' ? $json.status : 200));
+if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $json.error) {
+  normalized = failAll('enrichment_service_failed');
+} else {
+  let body = $json.body ?? $json;
+  try { if (typeof body === 'string') body = JSON.parse(body); } catch { body = null; }
+  if (!body || typeof body !== 'object' || body.request_id !== request?.request_id || !Array.isArray(body.items)) {
+    normalized = failAll(body === null ? 'enrichment_response_not_json' : 'service_contract_invalid');
+  } else {
+    const byKey = new Map();
+    let invalid = false;
+    for (const item of body.items) {
+      if (!item || typeof item !== 'object' || typeof item.item_key !== 'string' || byKey.has(item.item_key)) invalid = true;
+      else byKey.set(item.item_key, item);
+    }
+    if (invalid) {
+      normalized = failAll('service_contract_invalid');
+    } else {
+      normalized = {
+        request_id: request.request_id,
+        items: players.map((player) => {
+          const item = byKey.get(player.item_key);
+          if (!item || !allowed.has(item.status)) return failure(player, 'service_contract_invalid');
+          const identity = item.identity;
+          const providerId = String(identity?.provider_player_id ?? '');
+          if (identity !== null && (!identity || identity.provider !== 'sofascore' || !/^\\d+$/.test(providerId))) return failure(player, 'service_contract_invalid');
+          if (['fresh', 'cache_hit', 'partial'].includes(item.status) && (!identity || !item.profile || typeof item.profile !== 'object')) return failure(player, 'service_contract_invalid');
+          if (['fresh', 'cache_hit'].includes(item.status) && (!item.statistics || typeof item.statistics !== 'object')) return failure(player, 'service_contract_invalid');
+          if (item.profile && (!Number.isFinite(Date.parse(String(item.profile.retrieved_at ?? ''))) || (item.profile.current_club !== null && (typeof item.profile.current_club !== 'object' || !/^\\d+$/.test(String(item.profile.current_club.provider_team_id ?? '')) || typeof item.profile.current_club.name !== 'string' || !item.profile.current_club.name.trim())) || (item.profile.market_value_currency !== null && item.profile.market_value_currency !== undefined && !/^[A-Z]{3}$/.test(String(item.profile.market_value_currency))))) return failure(player, 'service_contract_invalid');
+          if (item.statistics && (!/^\\d+$/.test(String(item.statistics.provider_unique_tournament_id ?? '')) || !/^\\d+$/.test(String(item.statistics.provider_season_id ?? '')) || !['active', 'latest_completed'].includes(item.statistics.season_state) || item.statistics.scope !== 'selected_domestic_league_all_clubs' || !Number.isFinite(Date.parse(String(item.statistics.retrieved_at ?? ''))))) return failure(player, 'service_contract_invalid');
+          const rawProfile = item.provenance?.raw_payloads?.profile && typeof item.provenance.raw_payloads.profile === 'object' ? item.provenance.raw_payloads.profile : {};
+          const rawStatistics = item.provenance?.raw_payloads?.statistics && typeof item.provenance.raw_payloads.statistics === 'object' ? item.provenance.raw_payloads.statistics : {};
+          return {
+            item_key: player.item_key,
+            report_ids: player.report_ids,
+            request_context: player.request_context ?? {},
+            status: item.status,
+            retryable: item.error?.retryable === true || (Array.isArray(item.warnings) && item.warnings.some((warning) => warning?.retryable === true)),
+            provider_calls: Number.isInteger(item.provider_calls) && item.provider_calls >= 0 ? item.provider_calls : 0,
+            cache_hits: Number(item.provenance?.profile_cache === 'hit') + Number(item.provenance?.statistics_cache === 'hit'),
+            identity: identity ? {
+              provider: 'sofascore',
+              provider_player_id: providerId,
+              stable_source_identifier: String(identity.stable_source_identifier ?? 'sofascore:player:' + providerId),
+              canonical_name: typeof item.profile?.canonical_name === 'string' ? item.profile.canonical_name : player.reported_name,
+              score: Number.isFinite(identity.score) ? identity.score : null,
+              margin: Number.isFinite(identity.margin) ? identity.margin : null,
+              resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version ? identity.resolver_version : 'identity-v1',
+            } : null,
+            profile: item.profile && typeof item.profile === 'object' ? {
+              ...item.profile,
+              content_sha256: sha256(item.profile),
+              raw_sha256: sha256(rawProfile),
+              raw_cache_key: providerId ? 'profile-' + providerId : null,
+              raw_payload: rawProfile,
+            } : null,
+            statistics: item.statistics && typeof item.statistics === 'object' ? {
+              ...item.statistics,
+              content_sha256: sha256(item.statistics),
+              raw_sha256: sha256(rawStatistics),
+              raw_cache_key: providerId ? 'statistics-' + providerId + '-' + item.statistics.provider_unique_tournament_id + '-' + item.statistics.provider_season_id : null,
+              raw_payload: rawStatistics,
+            } : null,
+            warning_codes: Array.isArray(item.warnings) ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean) : [],
+            error: item.error && typeof item.error === 'object' ? { code: String(item.error.code ?? 'enrichment_failed').slice(0, 100) } : null,
+          };
+        }),
+      };
+    }
+  }
+}
+return [{ json: {
+  params: [JSON.stringify(normalized), requestItem.workflow_run_id],
+  normalized,
+} }];`;
+}
+
 function digestCode() {
   return `
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
@@ -526,7 +1324,7 @@ const digestPriority = (report) => {
 const reports = $input.all().map((item) => {
   const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;
-  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), username: item.json.source_username, display_name: item.json.source_name } };
+  return { ...snapshot, enrichment: item.json.enrichment ?? null, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, pending_request_payload: item.json.pending_request_payload, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), username: item.json.source_username, display_name: item.json.source_name } };
 }).filter(Boolean).sort((a, b) => (digestPriority(a) - digestPriority(b)) || (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (b.preferred_source.reliability_score - a.preferred_source.reliability_score) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
 const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports.filter(isDigestEligible);
@@ -575,7 +1373,18 @@ const now = new Date();
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
 const end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);
 const payload = { allowed_mentions: { parse: [] }, embeds: [{ title: 'Football transfer digest', color: 1948592, fields: fields.map(({ revision_id, ...field }) => field), footer: { text: String(fields.length) + ' new material report' + (fields.length === 1 ? '' : 's') } }] };
-return fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: payload })] } }] : [];`;
+let discordPayload = payload;
+if (pending) {
+  try {
+    discordPayload = typeof pending.pending_request_payload === 'string'
+      ? JSON.parse(pending.pending_request_payload)
+      : pending.pending_request_payload;
+  } catch {
+    return [];
+  }
+  if (!discordPayload || typeof discordPayload !== 'object' || Array.isArray(discordPayload)) return [];
+}
+return fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: discordPayload })] } }] : [];`;
 }
 
 function mainWorkflow({ registry, prompt, schema }) {
@@ -697,22 +1506,41 @@ UPDATE transfer_report_sources
 SET is_preferred = true
 WHERE transfer_report_id = $1::bigint AND raw_post_id = $2::bigint
 RETURNING $1::text AS transfer_report_id, $2::text AS preferred_raw_post_id;`, '={{ [$json.transfer_report_id, $json.preferred_raw_post_id] }}'),
-    codeNode('Prepare digest candidates query', [3180, -180], `
+    codeNode('Prepare enrichment batch query', [3180, -180], prepareEnrichmentBatchCode()),
+    node('Enrichment enabled?', 'n8n-nodes-base.if', [3400, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.mode !== "off" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    postgresNode('Load player enrichment contexts', [3620, -340], enrichmentContextSql(), undefined, { continueOnFail: true }),
+    codeNode('Build soccerdata enrichment request', [3840, -340], buildEnrichmentRequestCode()),
+    node('Refresh required?', 'n8n-nodes-base.if', [4060, -340], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.refresh_required === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Enrich players via soccerdata', [4280, -500], {
+      method: 'POST',
+      url: '={{ ($env.SOFASCORE_ENRICHMENT_BASE_URL || "http://sofascore-enrichment:8080") + "/v1/enrich" }}',
+      sendBody: true,
+      contentType: 'json',
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.request) }}',
+    }, { continueOnFail: true, requestOptions: { timeout: 85000 } }),
+    codeNode('Normalize soccerdata enrichment result', [4500, -500], normalizeEnrichmentCode()),
+    postgresNode('Persist soccerdata enrichment result', [4720, -500], persistEnrichmentSql(), undefined, { continueOnFail: true }),
+    codeNode('Prepare digest candidates query', [4940, -180], `
 const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
-return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at] } }];`),
-    postgresNode('Find undelivered revisions', [3400, -180], candidatesSql()),
-    codeNode('Build bounded Discord digest', [3620, -180], digestCode()),
-    postgresNode('Reserve digest before delivery', [3840, -180], reserveDigestSql()),
-    node('Digest reserved', 'n8n-nodes-base.if', [4060, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    codeNode('Build Discord delivery request', [4280, -260], `
-const digest = $('Build bounded Discord digest').first().json.params[0];
-const payload = typeof digest === 'string' ? JSON.parse(digest) : digest;
-return [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload.discord_payload } }];`),
-    httpNode('Send Discord digest once', [4500, -260], {
+const selected = String($env.PLAYER_ENRICHMENT_MODE ?? 'off').trim().toLowerCase();
+const mode = ['shadow', 'active'].includes(selected) ? selected : 'off';
+return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at, mode] } }];`),
+    postgresNode('Find undelivered revisions', [5160, -180], candidatesSql()),
+    codeNode('Build bounded Discord digest', [5380, -180], digestCode()),
+    postgresNode('Reserve digest before delivery', [5600, -180], reserveDigestSql()),
+    node('Digest reserved', 'n8n-nodes-base.if', [5820, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Build Discord delivery request', [6040, -260], `
+const payload = typeof $json.request_payload === 'string'
+  ? JSON.parse($json.request_payload)
+  : $json.request_payload;
+if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+return [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload } }];`),
+    httpNode('Send Discord digest once', [6260, -260], {
       method: 'POST', url: '={{ $env.DISCORD_TRANSFERS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true }),
-    codeNode('Prepare delivery finalization', [4720, -260], `
+    codeNode('Prepare delivery finalization', [6480, -260], `
 const request = $('Build Discord delivery request').first().json;
 const response = $json.body ?? $json;
 const status = Number($json.statusCode ?? $json.status ?? 0);
@@ -720,7 +1548,7 @@ const workflowRunId = $('Register workflow run').isExecuted
   ? $('Register workflow run').first().json.workflow_run_id
   : $('Register sample workflow run').first().json.workflow_run_id;
 return [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];`),
-    postgresNode('Finalize delivery and run', [4940, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
+    postgresNode('Finalize delivery and run', [6700, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
   ];
   const connections = {
     'Every six hours': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
@@ -755,7 +1583,15 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Persist merged reports and revisions': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }]] },
     'Prepare preferred source reset': { main: [[{ node: 'Clear preferred report source', type: 'main', index: 0 }]] },
     'Clear preferred report source': { main: [[{ node: 'Set preferred report source', type: 'main', index: 0 }]] },
-    'Set preferred report source': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
+    'Set preferred report source': { main: [[{ node: 'Prepare enrichment batch query', type: 'main', index: 0 }]] },
+    'Prepare enrichment batch query': { main: [[{ node: 'Enrichment enabled?', type: 'main', index: 0 }]] },
+    'Enrichment enabled?': { main: [[{ node: 'Load player enrichment contexts', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
+    'Load player enrichment contexts': { main: [[{ node: 'Build soccerdata enrichment request', type: 'main', index: 0 }]] },
+    'Build soccerdata enrichment request': { main: [[{ node: 'Refresh required?', type: 'main', index: 0 }]] },
+    'Refresh required?': { main: [[{ node: 'Enrich players via soccerdata', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
+    'Enrich players via soccerdata': { main: [[{ node: 'Normalize soccerdata enrichment result', type: 'main', index: 0 }]] },
+    'Normalize soccerdata enrichment result': { main: [[{ node: 'Persist soccerdata enrichment result', type: 'main', index: 0 }]] },
+    'Persist soccerdata enrichment result': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Prepare digest candidates query': { main: [[{ node: 'Find undelivered revisions', type: 'main', index: 0 }]] },
     'Find undelivered revisions': { main: [[{ node: 'Build bounded Discord digest', type: 'main', index: 0 }]] },
     'Build bounded Discord digest': { main: [[{ node: 'Reserve digest before delivery', type: 'main', index: 0 }]] },

@@ -73,6 +73,306 @@ export function normalizeIdentity(value) {
   return normalizeText(value).replace(/\s/g, '-');
 }
 
+export function enrichmentMode(value) {
+  return ['shadow', 'active'].includes(String(value ?? '').trim().toLowerCase())
+    ? String(value).trim().toLowerCase()
+    : 'off';
+}
+
+export function enrichmentUnicodeKey(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('und')
+    .replace(/[\p{P}\p{Z}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/gu, ' ');
+}
+
+function enrichmentNamedContext(value) {
+  const normalized = enrichmentUnicodeKey(value);
+  return normalized && !/^(not reported|unknown|n a)$/u.test(normalized) ? normalized : null;
+}
+
+function enrichmentFresh(value, now) {
+  const timestamp = Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) && timestamp > now;
+}
+
+export function buildEnrichmentRequest(contexts, {
+  mode,
+  requestId,
+  now = Date.now(),
+  maximumItems = 25,
+} = {}) {
+  const selectedMode = enrichmentMode(mode);
+  if (selectedMode === 'off') return { mode: 'off', refreshRequired: false, request: null };
+
+  const groups = new Map();
+  for (const context of Array.isArray(contexts) ? contexts : []) {
+    const reportId = String(context?.transfer_report_id ?? '');
+    const reportedName = typeof context?.reported_player_name === 'string'
+      ? context.reported_player_name.trim()
+      : '';
+    const knownProviderId = String(context?.provider_player_id ?? '');
+    if (!/^\d+$/.test(reportId) || !reportedName || (knownProviderId && !DECIMAL_ID.test(knownProviderId))) continue;
+
+    const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
+    const latestStatus = String(context.latest_attempt_status ?? '');
+    const latestStartedAt = Date.parse(String(context.latest_attempt_started_at ?? ''));
+    const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
+    if (
+      (Number.isFinite(retryAt) && retryAt > now)
+      || (!knownProviderId && overrides.length === 0
+        && ['ambiguous', 'unresolved'].includes(latestStatus)
+        && Number.isFinite(latestStartedAt)
+        && latestStartedAt > now - 24 * 60 * 60 * 1000)
+    ) continue;
+
+    const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
+    const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
+    if (
+      knownProviderId
+      && profileFresh
+      && (
+        statisticsFresh
+        || context.profile_current_provider_team_id === null
+        || latestStatus === 'unattached'
+      )
+    ) continue;
+
+    const currentClubKey = enrichmentNamedContext(context.current_club_name);
+    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
+      || context.move_type === 'loan'
+      ? enrichmentNamedContext(context.destination_club_name)
+      : null;
+    const clubKey = currentClubKey ?? destinationClubKey;
+    if (!knownProviderId && !clubKey) continue;
+
+    const reportedNameKey = enrichmentUnicodeKey(reportedName);
+    if (!knownProviderId && !reportedNameKey) continue;
+    const itemKey = knownProviderId
+      ? `provider:${knownProviderId}`
+      : `name:${reportedNameKey}|club:${clubKey}`;
+    const existing = groups.get(itemKey);
+    if (existing) {
+      existing.report_ids.push(reportId);
+      for (const alias of Array.isArray(context.aliases) ? context.aliases : []) {
+        if (typeof alias === 'string' && alias.trim() && !existing.aliases.includes(alias.trim())) {
+          existing.aliases.push(alias.trim());
+        }
+      }
+      for (const override of overrides) {
+        if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) {
+          existing.identity_overrides.push(override);
+        }
+      }
+      continue;
+    }
+
+    groups.set(itemKey, {
+      item_key: itemKey,
+      reported_name: reportedName,
+      known_provider_player_id: knownProviderId || null,
+      report_ids: [reportId],
+      aliases: [...new Set((Array.isArray(context.aliases) ? context.aliases : [])
+        .filter((alias) => typeof alias === 'string' && alias.trim())
+        .map((alias) => alias.trim()))],
+      identity_overrides: overrides,
+      team_mapping: context.team_mapping_fresh === true && context.team_mapping
+        ? context.team_mapping
+        : null,
+      season_mapping: context.season_mapping_fresh === true && context.season_mapping
+        ? context.season_mapping
+        : null,
+      request_context: {
+        reported_name_key: reportedNameKey,
+        current_club_key: currentClubKey,
+        destination_club_key: destinationClubKey,
+      },
+    });
+  }
+
+  const players = [...groups.values()].slice(0, maximumItems);
+  return {
+    mode: selectedMode,
+    refreshRequired: players.length > 0,
+    request: players.length > 0 ? {
+      request_id: String(requestId ?? ''),
+      deadline_ms: 75_000,
+      players,
+    } : null,
+  };
+}
+
+const ENRICHMENT_STATUSES = new Set([
+  'cache_hit', 'fresh', 'partial', 'unresolved', 'ambiguous', 'deferred',
+  'provider_failure', 'rate_limited', 'timeout', 'schema_failure',
+  'unsupported_competition', 'missing_season', 'club_conflict', 'unattached',
+]);
+
+function enrichmentFailure(player, code = 'service_contract_invalid') {
+  return {
+    item_key: player.item_key,
+    report_ids: player.report_ids,
+    request_context: player.request_context ?? {},
+    status: 'schema_failure',
+    retryable: true,
+    provider_calls: 0,
+    cache_hits: 0,
+    identity: null,
+    profile: null,
+    statistics: null,
+    error: { code },
+  };
+}
+
+function enrichmentHash(value) {
+  return createHash('sha256').update(JSON.stringify(value ?? {})).digest('hex');
+}
+
+export function normalizeEnrichmentResponse(request, response) {
+  const players = Array.isArray(request?.players) ? request.players : [];
+  const failAll = (code) => ({
+    request_id: String(request?.request_id ?? ''),
+    items: players.map((player) => enrichmentFailure(player, code)),
+  });
+  if (!request || typeof request.request_id !== 'string' || players.length === 0) {
+    return failAll('invalid_enrichment_request');
+  }
+
+  const statusCode = Number(
+    response?.statusCode ?? (typeof response?.status === 'number' ? response.status : 200),
+  );
+  if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || response?.error) {
+    return failAll('enrichment_service_failed');
+  }
+  let body = response?.body ?? response;
+  try {
+    if (typeof body === 'string') body = JSON.parse(body);
+  } catch {
+    return failAll('enrichment_response_not_json');
+  }
+  if (
+    !body
+    || typeof body !== 'object'
+    || body.request_id !== request.request_id
+    || !Array.isArray(body.items)
+  ) return failAll('service_contract_invalid');
+
+  const byKey = new Map();
+  for (const item of body.items) {
+    if (!item || typeof item !== 'object' || typeof item.item_key !== 'string' || byKey.has(item.item_key)) {
+      return failAll('service_contract_invalid');
+    }
+    byKey.set(item.item_key, item);
+  }
+
+  return {
+    request_id: request.request_id,
+    items: players.map((player) => {
+      const item = byKey.get(player.item_key);
+      if (!item || !ENRICHMENT_STATUSES.has(item.status)) return enrichmentFailure(player);
+      const identity = item.identity;
+      const providerPlayerId = String(identity?.provider_player_id ?? '');
+      if (identity !== null && (
+        !identity
+        || identity.provider !== 'sofascore'
+        || !DECIMAL_ID.test(providerPlayerId)
+      )) return enrichmentFailure(player);
+      if (
+        ['fresh', 'cache_hit', 'partial'].includes(item.status)
+        && (!identity || !item.profile || typeof item.profile !== 'object')
+      ) return enrichmentFailure(player);
+      if (
+        ['fresh', 'cache_hit'].includes(item.status)
+        && (!item.statistics || typeof item.statistics !== 'object')
+      ) return enrichmentFailure(player);
+      if (
+        item.profile
+        && (
+          !Number.isFinite(Date.parse(String(item.profile.retrieved_at ?? '')))
+          || (item.profile.current_club !== null && (
+            typeof item.profile.current_club !== 'object'
+            || !DECIMAL_ID.test(String(item.profile.current_club.provider_team_id ?? ''))
+            || typeof item.profile.current_club.name !== 'string'
+            || !item.profile.current_club.name.trim()
+          ))
+          || (item.profile.market_value_currency !== null
+            && item.profile.market_value_currency !== undefined
+            && !ISO_CURRENCY.test(String(item.profile.market_value_currency)))
+        )
+      ) return enrichmentFailure(player);
+      if (
+        item.statistics
+        && (
+          !DECIMAL_ID.test(String(item.statistics.provider_unique_tournament_id ?? ''))
+          || !DECIMAL_ID.test(String(item.statistics.provider_season_id ?? ''))
+          || !['active', 'latest_completed'].includes(item.statistics.season_state)
+          || item.statistics.scope !== 'selected_domestic_league_all_clubs'
+          || !Number.isFinite(Date.parse(String(item.statistics.retrieved_at ?? '')))
+        )
+      ) return enrichmentFailure(player);
+
+      const rawPayloads = item.provenance?.raw_payloads;
+      const rawProfile = rawPayloads?.profile && typeof rawPayloads.profile === 'object'
+        ? rawPayloads.profile
+        : {};
+      const rawStatistics = rawPayloads?.statistics && typeof rawPayloads.statistics === 'object'
+        ? rawPayloads.statistics
+        : {};
+      const cacheHits = Number(item.provenance?.profile_cache === 'hit')
+        + Number(item.provenance?.statistics_cache === 'hit');
+      return {
+        item_key: player.item_key,
+        report_ids: player.report_ids,
+        request_context: player.request_context ?? {},
+        status: item.status,
+        retryable: item.error?.retryable === true
+          || (Array.isArray(item.warnings) && item.warnings.some((warning) => warning?.retryable === true)),
+        provider_calls: Number.isInteger(item.provider_calls) && item.provider_calls >= 0
+          ? item.provider_calls
+          : 0,
+        cache_hits: cacheHits,
+        identity: identity ? {
+          provider: 'sofascore',
+          provider_player_id: providerPlayerId,
+          stable_source_identifier: String(identity.stable_source_identifier ?? `sofascore:player:${providerPlayerId}`),
+          canonical_name: typeof item.profile?.canonical_name === 'string'
+            ? item.profile.canonical_name
+            : player.reported_name,
+          score: Number.isFinite(identity.score) ? identity.score : null,
+          margin: Number.isFinite(identity.margin) ? identity.margin : null,
+          resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version
+            ? identity.resolver_version
+            : 'identity-v1',
+        } : null,
+        profile: item.profile && typeof item.profile === 'object' ? {
+          ...item.profile,
+          content_sha256: enrichmentHash(item.profile),
+          raw_sha256: enrichmentHash(rawProfile),
+          raw_cache_key: providerPlayerId ? `profile-${providerPlayerId}` : null,
+          raw_payload: rawProfile,
+        } : null,
+        statistics: item.statistics && typeof item.statistics === 'object' ? {
+          ...item.statistics,
+          content_sha256: enrichmentHash(item.statistics),
+          raw_sha256: enrichmentHash(rawStatistics),
+          raw_cache_key: providerPlayerId
+            ? `statistics-${providerPlayerId}-${item.statistics.provider_unique_tournament_id}-${item.statistics.provider_season_id}`
+            : null,
+          raw_payload: rawStatistics,
+        } : null,
+        warning_codes: Array.isArray(item.warnings)
+          ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean)
+          : [],
+        error: item.error && typeof item.error === 'object'
+          ? { code: String(item.error.code ?? 'enrichment_failed').slice(0, 100) }
+          : null,
+      };
+    }),
+  };
+}
+
 export function parseSourceRegistry(markdown) {
   let accountType = null;
   const accounts = [];

@@ -3,12 +3,15 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
+  buildEnrichmentRequest,
   buildDiscordDigest,
   chooseClassification,
   dedupeKey,
+  enrichmentUnicodeKey,
   loadSourceRegistry,
   materialRevision,
   mergeReportGroup,
+  normalizeEnrichmentResponse,
   parseRapidApiPosts,
   recoverInterruptedDelivery,
   retryDelayMs,
@@ -101,11 +104,88 @@ test('merging uses source tier, fills missing fields, keeps conflicts, and creat
   const first = materialRevision(null, merged);
   assert.equal(first.changed, true);
   assert.equal(materialRevision(first.content_sha256, { ...merged, sources: [] }).changed, false);
+  assert.equal(materialRevision(first.content_sha256, { ...merged, enrichment: { statistics: { goals: 99 } } }).changed, false);
   assert.equal(materialRevision(first.content_sha256, { ...merged, is_digest_worthy: !merged.is_digest_worthy }).changed, false);
   assert.equal(materialRevision(first.content_sha256, { ...merged, fee_amount: 50000000 }).changed, true);
   assert.equal(dedupeKey(merged), 'alvaro-test|test-fc|destination-fc');
   assert.equal(dedupeKey({ ...merged, player_identity_hint: 'Test FC' }), 'alvaro-test|test-fc|destination-fc');
   assert.equal(chooseClassification(['rumor', 'loan', 'contract_renewal']), 'contract_renewal');
+});
+
+test('enrichment grouping uses provider ID or Unicode name and club context, never placeholder player ID', () => {
+  assert.equal(enrichmentUnicodeKey('  Kylian—MBAPPÉ  '), 'kylian mbappé');
+  const base = {
+    reported_player_name: 'Kylian Mbappé',
+    current_club_name: 'Real Madrid',
+    destination_club_name: 'Liverpool',
+    classification: 'rumor',
+    move_type: 'permanent',
+    aliases: [],
+    identity_overrides: [],
+    profile_fresh_until: null,
+    statistics_fresh_until: null,
+    team_mapping_fresh: false,
+    season_mapping_fresh: false,
+  };
+  const grouped = buildEnrichmentRequest([
+    { ...base, transfer_report_id: '10', placeholder_player_id: '100', provider_player_id: '826643' },
+    { ...base, transfer_report_id: '11', placeholder_player_id: '999', provider_player_id: '826643' },
+    { ...base, transfer_report_id: '12', placeholder_player_id: '100', provider_player_id: null },
+  ], { mode: 'shadow', requestId: 'sofascore:1', now: 0 });
+  assert.equal(grouped.refreshRequired, true);
+  assert.deepEqual(grouped.request.players.map((player) => player.item_key), [
+    'provider:826643',
+    'name:kylian mbappé|club:real madrid',
+  ]);
+  assert.deepEqual(grouped.request.players[0].report_ids, ['10', '11']);
+  assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
+});
+
+test('enrichment response normalization converts contract failures into one sanitized result per request item', () => {
+  const request = {
+    request_id: 'sofascore:1',
+    players: [{
+      item_key: 'provider:826643',
+      reported_name: 'Kylian Mbappé',
+      report_ids: ['10'],
+      request_context: { reported_name_key: 'kylian mbappé' },
+    }],
+  };
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: {
+      request_id: 'sofascore:1',
+      items: [{
+        item_key: 'provider:826643',
+        status: 'fresh',
+        provider_calls: 2,
+        identity: {
+          provider: 'sofascore',
+          provider_player_id: '826643',
+          stable_source_identifier: 'sofascore:player:826643',
+          resolver_version: 'identity-v1',
+        },
+        profile: {
+          canonical_name: 'Kylian Mbappé',
+          current_club: { provider_team_id: '2829', name: 'Real Madrid' },
+          retrieved_at: '2026-07-30T00:00:00Z',
+        },
+        statistics: {
+          provider_unique_tournament_id: '8',
+          provider_season_id: '77559',
+          season_state: 'active',
+          scope: 'selected_domestic_league_all_clubs',
+          retrieved_at: '2026-07-30T00:00:00Z',
+        },
+        provenance: { raw_payloads: { profile: {}, statistics: {} } },
+      }],
+    },
+  });
+  assert.equal(normalized.items[0].status, 'fresh');
+  assert.match(normalized.items[0].profile.content_sha256, /^[a-f0-9]{64}$/);
+  const failed = normalizeEnrichmentResponse(request, { statusCode: 200, body: 'not-json' });
+  assert.deepEqual(failed.items[0].error, { code: 'enrichment_response_not_json' });
+  assert.equal(failed.items[0].identity, null);
 });
 
 test('retry timing honors server headers within a bounded exponential backoff policy', () => {
@@ -324,6 +404,11 @@ test('generated workflow stays in sync with the registry and extraction contract
   const reserveNode = workflow.nodes.find((node) => node.name === 'Reserve digest before delivery');
   const candidatesNode = workflow.nodes.find((node) => node.name === 'Find undelivered revisions');
   const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const contextNode = workflow.nodes.find((node) => node.name === 'Load player enrichment contexts');
+  const enrichNode = workflow.nodes.find((node) => node.name === 'Enrich players via soccerdata');
+  const persistEnrichmentNode = workflow.nodes.find((node) => node.name === 'Persist soccerdata enrichment result');
+  const deliveryRequestNode = workflow.nodes.find((node) => node.name === 'Build Discord delivery request');
+  const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const runNode = workflow.nodes.find((node) => node.name === 'Register workflow run');
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
@@ -352,7 +437,15 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(workflow.connections['Use twscrape collector'].main[1][0].node, 'Build RapidAPI request');
   assert.match(reserveNode.parameters.query, /status = 'sending'/);
   assert.doesNotMatch(reserveNode.parameters.query, /sending AS/);
+  assert.match(reserveNode.parameters.query, /payload->'discord_payload'/);
+  assert.doesNotMatch(reserveNode.parameters.query, /request_payload = EXCLUDED/);
+  assert.match(reserveNode.parameters.query, /RETURNING id, status, request_payload/);
+  assert.match(deliveryRequestNode.parameters.jsCode, /\$json\.request_payload/);
+  assert.doesNotMatch(deliveryRequestNode.parameters.jsCode, /Build bounded Discord digest/);
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
+  assert.match(candidatesNode.parameters.query, /dd\.request_payload AS pending_request_payload/);
+  assert.match(candidatesNode.parameters.query, /current_player_enrichment/);
+  assert.match(candidatesNode.parameters.query, /\$3::text = 'active'/);
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
@@ -361,7 +454,19 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
-  assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare enrichment batch query');
+  assert.equal(workflow.connections['Prepare enrichment batch query'].main[0][0].node, 'Enrichment enabled?');
+  assert.equal(workflow.connections['Enrichment enabled?'].main[1][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Refresh required?'].main[1][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Persist soccerdata enrichment result'].main[0][0].node, 'Prepare digest candidates query');
+  assert.equal(contextNode.continueOnFail, true);
+  assert.equal(persistEnrichmentNode.continueOnFail, true);
+  assert.equal(enrichNode.continueOnFail, true);
+  assert.equal(enrichNode.retryOnFail, undefined);
+  assert.equal(enrichNode.parameters.options.timeout, 85000);
+  assert.match(persistEnrichmentNode.parameters.query, /JOIN provider_ids provider_id/);
+  assert.match(persistEnrichmentNode.parameters.query, /jsonb_typeof\(item->'profile'\) = 'object'/);
+  assert.match(mergeReportsNode.parameters.query, /transfer_report_player_resolutions/);
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
