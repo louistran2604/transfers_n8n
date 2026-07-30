@@ -2,13 +2,16 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadSourceRegistry } from './lib.mjs';
+import { loadEntityAliases, loadSourceRegistry } from './lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outputPath = resolve(here, 'football-transfer-monitor.json');
 const errorOutputPath = resolve(here, 'football-transfer-monitor-errors.json');
 const womensBlacklistPath = resolve(here, 'womens-football-blacklist.txt');
+const entityAliasesPath = resolve(here, 'entity-aliases.json');
+
+let entityAliases;
 
 const postgresCredential = { postgres: { id: '', name: 'Transfers PostgreSQL' } };
 
@@ -249,26 +252,29 @@ LEFT JOIN digest_items di ON di.transfer_report_revision_id = r.id
 WHERE di.id IS NULL
   AND tr.last_reported_at >= $1::timestamptz
   AND tr.last_reported_at <= $2::timestamptz
-  AND NOT EXISTS (
-    SELECT 1
-    FROM digest_items sent_item
-    JOIN digest_deliveries sent_delivery ON sent_delivery.id = sent_item.digest_delivery_id
-    JOIN transfer_report_revisions sent_revision ON sent_revision.id = sent_item.transfer_report_revision_id
-    JOIN transfer_reports sent_report ON sent_report.id = sent_revision.transfer_report_id
-    WHERE sent_delivery.status = 'sent'
-      AND sent_delivery.sent_at >= CURRENT_TIMESTAMP - interval '24 hours'
-      AND lower(btrim(sent_report.reported_player_name)) = lower(btrim(tr.reported_player_name))
-      AND NULLIF(btrim(r.snapshot->>'destination_club_name'), '') IS NOT NULL
-      AND regexp_replace(lower(COALESCE(sent_revision.snapshot->>'destination_club_name', '')), '[^a-z0-9]+', '', 'g')
-          = regexp_replace(lower(r.snapshot->>'destination_club_name'), '[^a-z0-9]+', '', 'g')
-  )
   AND NOT EXISTS (SELECT 1 FROM pending_candidates)
+),
+candidates AS (
+  SELECT * FROM pending_candidates
+  UNION ALL
+  SELECT * FROM fresh_candidates
+),
+limited_candidates AS (
+  SELECT * FROM candidates
+  ORDER BY priority_rank ASC, posted_at DESC
+  LIMIT 100
+),
+sent_history AS (
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('snapshot', sent_revision.snapshot, 'sent_at', sent_delivery.sent_at)), '[]'::jsonb) AS payload
+  FROM digest_items sent_item
+  JOIN digest_deliveries sent_delivery ON sent_delivery.id = sent_item.digest_delivery_id
+  JOIN transfer_report_revisions sent_revision ON sent_revision.id = sent_item.transfer_report_revision_id
+  WHERE sent_delivery.status = 'sent'
+    AND sent_delivery.sent_at >= CURRENT_TIMESTAMP - interval '7 days'
 )
-SELECT * FROM pending_candidates
+SELECT 'sent_history'::text AS row_type, payload FROM sent_history
 UNION ALL
-SELECT * FROM fresh_candidates
-ORDER BY priority_rank ASC, posted_at DESC
-LIMIT 100;`.trim();
+SELECT 'candidate'::text AS row_type, to_jsonb(limited_candidates) AS payload FROM limited_candidates;`.trim();
 }
 
 function reserveDigestSql() {
@@ -332,7 +338,8 @@ RETURNING id::text AS workflow_run_id, external_execution_id, logical_run_key;`.
 
 function runtimeHelpers() {
   return `
-const normalize = (value) => String(value ?? '').normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\\s+/g, ' ');
+${entityAliasHelpers()}
+const normalize = normalizeAlias;
 const key = (report) => [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const compareSource = (left, right) => (left.source.priority_rank - right.source.priority_rank) || (right.source.reliability_score - left.source.reliability_score) || String(left.posted_at).localeCompare(String(right.posted_at));
@@ -369,6 +376,20 @@ const sha256 = (value) => {
   }
   return hash.map((number) => (number >>> 0).toString(16).padStart(8, '0')).join('');
 };`;
+}
+
+function entityAliasHelpers() {
+  if (!entityAliases) throw new Error('Entity aliases have not been loaded');
+  return `
+const entityAliases = ${JSON.stringify(entityAliases)};
+const normalizeAlias = (value) => String(value ?? '').normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\\s+/g, ' ');
+const canonicalEntity = (value, aliases) => typeof value === 'string' ? aliases[normalizeAlias(value)] ?? value.trim() : value;
+const canonicalizeReport = (report) => ({
+  ...report,
+  player_name: canonicalEntity(report.player_name, entityAliases.players),
+  current_club_name: canonicalEntity(report.current_club_name, entityAliases.clubs),
+  destination_club_name: canonicalEntity(report.destination_club_name, entityAliases.clubs),
+});`;
 }
 
 function rapidApiParserCode() {
@@ -438,6 +459,7 @@ return posts.flatMap((post) => {
 
 function qwenParseCode() {
   return `
+${entityAliasHelpers()}
 const requests = $('Build Qwen request').all();
 const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
@@ -450,7 +472,7 @@ return $input.all().flatMap((item, index) => {
   let parsed;
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
-  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => ({ ...report, current_club_name: nullableClub(report.current_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
+  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
   const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
@@ -465,7 +487,7 @@ function mergeCode() {
 ${runtimeHelpers()}
 const groups = new Map();
 for (const item of $input.all()) {
-  const report = item.json.report;
+  const report = item.json.report ? canonicalizeReport(item.json.report) : null;
   if (!report) continue;
   const groupKey = key(report);
   groups.set(groupKey, [...(groups.get(groupKey) ?? []), report]);
@@ -508,12 +530,16 @@ return outputs;`;
 
 function digestCode() {
   return `
+${entityAliasHelpers()}
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const truncate = (value, maximum) => String(value ?? '').length <= maximum ? String(value ?? '') : String(value ?? '').slice(0, maximum - 1) + '…';
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
 const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
-const digestStoryKey = (report) => String(report.player_name ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const digestStoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
+const digestUpdateFields = ['classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'];
+const digestMaterialKey = (report) => JSON.stringify(Object.fromEntries(digestUpdateFields.map((field) => [field, report[field] ?? null])));
+const sameDigestStory = (left, right) => digestStoryKey(left) === digestStoryKey(right);
 const digestPriority = (report) => {
   if (report.classification === 'official_confirmed') return 0;
   const username = String(report.preferred_source.username ?? '').toLowerCase();
@@ -523,24 +549,30 @@ const digestPriority = (report) => {
   if (report.classification === 'rumor' && Number(report.fee_amount) >= 70000000 && ['EUR', 'GBP'].includes(String(report.fee_currency ?? '').toUpperCase())) return 3;
   return 4;
 };
-const reports = $input.all().map((item) => {
-  const snapshot = typeof item.json.snapshot === 'string' ? JSON.parse(item.json.snapshot) : item.json.snapshot;
+const rows = $input.all().map((item) => ({ row_type: item.json.row_type, payload: typeof item.json.payload === 'string' ? JSON.parse(item.json.payload) : item.json.payload }));
+const sentHistory = rows.find((row) => row.row_type === 'sent_history')?.payload ?? [];
+const reports = rows.filter((row) => row.row_type === 'candidate').map((row) => {
+  const item = row.payload ?? {};
+  const snapshot = typeof item.snapshot === 'string' ? JSON.parse(item.snapshot) : item.snapshot;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;
-  return { ...snapshot, revision_id: item.json.revision_id, post_url: item.json.post_url, pending_idempotency_key: item.json.pending_idempotency_key, pending_window_started_at: item.json.pending_window_started_at, pending_window_ended_at: item.json.pending_window_ended_at, preferred_source: { priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), username: item.json.source_username, display_name: item.json.source_name } };
+  return canonicalizeReport({ ...snapshot, revision_id: item.revision_id, post_url: item.post_url, pending_idempotency_key: item.pending_idempotency_key, pending_window_started_at: item.pending_window_started_at, pending_window_ended_at: item.pending_window_ended_at, sent_history: sentHistory, preferred_source: { priority_rank: Number(item.priority_rank), reliability_score: Number(item.reliability_score), username: item.source_username, display_name: item.source_name } });
 }).filter(Boolean).sort((a, b) => (digestPriority(a) - digestPriority(b)) || (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (b.preferred_source.reliability_score - a.preferred_source.reliability_score) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
-const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports.filter(isDigestEligible);
+const isNewDigestUpdate = (report) => {
+  const sent = (Array.isArray(report.sent_history) ? report.sent_history : []).filter((entry) => entry?.snapshot && entry?.sent_at).map((entry) => ({ ...entry, snapshot: canonicalizeReport(entry.snapshot) })).filter((entry) => sameDigestStory(report, entry.snapshot));
+  const confirmedWithinCooldown = sent.some((entry) => entry.snapshot.classification === 'official_confirmed' && Date.now() - Date.parse(entry.sent_at) < 7 * 24 * 60 * 60 * 1000);
+  if (report.classification !== 'rejected_failed' && confirmedWithinCooldown) return false;
+  return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
+};
+const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports.filter((report) => isDigestEligible(report) && isNewDigestUpdate(report));
 const seenRevisionIds = new Set();
 const seenStoryKeys = new Set();
-const seenPlayerStoryKeys = new Set();
 const distinctCandidateReports = candidateReports.filter((report) => {
   const revisionId = String(report.revision_id ?? '');
-  const storyKey = String(report.dedupe_key ?? '');
-  const playerStoryKey = digestStoryKey(report);
-  if (!revisionId || seenRevisionIds.has(revisionId) || (storyKey && seenStoryKeys.has(storyKey)) || seenPlayerStoryKeys.has(playerStoryKey)) return false;
+  const storyKey = digestStoryKey(report);
+  if (!revisionId || seenRevisionIds.has(revisionId) || seenStoryKeys.has(storyKey)) return false;
   seenRevisionIds.add(revisionId);
-  if (storyKey) seenStoryKeys.add(storyKey);
-  seenPlayerStoryKeys.add(playerStoryKey);
+  seenStoryKeys.add(storyKey);
   return true;
 });
 const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3)];
@@ -821,12 +853,17 @@ async function qwenPromptWithWomensBlacklist(prompt) {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
   const uniqueNames = [...new Set(names)];
-  return `${prompt.trim()}\n\nWomen's-football blacklist:\n${uniqueNames.map((name) => `- ${name}`).join('\n')}\n\nIf a post names any player on this blacklist, including a case or diacritic variant, return {"transfer_related":false,"reports":[]}.`;
+  const siblings = entityAliases.sibling_groups.map((group) => `- ${group.join(' / ')}`).join('\n');
+  return `${prompt.trim()}\n\nWomen's-football blacklist:\n${uniqueNames.map((name) => `- ${name}`).join('\n')}\n\nIf a post names any player on this blacklist, including a case or diacritic variant, return {"transfer_related":false,"reports":[]}.\n\nKnown football siblings:\n${siblings}\n\nWhen a post uses a surname shared by listed siblings, use the full player name only when the post context identifies that sibling. Do not merge siblings or guess between them.`;
 }
 
 async function main() {
   const check = process.argv.includes('--check');
-  const registry = await loadSourceRegistry(resolve(root, 'docs/journalist_list.md'));
+  const [registry, aliases] = await Promise.all([
+    loadSourceRegistry(resolve(root, 'docs/journalist_list.md')),
+    loadEntityAliases(entityAliasesPath),
+  ]);
+  entityAliases = aliases;
   const prompt = await qwenPromptWithWomensBlacklist(await readFile(resolve(here, 'qwen-system-prompt.md'), 'utf8'));
   const schema = JSON.parse(await readFile(resolve(here, 'qwen-response-schema.json'), 'utf8'));
   const files = [

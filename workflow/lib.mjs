@@ -73,6 +73,50 @@ export function normalizeIdentity(value) {
   return normalizeText(value).replace(/\s/g, '-');
 }
 
+const EMPTY_ENTITY_ALIASES = Object.freeze({ clubs: Object.freeze({}), players: Object.freeze({}), sibling_groups: Object.freeze([]) });
+
+function aliasMap(entries, label) {
+  if (!Array.isArray(entries)) throw new Error(`${label} aliases must be an array`);
+  const aliases = {};
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || typeof entry.canonical !== 'string' || !entry.canonical.trim() || !Array.isArray(entry.aliases) || !entry.aliases.every((alias) => typeof alias === 'string' && alias.trim())) {
+      throw new Error(`Invalid ${label} alias entry`);
+    }
+    for (const name of [entry.canonical, ...entry.aliases]) {
+      const key = normalizeText(name);
+      if (aliases[key] && aliases[key] !== entry.canonical) throw new Error(`Conflicting ${label} alias: ${name}`);
+      aliases[key] = entry.canonical;
+    }
+  }
+  return Object.freeze(aliases);
+}
+
+export function parseEntityAliases(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Entity aliases must be an object');
+  if (!Array.isArray(value.sibling_groups) || !value.sibling_groups.every((group) => Array.isArray(group) && group.length >= 2 && group.every((name) => typeof name === 'string' && name.trim()))) {
+    throw new Error('Sibling groups must contain at least two player names');
+  }
+  return Object.freeze({
+    clubs: aliasMap(value.clubs, 'club'),
+    players: aliasMap(value.players, 'player'),
+    sibling_groups: Object.freeze(value.sibling_groups.map((group) => Object.freeze([...group]))),
+  });
+}
+
+export async function loadEntityAliases(path) {
+  return parseEntityAliases(JSON.parse(await readFile(path, 'utf8')));
+}
+
+export function canonicalizeReport(report, entityAliases = EMPTY_ENTITY_ALIASES) {
+  const canonical = (value, aliases) => typeof value === 'string' ? aliases[normalizeText(value)] ?? value.trim() : value;
+  return {
+    ...report,
+    player_name: canonical(report.player_name, entityAliases.players),
+    current_club_name: canonical(report.current_club_name, entityAliases.clubs),
+    destination_club_name: canonical(report.destination_club_name, entityAliases.clubs),
+  };
+}
+
 export function parseSourceRegistry(markdown) {
   let accountType = null;
   const accounts = [];
@@ -297,8 +341,9 @@ export function chooseClassification(classifications) {
     .sort((left, right) => CLASSIFICATION_PRECEDENCE[right] - CLASSIFICATION_PRECEDENCE[left])[0] ?? 'rumor';
 }
 
-export function dedupeKey(report) {
-  return [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown']
+export function dedupeKey(report, entityAliases = EMPTY_ENTITY_ALIASES) {
+  const canonical = canonicalizeReport(report, entityAliases);
+  return [canonical.player_name, canonical.current_club_name || 'unknown', canonical.destination_club_name || 'unknown']
     .map(normalizeIdentity)
     .join('|');
 }
@@ -321,16 +366,16 @@ function firstDefined(reports, field, conflicts) {
   return value;
 }
 
-export function mergeReportGroup(group) {
+export function mergeReportGroup(group, entityAliases = EMPTY_ENTITY_ALIASES) {
   if (!Array.isArray(group) || !group.length) throw new Error('Cannot merge an empty report group');
-  const sorted = [...group].sort(sourceComparator);
+  const sorted = group.map((report) => canonicalizeReport(report, entityAliases)).sort(sourceComparator);
   const conflicts = {};
   const merged = {};
   for (const field of REPORT_FIELDS) merged[field] = firstDefined(sorted, field, conflicts);
   merged.player_name = firstDefined(sorted, 'player_name', conflicts) ?? 'Unknown player';
   merged.classification = chooseClassification(sorted.map((report) => report.classification));
   merged.confidence = Math.max(...sorted.map((report) => report.confidence));
-  merged.dedupe_key = dedupeKey(merged);
+  merged.dedupe_key = dedupeKey(merged, entityAliases);
   merged.first_reported_at = sorted.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = sorted.map((report) => report.posted_at).sort().at(-1);
   merged.preferred_source = sorted[0].source;
@@ -406,13 +451,39 @@ function hasNamedClub(value) {
 }
 
 function digestStoryKey(report) {
-  return normalizeIdentity(report.player_name);
+  return [report.player_name, report.destination_club_name].map(normalizeIdentity).join('|');
 }
 
 function isDigestEligible(report) {
   return report.is_digest_worthy === true
     && hasNamedClub(report.current_club_name)
     && hasNamedClub(report.destination_club_name);
+}
+
+const DIGEST_UPDATE_FIELDS = Object.freeze([
+  'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency',
+  'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on',
+  'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status',
+  'agreement_status', 'confidence',
+]);
+
+function digestMaterialKey(report) {
+  return JSON.stringify(Object.fromEntries(DIGEST_UPDATE_FIELDS.map((field) => [field, report[field] ?? null])));
+}
+
+function sameDigestStory(left, right) {
+  return digestStoryKey(left) === digestStoryKey(right);
+}
+
+function isNewDigestUpdate(report, entityAliases, now) {
+  const sent = (Array.isArray(report.sent_history) ? report.sent_history : [])
+    .filter((entry) => entry && entry.snapshot && entry.sent_at)
+    .map((entry) => ({ ...entry, snapshot: canonicalizeReport(entry.snapshot, entityAliases) }))
+    .filter((entry) => sameDigestStory(report, entry.snapshot));
+  const confirmedWithinCooldown = sent.some((entry) => entry.snapshot.classification === 'official_confirmed'
+    && now - Date.parse(entry.sent_at) < 7 * 24 * 60 * 60 * 1000);
+  if (report.classification !== 'rejected_failed' && confirmedWithinCooldown) return false;
+  return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
 }
 
 function storyText(report) {
@@ -442,25 +513,25 @@ function truncate(value, maximum) {
   return text.length <= maximum ? text : `${text.slice(0, Math.max(0, maximum - 1))}…`;
 }
 
-export function selectDigestReports(reports) {
-  const sorted = reports.filter(isDigestEligible).sort((left, right) => (
+export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIASES, now = Date.now() } = {}) {
+  const sorted = reports
+    .map((report) => canonicalizeReport(report, entityAliases))
+    .filter((report) => isDigestEligible(report) && isNewDigestUpdate(report, entityAliases, now))
+    .sort((left, right) => (
     digestPriority(left) - digestPriority(right)
     || sourceComparator(left, right)
     || classificationWeight(right.classification) - classificationWeight(left.classification)
     || right.confidence - left.confidence
     || String(right.last_reported_at ?? '').localeCompare(String(left.last_reported_at ?? ''))
-  ));
+    ));
   const seenRevisionIds = new Set();
   const seenStoryKeys = new Set();
-  const seenPlayerStoryKeys = new Set();
   const distinct = sorted.filter((report) => {
     const revisionId = String(report.revision_id ?? '');
-    const storyKey = String(report.dedupe_key ?? dedupeKey(report));
-    const playerStoryKey = digestStoryKey(report);
-    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey) || seenPlayerStoryKeys.has(playerStoryKey)) return false;
+    const storyKey = digestStoryKey(report);
+    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey)) return false;
     if (revisionId) seenRevisionIds.add(revisionId);
     seenStoryKeys.add(storyKey);
-    seenPlayerStoryKeys.add(playerStoryKey);
     return true;
   });
   const normal = distinct.slice(0, 15);
@@ -468,8 +539,8 @@ export function selectDigestReports(reports) {
   return [...normal, ...extra];
 }
 
-export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt } = {}) {
-  const selected = selectDigestReports(reports);
+export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, entityAliases, now } = {}) {
+  const selected = selectDigestReports(reports, { entityAliases, now });
   const fields = [];
   let totalCharacters = 45;
   for (const report of selected) {

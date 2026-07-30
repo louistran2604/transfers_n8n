@@ -1,0 +1,18 @@
+{
+  "clubs": [
+    { "canonical": "Bayer Leverkusen", "aliases": ["Bayer 04 Leverkusen"] },
+    { "canonical": "Barcelona", "aliases": ["FC Barcelona", "Barca", "Barça"] },
+    { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München"] },
+    { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
+    { "canonical": "Manchester United", "aliases": ["Man Utd", "Man United", "MUFC"] },
+    { "canonical": "RB Leipzig", "aliases": ["Leipzig", "RasenBallsport Leipzig"] }
+  ],
+  "players": [
+    { "canonical": "Randal Kolo Muani", "aliases": ["Kolo Muani", "Randal Kolo-Muani"] },
+    { "canonical": "Kerim Alajbegović", "aliases": ["Kerim Alajbegovic"] }
+  ],
+  "sibling_groups": [
+    ["Kylian Mbappé", "Ethan Mbappé"],
+    ["Jurriën Timber", "Quinten Timber"]
+  ]
+}

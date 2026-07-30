@@ -205,6 +205,8 @@ docker compose -f deploy/n8n/compose.yaml exec -T n8n \
 
 The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
 
+Club and player spelling variants, plus sibling groups, are maintained in [workflow/entity-aliases.json](workflow/entity-aliases.json). Add a canonical name and its known aliases there, then regenerate and re-import the workflow. Aliases are applied before report persistence and digest selection; sibling groups are supplied to Qwen so a shared surname is not automatically merged with the wrong player.
+
 Classification precedence during merging is:
 
 ```text
@@ -216,7 +218,7 @@ contract renewal
 → rumor
 ```
 
-Reports are grouped by normalized player/current-club/destination direction. The best source wins, missing values can be filled from lower-tier sources, and conflicting values remain in `normalized_data.conflicts`. A revision is created only when the material snapshot changes.
+Reports are grouped by canonical player/current-club/destination direction. The best source wins, missing values can be filled from lower-tier sources, and conflicting values remain in `normalized_data.conflicts`. A revision is created only when the material snapshot changes.
 
 ### Discord digest
 
@@ -227,7 +229,7 @@ Each story includes every meaningful non-null extracted detail that fits:
 - Loan end, purchase option/obligation, and sell-on percentage.
 - Medical status, agreement status, confidence, and linked source.
 
-Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and transfer dedupe key. The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It admits the first 15 distinct stories, then up to three extra stories only when they are confirmed or reported by Romano/Ornstein. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
+Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and canonical player/destination, so simultaneous links to different destinations remain separate stories. A material update appears as a new entry in the next digest, unless an `official_confirmed` story for that player/destination was sent in the previous seven days; `rejected_failed` always bypasses that cooldown. The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It admits the first 15 distinct stories, then up to three extra stories only when they are confirmed or reported by Romano/Ornstein. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
 
 ### Retry and delivery safety
 

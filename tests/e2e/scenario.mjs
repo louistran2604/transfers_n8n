@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   buildDiscordDigest,
+  loadEntityAliases,
   recoverInterruptedDelivery,
   retryDelayMs,
   shouldRetry,
@@ -94,5 +95,21 @@ const recovered = recoverInterruptedDelivery({ status: 'sending' });
 assert.equal(recovered.status, 'unknown');
 assert.equal(recovered.retryable, false);
 assert.equal((await json('/state')).body.discordRequests, 2);
+
+const entityAliases = await loadEntityAliases(new URL('../../workflow/entity-aliases.json', import.meta.url));
+const updateNow = Date.parse('2026-07-30T12:00:00.000Z');
+const sentRumor = {
+  ...reports[0], player_name: 'Kerim Alajbegovic', current_club_name: 'Bayer 04 Leverkusen', destination_club_name: 'Juventus', fee_amount: 33000000, fee_currency: 'EUR',
+};
+const confirmation = {
+  ...sentRumor, player_name: 'Kerim Alajbegović', current_club_name: 'Bayer Leverkusen', classification: 'official_confirmed', fee_amount: 35000000,
+  sent_history: [{ snapshot: sentRumor, sent_at: '2026-07-30T06:00:00.000Z' }],
+};
+assert.equal(buildDiscordDigest([confirmation], { entityAliases, now: updateNow }).embeds[0].fields.length, 1);
+const confirmedUpdate = {
+  ...confirmation, fee_amount: 36000000, sent_history: [{ snapshot: confirmation, sent_at: '2026-07-30T11:00:00.000Z' }],
+};
+assert.equal(buildDiscordDigest([confirmedUpdate], { entityAliases, now: updateNow }).embeds[0].fields.length, 0);
+assert.equal(buildDiscordDigest([{ ...confirmedUpdate, classification: 'rejected_failed' }], { entityAliases, now: updateNow }).embeds[0].fields.length, 1);
 
 process.stdout.write('Mock E2E scenarios passed.\n');

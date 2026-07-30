@@ -6,9 +6,11 @@ import {
   buildDiscordDigest,
   chooseClassification,
   dedupeKey,
+  loadEntityAliases,
   loadSourceRegistry,
   materialRevision,
   mergeReportGroup,
+  parseEntityAliases,
   parseRapidApiPosts,
   recoverInterruptedDelivery,
   retryDelayMs,
@@ -17,6 +19,8 @@ import {
   sourceMetadata,
   validateQwenResponse,
 } from '../../workflow/lib.mjs';
+
+const entityAliases = await loadEntityAliases(new URL('../../workflow/entity-aliases.json', import.meta.url));
 
 const validReport = (overrides = {}) => ({
   player_name: 'Álvaro Test',
@@ -108,6 +112,21 @@ test('merging uses source tier, fills missing fields, keeps conflicts, and creat
   assert.equal(chooseClassification(['rumor', 'loan', 'contract_renewal']), 'contract_renewal');
 });
 
+test('entity aliases canonicalize player and club variants without merging siblings', () => {
+  const koloMuani = validReport({ player_name: 'Kolo Muani', current_club_name: 'PSG', destination_club_name: 'Man Utd' });
+  assert.equal(dedupeKey(koloMuani, entityAliases), 'randal-kolo-muani|paris-saint-germain|manchester-united');
+  assert.equal(dedupeKey({ ...koloMuani, player_name: 'Randal Kolo Muani', current_club_name: 'Paris Saint-Germain', destination_club_name: 'Manchester United' }, entityAliases), dedupeKey(koloMuani, entityAliases));
+  assert.notEqual(dedupeKey({ ...koloMuani, player_name: 'Kylian Mbappé' }, entityAliases), dedupeKey({ ...koloMuani, player_name: 'Ethan Mbappé' }, entityAliases));
+  assert.throws(() => parseEntityAliases({
+    clubs: [
+      { canonical: 'Club A', aliases: ['Shared Club'] },
+      { canonical: 'Club B', aliases: ['Shared Club'] },
+    ],
+    players: [],
+    sibling_groups: [],
+  }), /Conflicting club alias/);
+});
+
 test('retry timing honors server headers within a bounded exponential backoff policy', () => {
   assert.equal(retryDelayMs({ attempt: 1, retryAfter: '3', now: 0 }), 3000);
   assert.equal(retryDelayMs({ attempt: 3, retryAfter: null, now: 0 }), 4000);
@@ -160,13 +179,23 @@ test('digest positions 16 through 18 exclude huge and big-money rumors', () => {
   assert.ok(!selected.some((report) => ['Huge extra', 'Big money extra'].includes(report.player_name)));
 });
 
-test('digest requires relevance and complete clubs, then keeps one story per player', () => {
+test('digest requires relevance and complete clubs, then keeps one story per player and destination', () => {
   const samePlayerLowerPriority = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club A' }), preferred_source: source('someone'), revision_id: '1' };
   const samePlayerPreferred = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club B', classification: 'official_confirmed' }), preferred_source: source('David_Ornstein'), revision_id: '2' };
   const lowProfile = { ...validReport({ player_name: 'Low Profile', is_digest_worthy: false }), preferred_source: source('David_Ornstein'), revision_id: '3' };
   const incomplete = { ...validReport({ player_name: 'Incomplete', current_club_name: 'not_reported' }), preferred_source: source('David_Ornstein'), revision_id: '4' };
-  assert.deepEqual(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred, lowProfile, incomplete]).map((report) => report.player_name), ['Same Player']);
-  assert.equal(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred])[0].destination_club_name, 'Club B');
+  assert.deepEqual(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred, lowProfile, incomplete]).map((report) => report.destination_club_name), ['Club B', 'Club A']);
+});
+
+test('digest sends material updates, suppresses confirmed moves for seven days, and allows a deal-off', () => {
+  const now = Date.parse('2026-07-30T12:00:00.000Z');
+  const sentRumor = validReport({ player_name: 'Kerim Alajbegovic', current_club_name: 'Bayer 04 Leverkusen', destination_club_name: 'Juventus', fee_amount: 33000000, fee_currency: 'EUR' });
+  const confirmation = validReport({ player_name: 'Kerim Alajbegović', current_club_name: 'Bayer Leverkusen', destination_club_name: 'Juventus', classification: 'official_confirmed', fee_amount: 35000000, fee_currency: 'EUR', revision_id: 'confirmed', sent_history: [{ snapshot: sentRumor, sent_at: '2026-07-30T06:00:00.000Z' }] });
+  assert.equal(selectDigestReports([confirmation], { entityAliases, now }).length, 1);
+  const confirmedUpdate = { ...confirmation, fee_amount: 36000000, revision_id: 'confirmed-update', sent_history: [{ snapshot: confirmation, sent_at: '2026-07-30T11:00:00.000Z' }] };
+  assert.equal(selectDigestReports([confirmedUpdate], { entityAliases, now }).length, 0);
+  const dealOff = { ...confirmedUpdate, classification: 'rejected_failed', revision_id: 'deal-off' };
+  assert.equal(selectDigestReports([dealOff], { entityAliases, now }).length, 1);
 });
 
 test('digest displays every meaningful non-null transfer detail', () => {
@@ -296,9 +325,12 @@ test('generated digest deduplicates repeated candidate rows before applying its 
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
   const snapshot = { ...validReport(), dedupe_key: 'alvaro-test|test-fc|destination-fc' };
-  const repeated = Array.from({ length: 20 }, () => ({ json: {
-    revision_id: 'revision-1', snapshot, post_url: 'https://x.com/source/status/1', priority_rank: '2', reliability_score: '0.95', source_name: 'Source',
-  } }));
+  const repeated = [
+    { json: { row_type: 'sent_history', payload: [] } },
+    ...Array.from({ length: 20 }, () => ({ json: { row_type: 'candidate', payload: {
+      revision_id: 'revision-1', snapshot, post_url: 'https://x.com/source/status/1', priority_rank: '2', reliability_score: '0.95', source_name: 'Source',
+    } } })),
+  ];
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
   const output = await runDigest({ all: () => repeated });
@@ -332,6 +364,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenNode.parameters.jsCode, /Women's-football blacklist/);
   assert.match(qwenNode.parameters.jsCode, /Misa Rodríguez/);
   assert.match(qwenNode.parameters.jsCode, /Misa Rodriguez/);
+  assert.match(qwenNode.parameters.jsCode, /Known football siblings/);
+  assert.match(qwenParserNode.parameters.jsCode, /Randal Kolo Muani/);
   assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
   assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
   assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
@@ -356,7 +390,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
-  assert.match(candidatesNode.parameters.query, /sent_delivery\.sent_at >= CURRENT_TIMESTAMP - interval '24 hours'/);
+  assert.match(candidatesNode.parameters.query, /sent_delivery\.sent_at >= CURRENT_TIMESTAMP - interval '7 days'/);
+  assert.match(candidatesNode.parameters.query, /'sent_history'::text AS row_type/);
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
