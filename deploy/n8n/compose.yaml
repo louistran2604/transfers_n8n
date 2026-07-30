@@ -24,6 +24,8 @@ services:
       - X_COLLECTOR=${X_COLLECTOR:?X_COLLECTOR is required}
       - RAPIDAPI_KEY=${RAPIDAPI_KEY:-}
       - TWSCRAPE_BASE_URL=${TWSCRAPE_BASE_URL:-http://twscrape:8080}
+      - PLAYER_ENRICHMENT_MODE=${PLAYER_ENRICHMENT_MODE:-off}
+      - SOFASCORE_ENRICHMENT_BASE_URL=http://sofascore-enrichment:8080
       - DISCORD_TRANSFERS_WEBHOOK_URL=${DISCORD_TRANSFERS_WEBHOOK_URL:?DISCORD_TRANSFERS_WEBHOOK_URL is required}
       - DISCORD_ERRORS_WEBHOOK_URL=${DISCORD_ERRORS_WEBHOOK_URL:?DISCORD_ERRORS_WEBHOOK_URL is required}
     volumes:
@@ -66,10 +68,33 @@ services:
       retries: 3
       start_period: 10s
 
+  sofascore-enrichment:
+    build: ./sofascore
+    image: transfers-n8n-sofascore-enrichment:local
+    profiles: ["enrichment"]
+    restart: unless-stopped
+    environment:
+      - SOCCERDATA_DIR=/data/soccerdata
+    volumes:
+      - sofascore_cache:/data/soccerdata
+    networks:
+      - transfers_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    cpus: 1.0
+    mem_limit: 1g
+    stop_grace_period: 15s
+
 volumes:
   bill_n8n_data:
     driver: local
   twscrape_accounts:
+    driver: local
+  sofascore_cache:
     driver: local
 
 networks:
