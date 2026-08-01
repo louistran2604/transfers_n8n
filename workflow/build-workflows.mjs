@@ -1502,7 +1502,7 @@ for (const field of fields) {
 }
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
 const end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);
-const payload = { allowed_mentions: { parse: [] }, embeds: [{ title, color: 1948592, fields: fields.map(({ name, value, inline }) => ({ name, value, inline })), footer: { text: footerText(fields.length) } }] };
+const payload = { allowed_mentions: { parse: [] }, embeds: [{ title, color: 1940464, fields: fields.map(({ name, value, inline }) => ({ name, value, inline })), footer: { text: footerText(fields.length) } }] };
 let discordPayload = payload;
 if (pending) {
   try {

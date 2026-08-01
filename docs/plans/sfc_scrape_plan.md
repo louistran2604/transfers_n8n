@@ -1785,6 +1785,14 @@ Checkpoint: `.omx/checkpoints/sfc_scrape/implementation-milestone-07.md`, includ
 
 Expected commit boundary: one final tests-and-fixes commit after the complete suite and final review pass; checkpoint excluded. Stop before merge, push, publication, or pull request.
 
+Implementation status (2026-08-01): **completed for the required offline boundary**.
+
+- workflow generation passed for 78 sources and 2 generated workflows;
+- Node unit tests passed 28/28 and containerized Python tests passed 57/57;
+- all four Compose configuration checks, the Sofascore image build, migration/rollback suite, Docker smoke suite, and E2E suite passed;
+- final review found no scope expansion, secret-like additions, public Sofascore port, generated-workflow drift, migration-001 change, or idempotency regression;
+- live acceptance remains intentionally unrun and requires both provider-policy approval and its explicit opt-in flags; no activation, push, merge, publication, or pull request occurred.
+
 ## 12. Test strategy
 
 ### Fixture policy and mocking boundary

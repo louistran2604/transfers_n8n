@@ -17,11 +17,12 @@ from typing import Any, Callable
 
 from aiohttp import web
 
-from __init__ import SERVICE_VERSION, SOCCERDATA_VERSION
 from adapter import ProviderError, SofascoreAdapter, create_reader
 from models import validate_batch
 
 
+SERVICE_VERSION = "1"
+SOCCERDATA_VERSION = "1.9.1"
 TLS_ASSET_SHA256 = "3f9bf4a741002b1d57043571d69e6ebe8f1df416aa1ca9ca9766dba36e4d4941"
 FIXTURE_MANIFEST = Path(__file__).parent / "tests" / "fixtures" / "manifest.json"
 BODY_LIMIT_BYTES = 256 * 1024
@@ -325,10 +326,14 @@ async def health_handler(request: web.Request) -> web.Response:
 async def ready_handler(request: web.Request) -> web.Response:
     checks = request.app["checks"]
     worker = request.app["worker"]
-    ready = checks.ready() and worker.is_alive()
+    checks_ready = checks.ready()
+    ready = checks_ready and worker.is_alive()
     return web.json_response(
         {
             "status": "ready" if ready else "unavailable",
+            "package_ready": getattr(checks, "package_ready", checks_ready),
+            "native_ready": getattr(checks, "native_ready", checks_ready),
+            "fixture_ready": getattr(checks, "fixture_ready", checks_ready),
             "cache_writable": checks.cache_writable,
             "worker_ready": worker.is_alive(),
             "circuit": request.app["circuit"].state,

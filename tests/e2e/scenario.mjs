@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  buildEnrichmentRequest,
   buildDiscordDigest,
+  normalizeEnrichmentResponse,
   recoverInterruptedDelivery,
   retryDelayMs,
   shouldRetry,
@@ -16,6 +18,139 @@ const json = async (path, options) => {
 };
 
 await json('/state/reset');
+assert.equal((await json('/state')).body.sofascoreCalls, 0);
+
+const enrichmentContext = {
+  transfer_report_id: '100',
+  reported_player_name: 'Kylian Mbappé',
+  current_club_name: 'Real Madrid',
+  destination_club_name: 'Liverpool',
+  classification: 'rumor',
+  move_type: 'permanent',
+  provider_player_id: '826643',
+  aliases: [],
+  identity_overrides: [],
+  profile_fresh_until: null,
+  statistics_fresh_until: null,
+  team_mapping_fresh: false,
+  season_mapping_fresh: false,
+};
+const off = buildEnrichmentRequest([enrichmentContext], { mode: 'off', requestId: 'off' });
+assert.equal(off.request, null);
+assert.equal((await json('/state')).body.sofascoreCalls, 0);
+
+const callEnrichment = async (requestId, context = enrichmentContext, options = {}) => {
+  const prepared = buildEnrichmentRequest([context], { mode: 'active', requestId });
+  const result = await json('/v1/enrich', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(prepared.request),
+    ...options,
+  });
+  return { prepared, result, normalized: normalizeEnrichmentResponse(prepared.request, {
+    statusCode: result.response.status,
+    body: result.body,
+  }) };
+};
+
+const shadow = await callEnrichment('shadow-success');
+assert.equal(shadow.normalized.items[0].status, 'fresh');
+const transferOnlyReport = {
+  player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid', destination_club_name: 'Liverpool',
+  classification: 'rumor', move_type: 'permanent', confidence: 0.8,
+  fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
+  preferred_source: { ...sourceMetadata({ username: 'David_Ornstein', display_name: 'David Ornstein', external_account_id: '1', account_type: 'individual' }), display_name: 'David Ornstein' },
+  sources: [{ post_url: 'https://x.com/David_Ornstein/status/999000000000000301' }],
+};
+const shadowValue = buildDiscordDigest([transferOnlyReport]).embeds[0].fields[0].value;
+assert.doesNotMatch(shadowValue, /Sofascore|LaLiga|Profile/);
+
+const active = await callEnrichment('active-success');
+const activeItem = active.normalized.items[0];
+const activeEnrichment = {
+  profile: {
+    ...activeItem.profile,
+    current_club_name: activeItem.profile.current_club.name,
+  },
+  statistics: {
+    ...activeItem.statistics,
+    competition_name: activeItem.statistics.competition,
+    season_label: activeItem.statistics.season,
+    minutes_per_appearance: activeItem.statistics.minutes_per_game,
+  },
+};
+const activeValue = buildDiscordDigest([{ ...transferOnlyReport, enrichment: activeEnrichment }]).embeds[0].fields[0].value;
+assert.match(activeValue, /Profile: Real Madrid/);
+assert.match(activeValue, /LaLiga 2025\/26 · selected league, all clubs/);
+
+const sparse = await callEnrichment('active-sparse', {
+  ...enrichmentContext,
+  transfer_report_id: '101',
+  reported_player_name: 'Nguyễn Quang Hải',
+  provider_player_id: '845067',
+});
+assert.equal(sparse.normalized.items[0].statistics.expected_goals, null);
+const ambiguous = await callEnrichment('active-ambiguous', {
+  ...enrichmentContext,
+  transfer_report_id: '102',
+  reported_player_name: 'John Smith',
+  provider_player_id: null,
+});
+assert.equal(ambiguous.normalized.items[0].status, 'ambiguous');
+assert.equal(ambiguous.normalized.items[0].identity, null);
+const malformed = await callEnrichment('active-malformed');
+assert.equal(malformed.normalized.items[0].status, 'schema_failure');
+
+const timeoutPrepared = buildEnrichmentRequest([enrichmentContext], { mode: 'active', requestId: 'active-timeout' });
+const timeoutResponse = await fetch(`${base}/v1/enrich`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(timeoutPrepared.request),
+  signal: AbortSignal.timeout(50),
+}).then(async (response) => ({ statusCode: response.status, body: await response.json() })).catch(() => ({ error: true }));
+const timeoutNormalized = normalizeEnrichmentResponse(timeoutPrepared.request, timeoutResponse);
+assert.equal(timeoutNormalized.items[0].status, 'schema_failure');
+
+const allFailure = await callEnrichment('active-all-failure');
+assert.equal(allFailure.result.response.status, 200);
+assert.equal(allFailure.normalized.items[0].status, 'provider_failure');
+const failureDigest = buildDiscordDigest([{
+  ...transferOnlyReport,
+  enrichment: {
+    profile: allFailure.normalized.items[0].profile,
+    statistics: allFailure.normalized.items[0].statistics,
+    error: allFailure.normalized.items[0].error,
+  },
+}]);
+assert.equal(failureDigest.embeds[0].fields[0].value, shadowValue);
+const discordBeforeFailure = (await json('/state')).body.discordRequests;
+assert.equal((await json('/discord/receive', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(failureDigest),
+})).response.status, 200);
+assert.equal((await json('/state')).body.discordRequests, discordBeforeFailure + 1);
+
+const exactBoundaryPayload = {
+  embeds: Array.from({ length: 10 }, () => ({
+    title: 'x',
+    fields: Array.from({ length: 25 }, () => ({ name: 'n', value: 'v' })),
+  })),
+};
+assert.equal((await json('/discord/receive', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(exactBoundaryPayload),
+})).response.status, 200);
+for (const invalidPayload of [
+  { embeds: Array.from({ length: 11 }, () => ({})) },
+  { embeds: [{ fields: Array.from({ length: 26 }, () => ({ name: 'n', value: 'v' })) }] },
+  { embeds: [{ fields: [{ name: 'n'.repeat(257), value: 'v' }] }] },
+  { embeds: [{ fields: [{ name: 'n', value: 'v'.repeat(1025) }] }] },
+  { embeds: [{ description: 'x'.repeat(6001) }] },
+]) {
+  assert.equal((await json('/discord/receive', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(invalidPayload),
+  })).response.status, 400);
+}
 
 const firstRate = await json('/rapid/rate');
 assert.equal(firstRate.response.status, 429);
@@ -84,6 +219,7 @@ reports.push(...reports.slice(0, 3));
 const digest = buildDiscordDigest(reports);
 assert.equal(digest.embeds[0].fields.length, 18);
 assert.equal(new Set(digest.embeds[0].fields.map((field) => field.name)).size, 18);
+const discordBeforeNormal = (await json('/state')).body.discordRequests;
 const sent = await json('/discord/receive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(digest) });
 assert.equal(sent.response.status, 200);
 assert.match(sent.body.id, /^mock-discord-/);
@@ -93,6 +229,6 @@ assert.equal(interrupted, null);
 const recovered = recoverInterruptedDelivery({ status: 'sending' });
 assert.equal(recovered.status, 'unknown');
 assert.equal(recovered.retryable, false);
-assert.equal((await json('/state')).body.discordRequests, 2);
+assert.equal((await json('/state')).body.discordRequests, discordBeforeNormal + 2);
 
 process.stdout.write('Mock E2E scenarios passed.\n');
