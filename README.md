@@ -125,7 +125,7 @@ docker compose exec -T twscrape python -c "import urllib.request; print(urllib.r
 cd ../..
 ```
 
-Open n8n at `http://localhost:5678`. The service and external task runner use matching pinned n8n `2.16.1` images.
+Open n8n at `http://localhost:5678`. The service and external task runner use matching pinned n8n `2.31.6` images.
 
 The scraper has no host port. Its health check runs inside Docker and reports only service status and the active-account count.
 
@@ -324,7 +324,7 @@ Start in dependency order: support, Qwen, then n8n. The workflow’s recovery st
 
 ### Enrichment rollout and rollback
 
-Keep mode off while building the service, applying migration 002, importing workflows, and checking private health/readiness. Live and shadow requests require provider access-policy approval. Active mode additionally requires the complete offline suite, approved gated live acceptance, 28 reviewed shadow runs, identity/mapping review, forced-failure delivery proof, and measured 25-item CPU/RSS/latency within the initial 1 CPU/1 GiB limit.
+Keep mode off while building the service, applying migration 002, importing workflows, and checking private health/readiness. Live and shadow requests require provider access-policy approval. Active mode additionally requires the complete offline suite, approved gated live acceptance, 8 reviewed shadow runs over 2 days, identity/mapping review, forced-failure delivery proof, and measured 25-item CPU/RSS/latency within the initial 1 CPU/1 GiB limit.
 
 Resource limits must be changed only from measurements. Provider-policy approval and resource measurement are activation blockers, not defaults to infer.
 

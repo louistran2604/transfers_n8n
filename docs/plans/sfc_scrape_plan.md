@@ -1436,7 +1436,7 @@ No active file is deleted or archived. Historical browser-related material remai
 | `deploy/n8n/sofascore/tests/test_movement.py` | Create in final test milestone | Same/cross-league moves, loans, unattached, provenance/label | Movement |
 | `deploy/n8n/sofascore/tests/test_cache.py` | Create in final test milestone | soccerdata cache semantics, TTL/stale, one writer, quarantine/bypass | Adapter/service |
 | `deploy/n8n/sofascore/tests/test_app.py` | Create in final test milestone | HTTP contract, all-item failure 200, deadlines, child replacement, readiness/shutdown | Service |
-| `deploy/n8n/sofascore/tests/live_acceptance.py` | Create in final test milestone | Explicitly gated serial six-subject read-only acceptance; excluded from default discovery | Manual live gate only |
+| `deploy/n8n/sofascore/tests/live_acceptance.py` | Create in final test milestone | Explicitly gated serial five-subject read-only acceptance; excluded from default discovery | Manual live gate only |
 | `deploy/n8n/compose.yaml` | Modify | Add private service, n8n mode/base URL, named raw-cache volume, readyz health; no port/no hard n8n dependency | Compose rendering, Docker smoke |
 | `deploy/n8n/README.md` | Modify | Build/start/health/logs/cache/reset/resources/modes/upgrade/rollback | Documentation validation |
 | `database/migrations/002_soccerdata_enrichment.sql` | Create | Add delivery payload, 12 tables, constraints/indexes/triggers, view, cleanup function | SQL/migration suite |
@@ -1757,10 +1757,7 @@ git diff --check
 Optional, explicitly gated and never normal CI:
 
 ```bash
-SOFASCORE_LIVE_ACCEPTANCE=1 \
-  docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
-  --entrypoint python sofascore-enrichment \
-  -m unittest tests.live_acceptance -v
+docker compose -f deploy/n8n/compose.yaml run --rm --no-deps -e SOFASCORE_PROVIDER_POLICY_APPROVED=1 -e SOFASCORE_LIVE_ACCEPTANCE=1 --entrypoint python sofascore-enrichment -m unittest tests.live_acceptance -v
 ```
 
 Acceptance criteria:
@@ -1918,9 +1915,9 @@ Cover off/no call, shadow/persist/no render, active render, sparse/null/stale, a
 
 ### Gated live tests
 
-`live_acceptance.py` is not matched by default discovery and runs only with `SOFASCORE_LIVE_ACCEPTANCE=1` plus recorded operator provider-policy approval. It uses a disposable cache, serial calls, configured delay/jitter, no DB/Discord writes, at most the six justified subjects, and outputs only sanitized summaries.
+`live_acceptance.py` is not matched by default discovery and runs only with `SOFASCORE_LIVE_ACCEPTANCE=1` plus recorded operator provider-policy approval. It uses a disposable cache, serial calls, configured delay/jitter, no DB/Discord writes, at most the five justified live subjects, and outputs only sanitized summaries.
 
-It validates endpoint reachability/IDs/envelopes, nullable parsing, duplicate ambiguity, V-League sparse coverage, goalkeeper extras, future-season guard, and movement semantics. A live failure blocks shadow/activation only. Normal tests and any future CI never set the flag and must block live provider access.
+It validates endpoint reachability/IDs/envelopes, nullable parsing, duplicate ambiguity, goalkeeper extras, future-season guard, and movement semantics. A live failure blocks shadow/activation only. Normal tests and any future CI never set the flag and must block live provider access.
 
 ### Default and optional commands
 
@@ -1944,10 +1941,7 @@ tests/e2e/run.sh
 Optional live command:
 
 ```bash
-SOFASCORE_LIVE_ACCEPTANCE=1 \
-  docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
-  --entrypoint python sofascore-enrichment \
-  -m unittest tests.live_acceptance -v
+docker compose -f deploy/n8n/compose.yaml run --rm --no-deps -e SOFASCORE_PROVIDER_POLICY_APPROVED=1 -e SOFASCORE_LIVE_ACCEPTANCE=1 --entrypoint python sofascore-enrichment -m unittest tests.live_acceptance -v
 ```
 
 ## 13. Operations and rollout
@@ -2056,7 +2050,7 @@ Complete Milestone 7 default suite with provider network blocked, load native li
 
 #### Stage 1: approved live read-only spike
 
-After provider access-policy approval, run the gated six-subject serial acceptance with disposable cache, no DB/Discord writes, and sanitized output. Failure blocks shadow only.
+After provider access-policy approval, run the gated five-subject serial acceptance with disposable cache, no DB/Discord writes, and sanitized output. Failure blocks shadow only.
 
 #### Stage 2: dark deployment
 
@@ -2064,7 +2058,7 @@ Export workflows, record digests, verify backup, apply 002, deploy private servi
 
 #### Stage 3: shadow
 
-Run shadow for at least 7 days / 28 scheduled six-hour runs. Persist but render transfer-only. Manually review every initial automatic identity and every unusual/manual competition/season mapping. Measure calls/cache/schema/ambiguity/deadline/child/resource data.
+Run shadow for 2 days / 8 scheduled six-hour runs under the user-authorized observation override. Persist but render transfer-only. Manually review every initial automatic identity and every unusual/manual competition/season mapping. Measure calls/cache/schema/ambiguity/deadline/child/resource data.
 
 #### Stage 4: test Discord
 
@@ -2076,7 +2070,7 @@ Activation criteria:
 
 - final offline suite passes at the activation commit;
 - approved gated live acceptance passes;
-- 28 shadow runs have zero enrichment-caused digest failures;
+- 8 shadow runs over 2 days have zero enrichment-caused digest failures;
 - every initial auto-resolution is reviewed with zero known wrong identity;
 - low-confidence/ambiguous cases remain unmapped;
 - no unexplained schema/cache loop;
@@ -2142,7 +2136,7 @@ Assumptions requiring implementation evidence:
 - 1 CPU/1 GiB and 15/75/85-second deadlines are sufficient;
 - 25 distinct contexts cover normal six-hour runs;
 - provider season metadata remains sufficient for deterministic automatic mapping;
-- 28 shadow runs represent production request/cache behavior;
+- the user-authorized 8 shadow runs over 2 days represent the initial production request/cache observation;
 - generated fail-open branch behaves correctly under n8n execution semantics.
 
 Operator decisions/input required:

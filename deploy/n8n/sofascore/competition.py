@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-YEAR_RANGE = re.compile(r"^(?:20)?(\d{2})/(\d{2})$")
+YEAR_RANGE = re.compile(r"^(?:(\d{2})/(\d{2})|(\d{4})/(\d{4}))$")
 
 
 def validated_competition(
@@ -44,8 +44,15 @@ def _year_start(value: Any) -> int | None:
     match = YEAR_RANGE.fullmatch(value.strip())
     if not match:
         return int(value) if value.isdigit() and len(value) == 4 else None
-    first = int(match.group(1))
-    return 2000 + first
+    if match.group(1) is not None:
+        first = int(match.group(1))
+        second = int(match.group(2))
+        if second != (first + 1) % 100:
+            return None
+        return (1900 if first >= 70 else 2000) + first
+    first = int(match.group(3))
+    second = int(match.group(4))
+    return first if second == first + 1 else None
 
 
 def select_reporting_season(

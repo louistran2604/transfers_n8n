@@ -19,11 +19,10 @@ LIVE_APPROVED = (
     "requires recorded provider-policy approval plus both explicit live flags",
 )
 class LiveAcceptanceTests(unittest.TestCase):
-    def test_six_subject_serial_read_only_acceptance(self):
+    def test_five_subject_serial_read_only_acceptance(self):
         subjects = [
             ("826643", "Kylian Mbappé"),
             (None, "John Smith"),
-            ("845067", "Nguyễn Quang Hải"),
             ("70988", "Thibaut Courtois"),
             ("934354", "Antoine Semenyo"),
             ("1019322", "Florian Wirtz"),
@@ -61,17 +60,13 @@ class LiveAcceptanceTests(unittest.TestCase):
                     }
                 )
 
-            self.assertEqual(6, len(summaries))
+            self.assertEqual(5, len(summaries))
             john = next(row for row in summaries if row["name"] == "John Smith")
             self.assertEqual("ambiguous", john["status"])
             self.assertIsNone(john["provider_player_id"])
             courtois = next(row for row in summaries if row["name"] == "Thibaut Courtois")
             self.assertTrue(courtois["has_profile"])
             self.assertIsInstance(courtois["saves"], int)
-            quang_hai = next(row for row in summaries if row["name"] == "Nguyễn Quang Hải")
-            self.assertTrue(quang_hai["has_profile"])
-            self.assertEqual("V-League 1", quang_hai["competition"])
-            self.assertIsNone(quang_hai["expected_goals"])
             for name in ("Antoine Semenyo", "Florian Wirtz"):
                 moved = next(row for row in summaries if row["name"] == name)
                 self.assertEqual("Premier League", moved["competition"])

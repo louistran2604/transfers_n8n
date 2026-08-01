@@ -36,6 +36,18 @@ class SeasonTests(unittest.TestCase):
         self.assertEqual("25/26", selected["label"])
         self.assertEqual("latest_completed", selected["state"])
 
+    def test_historical_two_and_four_digit_ranges_keep_future_first_selection(self):
+        seasons, metadata = season_data()
+        seasons = copy.deepcopy(seasons)
+        seasons["seasons"].extend([
+            {"id": 9900, "year": "99/00"},
+            {"id": 196970, "year": "1969/1970"},
+        ])
+        selected = select_reporting_season(seasons, metadata, now=NOW)
+        self.assertEqual("77559", selected["provider_season_id"])
+        self.assertEqual("25/26", selected["label"])
+        self.assertEqual("latest_completed", selected["state"])
+
     def test_started_not_ended_season_is_active(self):
         seasons, metadata = season_data()
         metadata = copy.deepcopy(metadata)
@@ -61,6 +73,10 @@ class SeasonTests(unittest.TestCase):
         unparseable = copy.deepcopy(seasons)
         unparseable["seasons"][0]["year"] = "future"
         variants.append(unparseable)
+        for year in ("26/28", "2026/2028", "2026/27"):
+            nonconsecutive = copy.deepcopy(seasons)
+            nonconsecutive["seasons"][0]["year"] = year
+            variants.append(nonconsecutive)
         variants.extend([{"seasons": []}, {"unexpected": []}])
         for variant in variants:
             with self.subTest(variant=variant):

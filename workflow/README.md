@@ -12,7 +12,7 @@ Generated files:
 - `football-transfer-monitor.json`: scheduled/manual collection, Qwen extraction, PostgreSQL merge, optional Sofascore enrichment, digest reservation, and Discord delivery.
 - `football-transfer-monitor-errors.json`: n8n error trigger, PostgreSQL failure record, and error webhook.
 
-Both workflows target n8n `2.16.1`, use `Asia/Ho_Chi_Minh`, and contain no secret values. They reference the intentionally missing PostgreSQL credential named `Transfers PostgreSQL`; map it after import in n8n.
+Both workflows target n8n `2.31.6`, use `Asia/Ho_Chi_Minh`, and contain no secret values. They reference the intentionally missing PostgreSQL credential named `Transfers PostgreSQL`; map it after import in n8n.
 
 ## Extraction contract
 

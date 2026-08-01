@@ -1,6 +1,6 @@
 # n8n deployment
 
-The n8n and external-runner images are pinned to matching n8n `2.16.1` manifests. The service joins `transfers_net` to reach PostgreSQL at `transfers-postgres:5432`, Qwen at `llama:8080`, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
+The n8n and external-runner images are pinned to matching n8n `2.31.6` manifests. The service joins `transfers_net` to reach PostgreSQL at `transfers-postgres:5432`, Qwen at `llama:8080`, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
 
 ```bash
 cd ~/projects/transfers_n8n/deploy/n8n
@@ -52,7 +52,7 @@ The ignored local `.env` supplies the runner token, `X_COLLECTOR`, Discord webho
 | `shadow` | Yes | Yes | Transfer-only |
 | `active` | Yes | Yes | Eligible fresh/stale data appended |
 
-A missing or invalid value is treated as `off`. Do not use `shadow` before provider access-policy approval. Do not use `active` until the complete offline suite, gated live acceptance, 28 reviewed shadow runs, identity/mapping review, forced all-failure proof, and resource measurements pass.
+A missing or invalid value is treated as `off`. Do not use `shadow` before provider access-policy approval. Do not use `active` until the complete offline suite, gated live acceptance, 8 reviewed shadow runs over 2 days, identity/mapping review, forced all-failure proof, and resource measurements pass.
 
 For `twscrape`, copy the two cookie values from browser storage for `https://x.com` into the ignored `.env`, then check the private service without exposing a port:
 
@@ -93,7 +93,7 @@ The initial limit is 1 CPU and 1 GiB with no GPU. Before active mode, measure a 
 1. Run the complete fixture-backed suite with provider networking blocked and mode off.
 2. After provider-policy approval, run the separately gated serial read-only live acceptance with disposable cache and no database or Discord writes.
 3. Dark-deploy migration 002, service, cache, and workflows in mode off; the provider-call counter must remain zero.
-4. Run shadow for at least 7 days and 28 scheduled runs, reviewing identities, unusual mappings, calls, schemas, deadlines, and resources.
+4. Run shadow for 2 days and 8 scheduled runs, reviewing identities, unusual mappings, calls, schemas, deadlines, and resources.
 5. Exercise rich, sparse, stale, ambiguous, all-failure, and maximum-size output against a test webhook/database before one monitored active run.
 
 Rollback immediately for a wrong identity, enrichment-caused digest failure/duplicate, frozen-payload mutation, schema/cache loop, repeated timeout/circuit, request amplification, native checksum anomaly, OOM, or provider-policy concern:

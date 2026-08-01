@@ -1770,7 +1770,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     connections,
     active: false,
     settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh', errorWorkflow: 'Football Transfer Monitor Errors' },
-    versionId: '2.16.1',
+    versionId: '2.31.6',
     meta: { templateCredsSetupCompleted: false, instanceId: 'generated-without-secrets' },
     tags: [],
   };
@@ -1804,7 +1804,7 @@ RETURNING id::text AS failure_id;`),
       'Prepare failure record': { main: [[{ node: 'Upsert workflow failure', type: 'main', index: 0 }]] },
       'Upsert workflow failure': { main: [[{ node: 'Send error webhook', type: 'main', index: 0 }]] },
     },
-    settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh' }, versionId: '2.16.1', tags: [],
+    settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh' }, versionId: '2.31.6', tags: [],
   };
 }
 
