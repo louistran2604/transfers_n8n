@@ -117,6 +117,306 @@ export function canonicalizeReport(report, entityAliases = EMPTY_ENTITY_ALIASES)
   };
 }
 
+export function enrichmentMode(value) {
+  return ['shadow', 'active'].includes(String(value ?? '').trim().toLowerCase())
+    ? String(value).trim().toLowerCase()
+    : 'off';
+}
+
+export function enrichmentUnicodeKey(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('und')
+    .replace(/[\p{P}\p{Z}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/gu, ' ');
+}
+
+function enrichmentNamedContext(value) {
+  const normalized = enrichmentUnicodeKey(value);
+  return normalized && !/^(not reported|unknown|n a)$/u.test(normalized) ? normalized : null;
+}
+
+function enrichmentFresh(value, now) {
+  const timestamp = Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) && timestamp > now;
+}
+
+export function buildEnrichmentRequest(contexts, {
+  mode,
+  requestId,
+  now = Date.now(),
+  maximumItems = 25,
+} = {}) {
+  const selectedMode = enrichmentMode(mode);
+  if (selectedMode === 'off') return { mode: 'off', refreshRequired: false, request: null };
+
+  const groups = new Map();
+  for (const context of Array.isArray(contexts) ? contexts : []) {
+    const reportId = String(context?.transfer_report_id ?? '');
+    const reportedName = typeof context?.reported_player_name === 'string'
+      ? context.reported_player_name.trim()
+      : '';
+    const knownProviderId = String(context?.provider_player_id ?? '');
+    if (!/^\d+$/.test(reportId) || !reportedName || (knownProviderId && !DECIMAL_ID.test(knownProviderId))) continue;
+
+    const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
+    const latestStatus = String(context.latest_attempt_status ?? '');
+    const latestStartedAt = Date.parse(String(context.latest_attempt_started_at ?? ''));
+    const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
+    if (
+      (Number.isFinite(retryAt) && retryAt > now)
+      || (!knownProviderId && overrides.length === 0
+        && ['ambiguous', 'unresolved'].includes(latestStatus)
+        && Number.isFinite(latestStartedAt)
+        && latestStartedAt > now - 24 * 60 * 60 * 1000)
+    ) continue;
+
+    const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
+    const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
+    if (
+      knownProviderId
+      && profileFresh
+      && (
+        statisticsFresh
+        || context.profile_current_provider_team_id === null
+        || latestStatus === 'unattached'
+      )
+    ) continue;
+
+    const currentClubKey = enrichmentNamedContext(context.current_club_name);
+    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
+      || context.move_type === 'loan'
+      ? enrichmentNamedContext(context.destination_club_name)
+      : null;
+    const clubKey = currentClubKey ?? destinationClubKey;
+    if (!knownProviderId && !clubKey) continue;
+
+    const reportedNameKey = enrichmentUnicodeKey(reportedName);
+    if (!knownProviderId && !reportedNameKey) continue;
+    const itemKey = knownProviderId
+      ? `provider:${knownProviderId}`
+      : `name:${reportedNameKey}|club:${clubKey}`;
+    const existing = groups.get(itemKey);
+    if (existing) {
+      existing.report_ids.push(reportId);
+      for (const alias of Array.isArray(context.aliases) ? context.aliases : []) {
+        if (typeof alias === 'string' && alias.trim() && !existing.aliases.includes(alias.trim())) {
+          existing.aliases.push(alias.trim());
+        }
+      }
+      for (const override of overrides) {
+        if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) {
+          existing.identity_overrides.push(override);
+        }
+      }
+      continue;
+    }
+
+    groups.set(itemKey, {
+      item_key: itemKey,
+      reported_name: reportedName,
+      known_provider_player_id: knownProviderId || null,
+      report_ids: [reportId],
+      aliases: [...new Set((Array.isArray(context.aliases) ? context.aliases : [])
+        .filter((alias) => typeof alias === 'string' && alias.trim())
+        .map((alias) => alias.trim()))],
+      identity_overrides: overrides,
+      team_mapping: context.team_mapping_fresh === true && context.team_mapping
+        ? context.team_mapping
+        : null,
+      season_mapping: context.season_mapping_fresh === true && context.season_mapping
+        ? context.season_mapping
+        : null,
+      request_context: {
+        reported_name_key: reportedNameKey,
+        current_club_key: currentClubKey,
+        destination_club_key: destinationClubKey,
+      },
+    });
+  }
+
+  const players = [...groups.values()].slice(0, maximumItems);
+  return {
+    mode: selectedMode,
+    refreshRequired: players.length > 0,
+    request: players.length > 0 ? {
+      request_id: String(requestId ?? ''),
+      deadline_ms: 75_000,
+      players,
+    } : null,
+  };
+}
+
+const ENRICHMENT_STATUSES = new Set([
+  'cache_hit', 'fresh', 'partial', 'unresolved', 'ambiguous', 'deferred',
+  'provider_failure', 'rate_limited', 'timeout', 'schema_failure',
+  'unsupported_competition', 'missing_season', 'club_conflict', 'unattached',
+]);
+
+function enrichmentFailure(player, code = 'service_contract_invalid') {
+  return {
+    item_key: player.item_key,
+    report_ids: player.report_ids,
+    request_context: player.request_context ?? {},
+    status: 'schema_failure',
+    retryable: true,
+    provider_calls: 0,
+    cache_hits: 0,
+    identity: null,
+    profile: null,
+    statistics: null,
+    error: { code },
+  };
+}
+
+function enrichmentHash(value) {
+  return createHash('sha256').update(JSON.stringify(value ?? {})).digest('hex');
+}
+
+export function normalizeEnrichmentResponse(request, response) {
+  const players = Array.isArray(request?.players) ? request.players : [];
+  const failAll = (code) => ({
+    request_id: String(request?.request_id ?? ''),
+    items: players.map((player) => enrichmentFailure(player, code)),
+  });
+  if (!request || typeof request.request_id !== 'string' || players.length === 0) {
+    return failAll('invalid_enrichment_request');
+  }
+
+  const statusCode = Number(
+    response?.statusCode ?? (typeof response?.status === 'number' ? response.status : 200),
+  );
+  if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || response?.error) {
+    return failAll('enrichment_service_failed');
+  }
+  let body = response?.body ?? response;
+  try {
+    if (typeof body === 'string') body = JSON.parse(body);
+  } catch {
+    return failAll('enrichment_response_not_json');
+  }
+  if (
+    !body
+    || typeof body !== 'object'
+    || body.request_id !== request.request_id
+    || !Array.isArray(body.items)
+  ) return failAll('service_contract_invalid');
+
+  const byKey = new Map();
+  for (const item of body.items) {
+    if (!item || typeof item !== 'object' || typeof item.item_key !== 'string' || byKey.has(item.item_key)) {
+      return failAll('service_contract_invalid');
+    }
+    byKey.set(item.item_key, item);
+  }
+
+  return {
+    request_id: request.request_id,
+    items: players.map((player) => {
+      const item = byKey.get(player.item_key);
+      if (!item || !ENRICHMENT_STATUSES.has(item.status)) return enrichmentFailure(player);
+      const identity = item.identity;
+      const providerPlayerId = String(identity?.provider_player_id ?? '');
+      if (identity !== null && (
+        !identity
+        || identity.provider !== 'sofascore'
+        || !DECIMAL_ID.test(providerPlayerId)
+      )) return enrichmentFailure(player);
+      if (
+        ['fresh', 'cache_hit', 'partial'].includes(item.status)
+        && (!identity || !item.profile || typeof item.profile !== 'object')
+      ) return enrichmentFailure(player);
+      if (
+        ['fresh', 'cache_hit'].includes(item.status)
+        && (!item.statistics || typeof item.statistics !== 'object')
+      ) return enrichmentFailure(player);
+      if (
+        item.profile
+        && (
+          !Number.isFinite(Date.parse(String(item.profile.retrieved_at ?? '')))
+          || (item.profile.current_club !== null && (
+            typeof item.profile.current_club !== 'object'
+            || !DECIMAL_ID.test(String(item.profile.current_club.provider_team_id ?? ''))
+            || typeof item.profile.current_club.name !== 'string'
+            || !item.profile.current_club.name.trim()
+          ))
+          || (item.profile.market_value_currency !== null
+            && item.profile.market_value_currency !== undefined
+            && !ISO_CURRENCY.test(String(item.profile.market_value_currency)))
+        )
+      ) return enrichmentFailure(player);
+      if (
+        item.statistics
+        && (
+          !DECIMAL_ID.test(String(item.statistics.provider_unique_tournament_id ?? ''))
+          || !DECIMAL_ID.test(String(item.statistics.provider_season_id ?? ''))
+          || !['active', 'latest_completed'].includes(item.statistics.season_state)
+          || item.statistics.scope !== 'selected_domestic_league_all_clubs'
+          || !Number.isFinite(Date.parse(String(item.statistics.retrieved_at ?? '')))
+        )
+      ) return enrichmentFailure(player);
+
+      const rawPayloads = item.provenance?.raw_payloads;
+      const rawProfile = rawPayloads?.profile && typeof rawPayloads.profile === 'object'
+        ? rawPayloads.profile
+        : {};
+      const rawStatistics = rawPayloads?.statistics && typeof rawPayloads.statistics === 'object'
+        ? rawPayloads.statistics
+        : {};
+      const cacheHits = Number(item.provenance?.profile_cache === 'hit')
+        + Number(item.provenance?.statistics_cache === 'hit');
+      return {
+        item_key: player.item_key,
+        report_ids: player.report_ids,
+        request_context: player.request_context ?? {},
+        status: item.status,
+        retryable: item.error?.retryable === true
+          || (Array.isArray(item.warnings) && item.warnings.some((warning) => warning?.retryable === true)),
+        provider_calls: Number.isInteger(item.provider_calls) && item.provider_calls >= 0
+          ? item.provider_calls
+          : 0,
+        cache_hits: cacheHits,
+        identity: identity ? {
+          provider: 'sofascore',
+          provider_player_id: providerPlayerId,
+          stable_source_identifier: String(identity.stable_source_identifier ?? `sofascore:player:${providerPlayerId}`),
+          canonical_name: typeof item.profile?.canonical_name === 'string'
+            ? item.profile.canonical_name
+            : player.reported_name,
+          score: Number.isFinite(identity.score) ? identity.score : null,
+          margin: Number.isFinite(identity.margin) ? identity.margin : null,
+          resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version
+            ? identity.resolver_version
+            : 'identity-v1',
+        } : null,
+        profile: item.profile && typeof item.profile === 'object' ? {
+          ...item.profile,
+          content_sha256: enrichmentHash(item.profile),
+          raw_sha256: enrichmentHash(rawProfile),
+          raw_cache_key: providerPlayerId ? `profile-${providerPlayerId}` : null,
+          raw_payload: rawProfile,
+        } : null,
+        statistics: item.statistics && typeof item.statistics === 'object' ? {
+          ...item.statistics,
+          content_sha256: enrichmentHash(item.statistics),
+          raw_sha256: enrichmentHash(rawStatistics),
+          raw_cache_key: providerPlayerId
+            ? `statistics-${providerPlayerId}-${item.statistics.provider_unique_tournament_id}-${item.statistics.provider_season_id}`
+            : null,
+          raw_payload: rawStatistics,
+        } : null,
+        warning_codes: Array.isArray(item.warnings)
+          ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean)
+          : [],
+        error: item.error && typeof item.error === 'object'
+          ? { code: String(item.error.code ?? 'enrichment_failed').slice(0, 100) }
+          : null,
+      };
+    }),
+  };
+}
+
 export function parseSourceRegistry(markdown) {
   let accountType = null;
   const accounts = [];
@@ -486,7 +786,7 @@ function isNewDigestUpdate(report, entityAliases, now) {
   return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
 }
 
-function storyText(report) {
+function storyLines(report) {
   const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
   const details = [
     `Classification: ${report.classification.replaceAll('_', ' ')}`,
@@ -505,12 +805,152 @@ function storyText(report) {
   ];
   const source = report.preferred_source?.display_name ?? report.source?.display_name ?? 'Source';
   const sourceUrl = report.sources?.[0]?.post_url ?? report.post_url;
-  return [clubDirection, ...details, `Confidence: ${Math.round(report.confidence * 100)}%`, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean).join('\n');
+  return [clubDirection, ...details, `Confidence: ${Math.round(report.confidence * 100)}%`, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
 }
 
 function truncate(value, maximum) {
   const text = String(value ?? '');
-  return text.length <= maximum ? text : `${text.slice(0, Math.max(0, maximum - 1))}…`;
+  if (text.length <= maximum) return text;
+  const segments = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(({ segment }) => segment)
+    : [...text];
+  let result = '';
+  for (const segment of segments) {
+    if (result.length + segment.length + 1 > maximum) break;
+    result += segment;
+  }
+  return `${result}…`;
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function namedEnrichmentValue(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text && !/^(unknown|n\/?a|not[ _-]?reported)$/i.test(text) ? text : null;
+}
+
+function staleLabel(snapshot, now, maximumAgeMs) {
+  if (snapshot?.stale !== true) return '';
+  const retrievedAt = Date.parse(String(snapshot.retrieved_at ?? ''));
+  const ageMs = now - retrievedAt;
+  if (!Number.isFinite(retrievedAt) || ageMs < 0 || ageMs > maximumAgeMs) return null;
+  if (ageMs < 60 * 60 * 1000) return 'stale <1h';
+  const hours = Math.floor(ageMs / (60 * 60 * 1000));
+  return hours >= 48 ? `stale ${Math.floor(hours / 24)}d` : `stale ${hours}h`;
+}
+
+function compactValue(value, currency) {
+  const amount = finiteNumber(value);
+  const code = String(currency ?? '').trim().toUpperCase();
+  if (amount === null || amount < 0 || !ISO_CURRENCY.test(code)) return null;
+  const units = amount >= 1_000_000
+    ? `${Number((amount / 1_000_000).toFixed(1))}m`
+    : (amount >= 1_000 ? `${Number((amount / 1_000).toFixed(1))}k` : String(amount));
+  const symbols = { EUR: '€', GBP: '£', USD: '$' };
+  return symbols[code] ? `${symbols[code]}${units}` : `${units} ${code}`;
+}
+
+function integerStatistic(value, label) {
+  const number = finiteNumber(value);
+  return number === null ? null : `${Math.trunc(number).toLocaleString('en-US')} ${label}`;
+}
+
+function decimalStatistic(value, label) {
+  const number = finiteNumber(value);
+  return number === null ? null : `${number.toFixed(2)} ${label}`;
+}
+
+function enrichmentGroups(enrichment, now) {
+  if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) return [];
+  const profile = enrichment.profile && typeof enrichment.profile === 'object' && !Array.isArray(enrichment.profile)
+    ? enrichment.profile
+    : null;
+  const statistics = enrichment.statistics && typeof enrichment.statistics === 'object' && !Array.isArray(enrichment.statistics)
+    ? enrichment.statistics
+    : null;
+
+  const profileClub = namedEnrichmentValue(profile?.current_club_name);
+  const profileStale = profile
+    ? staleLabel(profile, now, profileClub ? 72 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)
+    : null;
+  const statisticsStale = statistics
+    ? staleLabel(statistics, now, 72 * 60 * 60 * 1000)
+    : null;
+
+  const competition = namedEnrichmentValue(statistics?.competition_name);
+  const season = namedEnrichmentValue(statistics?.season_label);
+  const scope = statistics?.scope === 'selected_domestic_league_all_clubs'
+    ? 'selected league, all clubs'
+    : null;
+  const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
+  const primaryStatistics = statisticsValid ? [
+    integerStatistic(statistics.appearances, 'app'),
+    integerStatistic(statistics.minutes_played, 'min'),
+    integerStatistic(statistics.goals, 'G'),
+    integerStatistic(statistics.assists, 'A'),
+  ].filter(Boolean) : [];
+  const statisticsHeader = statisticsValid
+    ? `${competition} ${season} · ${scope}${statisticsStale ? ` · ${statisticsStale}` : ''}`
+    : null;
+
+  const profileParts = profile && profileStale !== null ? [
+    profileClub,
+    namedEnrichmentValue(profile.nationality),
+    finiteNumber(profile.age) === null ? null : String(Math.trunc(finiteNumber(profile.age))),
+    namedEnrichmentValue(profile.primary_position),
+    compactValue(profile.market_value, profile.market_value_currency)
+      ? `Sofascore value ${compactValue(profile.market_value, profile.market_value_currency)}`
+      : null,
+  ].filter(Boolean) : [];
+  const profileLine = profileParts.length
+    ? `Profile${profileStale ? ` · ${profileStale}` : ''}: ${profileParts.join(' · ')}`
+    : null;
+
+  const advancedStatistics = statisticsValid ? [
+    integerStatistic(statistics.starts, 'starts'),
+    finiteNumber(statistics.minutes_per_appearance) === null
+      ? null
+      : `${Number(finiteNumber(statistics.minutes_per_appearance).toFixed(1))} min/app`,
+    decimalStatistic(statistics.expected_goals, 'xG'),
+    decimalStatistic(statistics.expected_assists, 'xA'),
+    decimalStatistic(statistics.average_rating, 'rating'),
+  ].filter(Boolean) : [];
+
+  const profileDetails = profile && profileStale !== null ? [
+    namedEnrichmentValue(profile.date_of_birth) ? `Born ${profile.date_of_birth.trim()}` : null,
+    finiteNumber(profile.height_cm) === null ? null : `${Math.trunc(finiteNumber(profile.height_cm))} cm`,
+    namedEnrichmentValue(profile.preferred_foot) ? `${profile.preferred_foot.trim()} foot` : null,
+  ].filter(Boolean) : [];
+
+  const lowerPriorityStatistics = statisticsValid ? [
+    integerStatistic(statistics.yellow_cards, 'yellow'),
+    integerStatistic(statistics.red_cards, 'red'),
+    integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
+    integerStatistic(statistics.goalkeeper_saves, 'saves'),
+  ].filter(Boolean) : [];
+  const statisticsContextLine = statisticsHeader && (
+    primaryStatistics.length
+    || advancedStatistics.length
+    || lowerPriorityStatistics.length
+    || statisticsStale
+  )
+    ? (primaryStatistics.length
+      ? `${statisticsHeader}: ${primaryStatistics.join(' · ')}`
+      : (statisticsStale ? `Last confirmed: ${statisticsHeader}` : statisticsHeader))
+    : null;
+
+  return [
+    { priority: 1, displayOrder: 2, line: statisticsContextLine },
+    { priority: 2, displayOrder: 1, line: profileLine },
+    { priority: 3, displayOrder: 3, line: advancedStatistics.length ? `Advanced: ${advancedStatistics.join(' · ')}` : null },
+    { priority: 4, displayOrder: 4, line: profileDetails.length ? `Details: ${profileDetails.join(' · ')}` : null },
+    { priority: 5, displayOrder: 5, line: lowerPriorityStatistics.length ? `Other: ${lowerPriorityStatistics.join(' · ')}` : null },
+  ];
 }
 
 export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIASES, now = Date.now() } = {}) {
@@ -539,26 +979,59 @@ export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIA
   return [...normal, ...extra];
 }
 
-export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, entityAliases, now } = {}) {
+export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, entityAliases, now = Date.now() } = {}) {
   const selected = selectDigestReports(reports, { entityAliases, now });
+  const range = windowStartedAt && windowEndedAt ? ` (${windowStartedAt} to ${windowEndedAt})` : '';
+  const title = truncate(`Football transfer digest${range}`, 256);
+  const footerText = (count) => `${count} new material report${count === 1 ? '' : 's'}`;
   const fields = [];
-  let totalCharacters = 45;
   for (const report of selected) {
     if (fields.length >= 25) break;
     const name = truncate(`${fields.length + 1}. ${report.player_name}`, 256);
-    const value = truncate(storyText(report), 1024);
-    if (totalCharacters + name.length + value.length > 6000) continue;
-    fields.push({ name, value, inline: false });
-    totalCharacters += name.length + value.length;
+    const lines = storyLines(report);
+    const value = lines.join('\n');
+    const currentCharacters = title.length + footerText(fields.length).length
+      + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+    const candidateCharacters = currentCharacters - footerText(fields.length).length
+      + footerText(fields.length + 1).length + name.length + value.length;
+    if (value.length > 1024 || candidateCharacters > 6000) continue;
+    fields.push({ name, value, inline: false, lines, report });
   }
-  const range = windowStartedAt && windowEndedAt ? ` (${windowStartedAt} to ${windowEndedAt})` : '';
+
+  let totalCharacters = title.length + footerText(fields.length).length
+    + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+  for (const field of fields) {
+    const accepted = [];
+    const sourceLine = field.lines.at(-1);
+    const transferLines = field.lines.slice(0, -1);
+    for (const group of enrichmentGroups(field.report.enrichment, Number(now))) {
+      if (!group.line) continue;
+      const nextAccepted = [...accepted, group];
+      const enrichmentLines = nextAccepted
+        .toSorted((left, right) => left.displayOrder - right.displayOrder)
+        .map(({ line }) => line);
+      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      const difference = value.length - field.value.length;
+      if (value.length > 1024 || totalCharacters + difference > 6000) break;
+      accepted.push(group);
+    }
+    if (accepted.length) {
+      const enrichmentLines = accepted
+        .toSorted((left, right) => left.displayOrder - right.displayOrder)
+        .map(({ line }) => line);
+      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      totalCharacters += value.length - field.value.length;
+      field.value = value;
+    }
+  }
+
   return {
     allowed_mentions: { parse: [] },
     embeds: [{
-      title: truncate(`Football transfer digest${range}`, 256),
+      title,
       color: 0x1d9bf0,
-      fields,
-      footer: { text: `${fields.length} new material report${fields.length === 1 ? '' : 's'}` },
+      fields: fields.map(({ lines, report, ...field }) => field),
+      footer: { text: footerText(fields.length) },
     }],
   };
 }

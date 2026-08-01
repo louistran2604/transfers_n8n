@@ -30,6 +30,20 @@ services:
       timeout: 2s
       retries: 20
 
+  sofascore-enrichment:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["node", "mock/server.mjs"]
+    environment:
+      PLAYER_ENRICHMENT_MODE: "off"
+    volumes:
+      - ./:/app:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18081/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
   n8n:
     image: n8nio/n8n:2.16.1@sha256:ad20607cdd24bac004ec44804b6b8ded9a2fbf92ed46c4496bf007762c883af2
     environment:
@@ -42,6 +56,8 @@ services:
       RAPIDAPI_BASE_URL: http://mock-services:18081/rapid
       TWSCRAPE_BASE_URL: http://mock-services:18081/twscrape
       QWEN_CHAT_COMPLETIONS_URL: http://mock-services:18081/qwen/valid
+      PLAYER_ENRICHMENT_MODE: "off"
+      SOFASCORE_ENRICHMENT_BASE_URL: http://sofascore-enrichment:18081
       DISCORD_TRANSFERS_WEBHOOK_URL: http://mock-services:18081/discord/receive
       DISCORD_ERRORS_WEBHOOK_URL: http://mock-services:18081/discord/receive
     volumes:
@@ -51,6 +67,8 @@ services:
       postgres:
         condition: service_healthy
       mock-services:
+        condition: service_healthy
+      sofascore-enrichment:
         condition: service_healthy
 
 volumes:

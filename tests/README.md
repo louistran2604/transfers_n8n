@@ -1,15 +1,27 @@
 # Tests
 
-Run these from the repository root in this order:
+The default test path is offline and must not contact live Sofascore. Keep enrichment mode off and run these from the repository root in this order:
 
 ```bash
-node workflow/build-workflows.mjs --check
-node --test tests/unit/*.test.mjs
-docker compose -f deploy/n8n/compose.yaml config --quiet
+PLAYER_ENRICHMENT_MODE=off node workflow/build-workflows.mjs --check
+PLAYER_ENRICHMENT_MODE=off node --test tests/unit/*.test.mjs
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml --profile enrichment config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
 docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
 ```
+
+Build the enrichment image and run the complete fixture-backed Python suite with networking disabled:
+
+```bash
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+docker run --rm --network none --read-only --tmpfs /tmp \
+  --entrypoint python transfers-n8n-sofascore-enrichment:local \
+  -m unittest discover -s tests -v
+```
+
+These tests use the checked-in fixture transport. Readiness and fixture tests verify `soccerdata==1.9.1`, the baked native TLS asset, and the inherited public `soccerdata.Sofascore.get()` boundary without making a provider request.
 
 After building the scraper image, run its dependency-free service tests without real X credentials:
 
@@ -17,13 +29,11 @@ After building the scraper image, run its dependency-free service tests without 
 docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python transfers-n8n-twscrape:local -m unittest discover -s /tests -v
 ```
 
-Run PostgreSQL tests against the normal support service after configuring `deploy/support/.env`:
+Run the isolated PostgreSQL migration, repeat/concurrency, rollback-compatibility, and SQL constraint suite:
 
 ```bash
-docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
-  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/001_dedup_restart_safety.sql'
-docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
-  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/002_workflow_safety.sql'
+tests/migrations/run.sh
+tests/docker/sofascore-smoke.sh
 ```
 
 Run isolated mock E2E/import validation:
@@ -32,7 +42,18 @@ Run isolated mock E2E/import validation:
 tests/e2e/run.sh
 ```
 
-It starts disposable PostgreSQL, mock `twscrape`/RapidAPI/Qwen/Discord endpoints, and the pinned n8n image; runs the SQL safety tests; imports both workflows; then verifies a partial `twscrape` source failure, RapidAPI retry behavior, duplicate/retry/invalid-response/Discord-limit/interrupted-delivery scenarios. Its cleanup removes only the `transfers-e2e` test volume.
+It starts disposable PostgreSQL, mock `twscrape`/RapidAPI/Qwen/Discord/Sofascore endpoints, and the pinned n8n image; runs SQL tests 001–004; imports both workflows; then verifies off/shadow/active enrichment, sparse/ambiguous/malformed/timeout/all-failure paths, transfer-only delivery, Discord limits, and interrupted-delivery recovery. Its cleanup removes only disposable `transfers-e2e` resources.
+
+## Optional live acceptance
+
+Live Sofascore acceptance is never part of default discovery or future CI. Run it only after provider access-policy approval is recorded, with both approval gates deliberately supplied. It is serial and read-only, uses a disposable raw cache, and performs no database or Discord writes:
+
+```bash
+SOFASCORE_PROVIDER_POLICY_APPROVED=1 SOFASCORE_LIVE_ACCEPTANCE=1 \
+  docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
+  --entrypoint python sofascore-enrichment \
+  -m unittest tests.live_acceptance -v
+```
 
 Before a commit, scan tracked files for obvious secret assignments and inspect ignored state:
 

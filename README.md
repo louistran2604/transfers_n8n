@@ -1,6 +1,6 @@
 # Football Transfer Monitor
 
-An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector.
+An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector. Optional fixture-tested player enrichment uses `soccerdata==1.9.1` with Sofascore and is disabled by default.
 
 The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` GMT+7.
 
@@ -15,6 +15,7 @@ Schedule or manual trigger
   → ignore pure retweets and persist raw posts
   → extract and validate transfer reports with local Qwen
   → merge matching reports and create material revisions
+  → optionally resolve and persist fail-open player enrichment
   → reserve one digest in PostgreSQL
   → send one confirmed Discord webhook request
   → finalize the delivery and workflow run
@@ -25,7 +26,7 @@ The repository includes:
 - Generated n8n main and error workflows with no embedded credential values.
 - A strict Qwen prompt and JSON Schema plus a generated four-tier source registry.
 - Idempotent PostgreSQL writes, material revisions, retry state, and digest reservation.
-- Pinned n8n, task-runner, PostgreSQL, llama.cpp, and private `twscrape` Docker services.
+- Pinned n8n, task-runner, PostgreSQL, llama.cpp, private `twscrape`, and private optional Sofascore enrichment Docker services.
 - Dependency-free unit tests, transaction-rolled-back SQL tests, and an isolated mock E2E stack.
 
 X account and post IDs remain strings. Direct and quoted posts are processed, pure retweets are ignored, and every raw post/source link is retained even when matching reports are merged.
@@ -66,6 +67,7 @@ X_COLLECTOR=twscrape
 TWSCRAPE_AUTH_TOKEN=<dedicated-x-auth-token>
 TWSCRAPE_CT0=<dedicated-x-ct0>
 # RAPIDAPI_KEY=<rapidapi-key> # required only when X_COLLECTOR=rapidapi
+PLAYER_ENRICHMENT_MODE=off
 DISCORD_TRANSFERS_WEBHOOK_URL=<transfer-digest-webhook>
 DISCORD_ERRORS_WEBHOOK_URL=<error-alert-webhook>
 ```
@@ -127,6 +129,17 @@ Open n8n at `http://localhost:5678`. The service and external task runner use ma
 
 The scraper has no host port. Its health check runs inside Docker and reports only service status and the active-account count.
 
+Build and dark-deploy the optional enrichment service while the mode remains off:
+
+```bash
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml up -d sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
+```
+
+The enrichment service joins only `transfers_net`, publishes no host port, receives no database or application credentials, and is not an n8n startup dependency.
+
 ### 5. Generate and import workflows
 
 The generator reads all 78 accounts directly from `docs/journalist_list.md`, validates every X ID as a decimal string, and embeds the source registry, prompt, and schema:
@@ -176,6 +189,8 @@ After the sample path succeeds:
 3. Confirm Qwen validation, report persistence, digest reservation, and Discord finalization are green.
 4. Activate the main workflow to enable the four scheduled daily runs.
 
+This activates transfer monitoring, not player enrichment. Keep `PLAYER_ENRICHMENT_MODE=off`; `shadow` and `active` remain blocked until the provider-policy, complete test, resource, and rollout gates below pass.
+
 ## Workflow behavior
 
 ### Sources and reliability
@@ -220,6 +235,20 @@ contract renewal
 
 Reports are grouped by canonical player/current-club/destination direction. The best source wins, missing values can be filled from lower-tier sources, and conflicting values remain in `normalized_data.conflicts`. A revision is created only when the material snapshot changes.
 
+### Optional player enrichment
+
+`PLAYER_ENRICHMENT_MODE` has three values:
+
+| Mode | Provider work | PostgreSQL enrichment | Discord |
+| --- | --- | --- | --- |
+| `off` | None | None | Transfer-only |
+| `shadow` | Resolve/fetch | Persist | Transfer-only |
+| `active` | Resolve/fetch | Persist | Append eligible enrichment |
+
+A missing or invalid value behaves as `off`. Context, service, validation, and enrichment-persistence failures rejoin digest candidate loading. If core PostgreSQL is healthy, even complete enrichment failure still sends one transfer-only digest.
+
+Enrichment does not enter the transfer material hash. Profile or statistics refreshes create no transfer revision and cannot resend a delivered revision. In `active`, failure-gated stale attached-player profiles and statistics may render only within 72 hours of provider retrieval; explicitly unattached profiles may render within 7 days. Stale content is labeled, and unresolved, ambiguous, unavailable, or null content is omitted without an error line.
+
 ### Discord digest
 
 Each story includes every meaningful non-null extracted detail that fits:
@@ -249,6 +278,7 @@ docker compose -f deploy/qwen3.6-27b/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml logs -f n8n
 docker compose -f deploy/n8n/compose.yaml --profile twscrape logs -f twscrape
+docker compose -f deploy/n8n/compose.yaml logs --tail=200 sofascore-enrichment
 docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
 ```
 
@@ -292,14 +322,30 @@ These commands preserve the n8n and PostgreSQL volumes and the downloaded GGUF m
 
 Start in dependency order: support, Qwen, then n8n. The workflow’s recovery step handles interrupted run/delivery state on its next execution.
 
+### Enrichment rollout and rollback
+
+Keep mode off while building the service, applying migration 002, importing workflows, and checking private health/readiness. Live and shadow requests require provider access-policy approval. Active mode additionally requires the complete offline suite, approved gated live acceptance, 28 reviewed shadow runs, identity/mapping review, forced-failure delivery proof, and measured 25-item CPU/RSS/latency within the initial 1 CPU/1 GiB limit.
+
+Resource limits must be changed only from measurements. Provider-policy approval and resource measurement are activation blockers, not defaults to infer.
+
+Rollback is application-first:
+
+1. Set `PLAYER_ENRICHMENT_MODE=off` in ignored `deploy/n8n/.env` and recreate n8n.
+2. Confirm the transfer-only reservation/send path in a test environment.
+3. Stop `sofascore-enrichment` if needed and restore recorded prior workflow/image artifacts.
+4. Retain additive migration 002, normalized snapshots, attempts, and raw cache for diagnosis.
+5. Never release digest items or automatically resend an `unknown` delivery.
+
+Do not use `docker compose down --volumes` for rollback. Detailed cache, upgrade, manual override, and retention commands are in [the n8n deployment guide](deploy/n8n/README.md) and [database guide](database/README.md).
+
 ## Verification
 
 Run fast checks from the repository root:
 
 ```bash
-node workflow/build-workflows.mjs --check
-node --test tests/unit/*.test.mjs
-docker compose -f deploy/n8n/compose.yaml config --quiet
+PLAYER_ENRICHMENT_MODE=off node workflow/build-workflows.mjs --check
+PLAYER_ENRICHMENT_MODE=off node --test tests/unit/*.test.mjs
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
 docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
@@ -368,6 +414,7 @@ Confirm the **Digest reserved** true branch ran, the webhook environment variabl
 - Both collectors request only the latest 20 posts per account; a long outage can permanently miss older posts.
 - Live manual tests can consume RapidAPI quota or dedicated X-account capacity and can send real Discord messages.
 - Local Qwen extraction quality depends on the model and quantization; strict validation rejects malformed output.
+- Live or shadow Sofascore use remains blocked until provider access policy is approved and the documented test/resource gates pass.
 - `unknown` Discord deliveries require human review because automatic resend could duplicate a message.
 - The source registry is fixed at 78 accounts until the generator and documentation are deliberately updated.
 

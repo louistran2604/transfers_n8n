@@ -1,6 +1,13 @@
 import { createServer } from 'node:http';
 
-const state = { rapidRate: 0, rapidFail: 0, twscrapeCalls: 0, discordRequests: 0, discordPayloads: [] };
+const state = {
+  rapidRate: 0,
+  rapidFail: 0,
+  twscrapeCalls: 0,
+  sofascoreCalls: 0,
+  discordRequests: 0,
+  discordPayloads: [],
+};
 
 const validExtraction = {
   transfer_related: true,
@@ -21,12 +28,97 @@ function json(response, status, body, headers = {}) {
 function discordPayloadWithinLimits(payload) {
   const embeds = payload?.embeds ?? [];
   if (embeds.length > 10) return false;
-  return embeds.every((embed) => {
+  let aggregate = 0;
+  const valid = embeds.every((embed) => {
     const fields = embed.fields ?? [];
     const characters = String(embed.title ?? '').length + String(embed.description ?? '').length
+      + String(embed.footer?.text ?? '').length
       + fields.reduce((total, field) => total + String(field.name ?? '').length + String(field.value ?? '').length, 0);
-    return fields.length <= 25 && characters <= 6000 && fields.every((field) => String(field.value ?? '').length <= 1024);
+    aggregate += characters;
+    return fields.length <= 25 && fields.every((field) => (
+      String(field.name ?? '').length <= 256
+      && String(field.value ?? '').length <= 1024
+    ));
   });
+  return valid && aggregate <= 6000;
+}
+
+function enrichmentItem(item, mode) {
+  if (mode === 'all-failure') {
+    return {
+      item_key: item.item_key,
+      status: 'provider_failure',
+      identity: null,
+      profile: null,
+      statistics: null,
+      error: { code: 'fixture_provider_failure', retryable: true },
+    };
+  }
+  if (mode === 'ambiguous') {
+    return {
+      item_key: item.item_key,
+      status: 'ambiguous',
+      identity: null,
+      profile: null,
+      statistics: null,
+      candidates: [
+        { provider_player_id: '2544168', canonical_name: 'John Smith', score: 50 },
+        { provider_player_id: '2332241', canonical_name: 'John Smith', score: 50 },
+      ],
+      error: { code: 'identity_margin_too_small', retryable: false },
+    };
+  }
+  const sparse = mode === 'sparse';
+  return {
+    item_key: item.item_key,
+    status: 'fresh',
+    provider_calls: 2,
+    identity: {
+      provider: 'sofascore',
+      provider_player_id: sparse ? '845067' : '826643',
+      stable_source_identifier: `sofascore:player:${sparse ? '845067' : '826643'}`,
+      score: 100,
+      margin: 100,
+      resolver_version: 'identity-v1',
+    },
+    profile: {
+      canonical_name: sparse ? 'Nguyễn Quang Hải' : 'Kylian Mbappé',
+      current_club: {
+        provider_team_id: sparse ? '193616' : '2829',
+        name: sparse ? 'Công An Hà Nội' : 'Real Madrid',
+      },
+      nationality: sparse ? 'Vietnam' : 'France',
+      age: sparse ? 29 : 27,
+      primary_position: sparse ? 'Midfielder' : 'Forward',
+      market_value: sparse ? 435000 : 191000000,
+      market_value_currency: 'EUR',
+      retrieved_at: '2026-07-30T00:00:00Z',
+    },
+    statistics: {
+      competition: sparse ? 'V-League 1' : 'LaLiga',
+      provider_unique_tournament_id: sparse ? '626' : '8',
+      season: '2025/26',
+      provider_season_id: sparse ? '78589' : '77559',
+      season_state: 'latest_completed',
+      scope: 'selected_domestic_league_all_clubs',
+      appearances: sparse ? 24 : 31,
+      starts: sparse ? 24 : 29,
+      minutes_played: sparse ? 2160 : 2604,
+      minutes_per_game: sparse ? 90 : 84,
+      goals: sparse ? 3 : 25,
+      expected_goals: sparse ? null : 23.9453,
+      assists: sparse ? 6 : 5,
+      expected_assists: sparse ? null : 6.2019957,
+      average_rating: sparse ? 7.4083 : 7.5613,
+      retrieved_at: '2026-07-30T00:00:00Z',
+    },
+    provenance: {
+      profile_cache: 'miss',
+      statistics_cache: 'miss',
+      raw_payloads: { profile: {}, statistics: {} },
+    },
+    warnings: [],
+  };
 }
 
 createServer(async (request, response) => {
@@ -34,7 +126,14 @@ createServer(async (request, response) => {
   if (url.pathname === '/health') return json(response, 200, { ok: true });
   if (url.pathname === '/state') return json(response, 200, state);
   if (url.pathname === '/state/reset') {
-    Object.assign(state, { rapidRate: 0, rapidFail: 0, twscrapeCalls: 0, discordRequests: 0, discordPayloads: [] });
+    Object.assign(state, {
+      rapidRate: 0,
+      rapidFail: 0,
+      twscrapeCalls: 0,
+      sofascoreCalls: 0,
+      discordRequests: 0,
+      discordPayloads: [],
+    });
     return json(response, 200, state);
   }
   if (url.pathname === '/rapid/rate') {
@@ -86,6 +185,36 @@ createServer(async (request, response) => {
       : mode === 'women' ? JSON.stringify({ transfer_related: false, reports: [] })
       : JSON.stringify(validExtraction);
     return json(response, 200, { choices: [{ message: { content } }] });
+  }
+  if (url.pathname === '/v1/enrich') {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    let payload = {};
+    try { payload = JSON.parse(body || '{}'); } catch { return json(response, 400, { error: { code: 'invalid_request' } }); }
+    if (!payload.request_id || !Array.isArray(payload.players) || payload.players.length === 0) {
+      return json(response, 400, { error: { code: 'invalid_request' } });
+    }
+    state.sofascoreCalls += 1;
+    const mode = payload.request_id.includes('all-failure') ? 'all-failure'
+      : payload.request_id.includes('ambiguous') ? 'ambiguous'
+      : payload.request_id.includes('sparse') ? 'sparse'
+      : payload.request_id.includes('malformed') ? 'malformed'
+      : payload.request_id.includes('timeout') ? 'timeout'
+      : 'success';
+    if (mode === 'timeout') await new Promise((resolve) => setTimeout(resolve, 500));
+    if (mode === 'malformed') return json(response, 200, { request_id: payload.request_id, items: null });
+    const items = payload.players.map((item) => enrichmentItem(item, mode));
+    return json(response, 200, {
+      request_id: payload.request_id,
+      status: items.every((item) => item.status === 'fresh') ? 'complete' : 'partial',
+      items,
+      summary: {
+        requested: items.length,
+        fresh: items.filter((item) => item.status === 'fresh').length,
+        failed: items.filter((item) => item.status === 'provider_failure').length,
+        deferred: 0,
+      },
+    });
   }
   if (url.pathname.startsWith('/discord/')) {
     let body = '';

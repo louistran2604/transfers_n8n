@@ -3,13 +3,16 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
+  buildEnrichmentRequest,
   buildDiscordDigest,
   chooseClassification,
   dedupeKey,
+  enrichmentUnicodeKey,
   loadEntityAliases,
   loadSourceRegistry,
   materialRevision,
   mergeReportGroup,
+  normalizeEnrichmentResponse,
   parseEntityAliases,
   parseRapidApiPosts,
   recoverInterruptedDelivery,
@@ -55,6 +58,49 @@ const source = (username, account_type = 'individual') => sourceMetadata({
   external_account_id: '900000000000000001',
   account_type,
 });
+
+const richEnrichment = (overrides = {}) => ({
+  profile: {
+    current_club_name: 'Real Madrid',
+    nationality: 'France',
+    date_of_birth: '1998-12-20',
+    age: 27,
+    primary_position: 'Forward',
+    height_cm: 180,
+    preferred_foot: 'Right',
+    market_value: 191000000,
+    market_value_currency: 'EUR',
+    retrieved_at: '2026-07-30T00:00:00Z',
+    stale: false,
+  },
+  statistics: {
+    competition_name: 'LaLiga',
+    season_label: '2025/26',
+    scope: 'selected_domestic_league_all_clubs',
+    appearances: 31,
+    starts: 29,
+    minutes_played: 2604,
+    minutes_per_appearance: 84,
+    goals: 25,
+    expected_goals: 23.9453,
+    assists: 5,
+    expected_assists: 6.2019957,
+    average_rating: 7.5612903225806,
+    yellow_cards: 3,
+    red_cards: 0,
+    goalkeeper_clean_sheets: null,
+    goalkeeper_saves: null,
+    retrieved_at: '2026-07-30T00:00:00Z',
+    stale: false,
+  },
+  ...overrides,
+});
+
+const discordCharacterCount = (embed) => (
+  embed.title.length
+  + embed.footer.text.length
+  + embed.fields.reduce((total, field) => total + field.name.length + field.value.length, 0)
+);
 
 test('source parser returns all 78 sources and preserves large IDs as strings', async () => {
   const registry = await loadSourceRegistry(new URL('../../docs/journalist_list.md', import.meta.url));
@@ -105,6 +151,7 @@ test('merging uses source tier, fills missing fields, keeps conflicts, and creat
   const first = materialRevision(null, merged);
   assert.equal(first.changed, true);
   assert.equal(materialRevision(first.content_sha256, { ...merged, sources: [] }).changed, false);
+  assert.equal(materialRevision(first.content_sha256, { ...merged, enrichment: { statistics: { goals: 99 } } }).changed, false);
   assert.equal(materialRevision(first.content_sha256, { ...merged, is_digest_worthy: !merged.is_digest_worthy }).changed, false);
   assert.equal(materialRevision(first.content_sha256, { ...merged, fee_amount: 50000000 }).changed, true);
   assert.equal(dedupeKey(merged), 'alvaro-test|test-fc|destination-fc');
@@ -125,6 +172,82 @@ test('entity aliases canonicalize player and club variants without merging sibli
     players: [],
     sibling_groups: [],
   }), /Conflicting club alias/);
+});
+
+test('enrichment grouping uses provider ID or Unicode name and club context, never placeholder player ID', () => {
+  assert.equal(enrichmentUnicodeKey('  Kylian—MBAPPÉ  '), 'kylian mbappé');
+  const base = {
+    reported_player_name: 'Kylian Mbappé',
+    current_club_name: 'Real Madrid',
+    destination_club_name: 'Liverpool',
+    classification: 'rumor',
+    move_type: 'permanent',
+    aliases: [],
+    identity_overrides: [],
+    profile_fresh_until: null,
+    statistics_fresh_until: null,
+    team_mapping_fresh: false,
+    season_mapping_fresh: false,
+  };
+  const grouped = buildEnrichmentRequest([
+    { ...base, transfer_report_id: '10', placeholder_player_id: '100', provider_player_id: '826643' },
+    { ...base, transfer_report_id: '11', placeholder_player_id: '999', provider_player_id: '826643' },
+    { ...base, transfer_report_id: '12', placeholder_player_id: '100', provider_player_id: null },
+  ], { mode: 'shadow', requestId: 'sofascore:1', now: 0 });
+  assert.equal(grouped.refreshRequired, true);
+  assert.deepEqual(grouped.request.players.map((player) => player.item_key), [
+    'provider:826643',
+    'name:kylian mbappé|club:real madrid',
+  ]);
+  assert.deepEqual(grouped.request.players[0].report_ids, ['10', '11']);
+  assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
+});
+
+test('enrichment response normalization converts contract failures into one sanitized result per request item', () => {
+  const request = {
+    request_id: 'sofascore:1',
+    players: [{
+      item_key: 'provider:826643',
+      reported_name: 'Kylian Mbappé',
+      report_ids: ['10'],
+      request_context: { reported_name_key: 'kylian mbappé' },
+    }],
+  };
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: {
+      request_id: 'sofascore:1',
+      items: [{
+        item_key: 'provider:826643',
+        status: 'fresh',
+        provider_calls: 2,
+        identity: {
+          provider: 'sofascore',
+          provider_player_id: '826643',
+          stable_source_identifier: 'sofascore:player:826643',
+          resolver_version: 'identity-v1',
+        },
+        profile: {
+          canonical_name: 'Kylian Mbappé',
+          current_club: { provider_team_id: '2829', name: 'Real Madrid' },
+          retrieved_at: '2026-07-30T00:00:00Z',
+        },
+        statistics: {
+          provider_unique_tournament_id: '8',
+          provider_season_id: '77559',
+          season_state: 'active',
+          scope: 'selected_domestic_league_all_clubs',
+          retrieved_at: '2026-07-30T00:00:00Z',
+        },
+        provenance: { raw_payloads: { profile: {}, statistics: {} } },
+      }],
+    },
+  });
+  assert.equal(normalized.items[0].status, 'fresh');
+  assert.match(normalized.items[0].profile.content_sha256, /^[a-f0-9]{64}$/);
+  const failed = normalizeEnrichmentResponse(request, { statusCode: 200, body: 'not-json' });
+  assert.deepEqual(failed.items[0].error, { code: 'enrichment_response_not_json' });
+  assert.equal(failed.items[0].identity, null);
 });
 
 test('retry timing honors server headers within a bounded exponential backoff policy', () => {
@@ -237,6 +360,363 @@ test('digest displays every meaningful non-null transfer detail', () => {
     'Agreement: reached',
   ]) assert.match(value, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(value, /Identity:/);
+});
+
+test('digest appends rich enrichment in whole groups and keeps the journalist link last', () => {
+  const postUrl = 'https://x.com/David_Ornstein/status/999000000000000002';
+  const report = {
+    ...validReport({ player_name: 'Kylian Mbappé' }),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: postUrl }],
+    enrichment: richEnrichment({
+      statistics: {
+        ...richEnrichment().statistics,
+        retrieved_at: '2026-07-29T12:00:00Z',
+        stale: true,
+      },
+    }),
+  };
+  const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
+  const value = embed.fields[0].value;
+  assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
+  assert.match(value, /LaLiga 2025\/26 · selected league, all clubs · stale 18h: 31 app · 2,604 min · 25 G · 5 A/);
+  assert.match(value, /Advanced: 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating/);
+  assert.match(value, /Details: Born 1998-12-20 · 180 cm · Right foot/);
+  assert.match(value, /Other: 3 yellow · 0 red/);
+  assert.ok(value.endsWith(`[David Ornstein](${postUrl})`));
+  assert.ok(value.length <= 1024);
+  assert.ok(discordCharacterCount(embed) <= 6000);
+});
+
+test('digest renders null or failed enrichment as the unchanged transfer-only story', () => {
+  const report = {
+    ...validReport(),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: 'https://x.com/David_Ornstein/status/999000000000000003' }],
+  };
+  const transferOnly = buildDiscordDigest([report]).embeds[0].fields[0].value;
+  for (const enrichment of [
+    null,
+    { profile: null, statistics: null },
+    { profile: null, statistics: null, error: { code: 'provider_failure' } },
+    {
+      profile: { current_club_name: 'unknown', market_value: 100, market_value_currency: null },
+      statistics: { competition_name: 'N/A', season_label: null, scope: null },
+    },
+  ]) {
+    const value = buildDiscordDigest([{ ...report, enrichment }]).embeds[0].fields[0].value;
+    assert.equal(value, transferOnly);
+    assert.doesNotMatch(value, /Profile|Advanced|Sofascore|provider|unknown|N\/A/);
+  }
+});
+
+test('digest enrichment budget keeps the highest-priority whole group and never truncates the source URL', () => {
+  const base = {
+    ...validReport({ player_name: 'Budget Test' }),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    enrichment: richEnrichment(),
+  };
+  let accepted;
+  for (let length = 400; length < 900; length += 1) {
+    const postUrl = `https://x.com/source/status/999000000000000004?context=${'a'.repeat(length)}`;
+    const payload = buildDiscordDigest([{ ...base, sources: [{ post_url: postUrl }] }]);
+    const field = payload.embeds[0].fields[0];
+    if (field?.value.includes('selected league, all clubs') && !field.value.includes('Profile:')) {
+      accepted = { payload, field, postUrl };
+      break;
+    }
+  }
+  assert.ok(accepted);
+  assert.match(accepted.field.value, /LaLiga 2025\/26 · selected league, all clubs/);
+  assert.doesNotMatch(accepted.field.value, /Profile:|Advanced:|Details:|Other:/);
+  assert.ok(accepted.field.value.endsWith(`[David Ornstein](${accepted.postUrl})`));
+  assert.ok(accepted.field.value.length <= 1024);
+  assert.ok(discordCharacterCount(accepted.payload.embeds[0]) <= 6000);
+});
+
+test('generated digest renders the same rich enrichment labels within Discord limits', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const snapshot = { ...validReport({ player_name: 'Kylian Mbappé' }), dedupe_key: 'kylian-mbappe|real-madrid|liverpool' };
+  const input = [{ json: {
+    row_type: 'candidate',
+    payload: {
+      revision_id: 'revision-rich',
+      snapshot,
+      enrichment: richEnrichment(),
+      post_url: 'https://x.com/David_Ornstein/status/999000000000000005',
+      priority_rank: '2',
+      reliability_score: '0.95',
+      source_username: 'David_Ornstein',
+      source_name: 'David Ornstein',
+    },
+  } }];
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const output = await runDigest({ all: () => input });
+  const payload = JSON.parse(output[0].json.params[0]).discord_payload;
+  const embed = payload.embeds[0];
+  const value = embed.fields[0].value;
+  assert.match(value, /Sofascore value €191m/);
+  assert.match(value, /LaLiga 2025\/26 · selected league, all clubs/);
+  assert.ok(value.endsWith('[David Ornstein](https://x.com/David_Ornstein/status/999000000000000005)'));
+  assert.ok(embed.fields.every((field) => field.value.length <= 1024));
+  assert.ok(discordCharacterCount(embed) <= 6000);
+});
+
+test('enrichment request modes, freshness, cooldown, dedupe, and maximum batch are fail-closed', () => {
+  const base = {
+    transfer_report_id: '1',
+    reported_player_name: 'Nguyễn Quang Hải',
+    current_club_name: 'Công An Hà Nội',
+    destination_club_name: 'Destination FC',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: '845067',
+    aliases: [],
+    identity_overrides: [],
+    profile_fresh_until: null,
+    statistics_fresh_until: null,
+    profile_current_provider_team_id: '193616',
+    team_mapping_fresh: false,
+    season_mapping_fresh: false,
+  };
+  assert.deepEqual(buildEnrichmentRequest([base], { mode: 'off', requestId: 'off' }), {
+    mode: 'off',
+    refreshRequired: false,
+    request: null,
+  });
+  assert.equal(buildEnrichmentRequest([base], { mode: 'shadow', requestId: 'shadow' }).mode, 'shadow');
+  assert.equal(buildEnrichmentRequest([base], { mode: 'active', requestId: 'active' }).mode, 'active');
+
+  const future = new Date(Date.now() + 60_000).toISOString();
+  const fresh = buildEnrichmentRequest([{
+    ...base,
+    profile_fresh_until: future,
+    statistics_fresh_until: future,
+  }], { mode: 'active', requestId: 'fresh' });
+  assert.equal(fresh.refreshRequired, false);
+  assert.equal(fresh.request, null);
+
+  const cooldown = buildEnrichmentRequest([{
+    ...base,
+    provider_player_id: null,
+    latest_attempt_status: 'ambiguous',
+    latest_attempt_started_at: new Date().toISOString(),
+  }], { mode: 'active', requestId: 'cooldown' });
+  assert.equal(cooldown.refreshRequired, false);
+
+  const contexts = Array.from({ length: 30 }, (_, index) => ({
+    ...base,
+    transfer_report_id: String(index + 1),
+    provider_player_id: String(900000 + index),
+  }));
+  const bounded = buildEnrichmentRequest(contexts, { mode: 'active', requestId: 'bounded' });
+  assert.equal(bounded.request.players.length, 25);
+  assert.equal(new Set(bounded.request.players.map((player) => player.item_key)).size, 25);
+});
+
+test('enrichment response rejects JSON null, duplicate keys, wrong request IDs, and malformed typed fields', () => {
+  const request = {
+    request_id: 'contract:1',
+    players: [{
+      item_key: 'provider:826643',
+      reported_name: 'Kylian Mbappé',
+      report_ids: ['10'],
+      request_context: {},
+    }],
+  };
+  const identity = {
+    provider: 'sofascore',
+    provider_player_id: '826643',
+    stable_source_identifier: 'sofascore:player:826643',
+  };
+  const profile = {
+    canonical_name: 'Kylian Mbappé',
+    current_club: { provider_team_id: '2829', name: 'Real Madrid' },
+    market_value_currency: 'EUR',
+    retrieved_at: '2026-07-30T00:00:00Z',
+  };
+  const statistics = {
+    provider_unique_tournament_id: '8',
+    provider_season_id: '77559',
+    season_state: 'latest_completed',
+    scope: 'selected_domestic_league_all_clubs',
+    retrieved_at: '2026-07-30T00:00:00Z',
+  };
+  const body = (overrides = {}) => ({
+    request_id: request.request_id,
+    items: [{ item_key: 'provider:826643', status: 'fresh', identity, profile, statistics, ...overrides }],
+  });
+  for (const response of [
+    { body: { request_id: 'wrong', items: [] } },
+    { body: { ...body(), items: [...body().items, ...body().items] } },
+    { body: body({ profile: null }) },
+    { body: body({ statistics: null }) },
+    { body: body({ profile: { ...profile, market_value_currency: 'eur' } }) },
+    { body: body({ statistics: { ...statistics, scope: 'guessed' } }) },
+  ]) {
+    const normalized = normalizeEnrichmentResponse(request, { statusCode: 200, ...response });
+    assert.equal(normalized.items[0].status, 'schema_failure');
+    assert.equal(normalized.items[0].identity, null);
+  }
+});
+
+test('Discord stale windows, unknown currency, sparse stats context, and zero values are exact', () => {
+  const now = Date.parse('2026-07-30T12:00:00Z');
+  const base = {
+    ...validReport({ player_name: 'Boundary Player' }),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: 'https://x.com/source/status/999000000000000006' }],
+  };
+  const render = (enrichment) => buildDiscordDigest(
+    [{ ...base, enrichment }],
+    { now },
+  ).embeds[0].fields[0].value;
+
+  const statsOnly = richEnrichment({
+    profile: null,
+    statistics: {
+      ...richEnrichment().statistics,
+      appearances: null,
+      minutes_played: null,
+      goals: null,
+      assists: null,
+      expected_goals: 1.25,
+      yellow_cards: 0,
+    },
+  });
+  const sparse = render(statsOnly);
+  assert.match(sparse, /LaLiga 2025\/26 · selected league, all clubs/);
+  assert.match(sparse, /Advanced: 29 starts · 84 min\/app · 1\.25 xG/);
+  assert.match(sparse, /Other: 0 yellow · 0 red/);
+
+  const justInside = render(richEnrichment({
+    statistics: {
+      ...richEnrichment().statistics,
+      stale: true,
+      retrieved_at: new Date(now - 72 * 60 * 60 * 1000).toISOString(),
+    },
+  }));
+  assert.match(justInside, /stale 3d/);
+  const outside = render(richEnrichment({
+    profile: null,
+    statistics: {
+      ...richEnrichment().statistics,
+      stale: true,
+      retrieved_at: new Date(now - 72 * 60 * 60 * 1000 - 1).toISOString(),
+    },
+  }));
+  assert.doesNotMatch(outside, /LaLiga|Advanced|Other/);
+
+  const unattachedInside = render({
+    profile: {
+      ...richEnrichment().profile,
+      current_club_name: null,
+      stale: true,
+      retrieved_at: new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    },
+    statistics: null,
+  });
+  assert.match(unattachedInside, /Profile · stale 7d/);
+  const unattachedOutside = render({
+    profile: {
+      ...richEnrichment().profile,
+      current_club_name: null,
+      stale: true,
+      retrieved_at: new Date(now - 7 * 24 * 60 * 60 * 1000 - 1).toISOString(),
+    },
+    statistics: null,
+  });
+  assert.doesNotMatch(unattachedOutside, /Profile/);
+
+  const currency = render(richEnrichment({
+    profile: { ...richEnrichment().profile, market_value_currency: 'VND' },
+  }));
+  assert.match(currency, /191m VND/);
+  assert.doesNotMatch(render(richEnrichment({
+    profile: { ...richEnrichment().profile, market_value_currency: null },
+  })), /Sofascore value/);
+});
+
+test('Discord exact field-name, value, aggregate, embed, and field-count boundaries are preserved', () => {
+  const reports = Array.from({ length: 25 }, (_, index) => ({
+    ...validReport({
+      player_name: `Boundary Player ${index}`,
+      classification: 'official_confirmed',
+      confidence: 0.9,
+    }),
+    revision_id: String(index + 1),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'Source' },
+    sources: [{ post_url: `https://x.com/source/status/${999000000000000100n + BigInt(index)}` }],
+  }));
+  const payload = buildDiscordDigest(reports);
+  assert.equal(payload.embeds.length, 1);
+  assert.ok(payload.embeds.length <= 10);
+  assert.equal(payload.embeds[0].fields.length, 18);
+  assert.ok(payload.embeds[0].fields.length <= 25);
+  assert.ok(payload.embeds[0].fields.every((field) => field.name.length <= 256));
+  assert.ok(payload.embeds[0].fields.every((field) => field.value.length <= 1024));
+  assert.ok(discordCharacterCount(payload.embeds[0]) <= 6000);
+
+  const longName = buildDiscordDigest([{
+    ...reports[0],
+    player_name: `${'👨‍👩‍👧‍👦'.repeat(40)} boundary`,
+    revision_id: 'long-name',
+  }]).embeds[0].fields[0].name;
+  assert.ok(longName.length <= 256);
+  assert.ok(longName.endsWith('…'));
+  assert.doesNotMatch(longName, /\u200d…$/u);
+});
+
+test('library and generated Discord formatters match across rich, sparse, null, and failure cases', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const cases = [
+    richEnrichment(),
+    {
+      profile: { current_club_name: 'Công An Hà Nội', nationality: 'Vietnam', retrieved_at: '2026-07-30T00:00:00Z' },
+      statistics: {
+        competition_name: 'V-League 1',
+        season_label: '2025/26',
+        scope: 'selected_domestic_league_all_clubs',
+        appearances: 24,
+        retrieved_at: '2026-07-30T00:00:00Z',
+      },
+    },
+    null,
+    { profile: null, statistics: null, error: { code: 'provider_failure' } },
+  ];
+  for (const [index, enrichment] of cases.entries()) {
+    const postUrl = `https://x.com/David_Ornstein/status/${999000000000000200n + BigInt(index)}`;
+    const report = {
+      ...validReport({ player_name: `Parity ${index}` }),
+      revision_id: `parity-${index}`,
+      dedupe_key: `parity-${index}|test-fc|destination-fc`,
+      preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+      sources: [{ post_url: postUrl }],
+      enrichment,
+    };
+    const generatedInput = [{ json: {
+      row_type: 'candidate',
+      payload: {
+        revision_id: report.revision_id,
+        snapshot: report,
+        enrichment,
+        post_url: postUrl,
+        priority_rank: '2',
+        reliability_score: '0.95',
+        source_username: 'David_Ornstein',
+        source_name: 'David Ornstein',
+      },
+    } }];
+    const generated = await runDigest({ all: () => generatedInput });
+    const generatedPayload = JSON.parse(generated[0].json.params[0]).discord_payload;
+    const libraryPayload = buildDiscordDigest([report]);
+    assert.deepEqual(generatedPayload, libraryPayload);
+  }
 });
 
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {
@@ -356,6 +836,11 @@ test('generated workflow stays in sync with the registry and extraction contract
   const reserveNode = workflow.nodes.find((node) => node.name === 'Reserve digest before delivery');
   const candidatesNode = workflow.nodes.find((node) => node.name === 'Find undelivered revisions');
   const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const contextNode = workflow.nodes.find((node) => node.name === 'Load player enrichment contexts');
+  const enrichNode = workflow.nodes.find((node) => node.name === 'Enrich players via soccerdata');
+  const persistEnrichmentNode = workflow.nodes.find((node) => node.name === 'Persist soccerdata enrichment result');
+  const deliveryRequestNode = workflow.nodes.find((node) => node.name === 'Build Discord delivery request');
+  const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const runNode = workflow.nodes.find((node) => node.name === 'Register workflow run');
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
@@ -386,7 +871,15 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(workflow.connections['Use twscrape collector'].main[1][0].node, 'Build RapidAPI request');
   assert.match(reserveNode.parameters.query, /status = 'sending'/);
   assert.doesNotMatch(reserveNode.parameters.query, /sending AS/);
+  assert.match(reserveNode.parameters.query, /payload->'discord_payload'/);
+  assert.doesNotMatch(reserveNode.parameters.query, /request_payload = EXCLUDED/);
+  assert.match(reserveNode.parameters.query, /RETURNING id, status, request_payload/);
+  assert.match(deliveryRequestNode.parameters.jsCode, /\$json\.request_payload/);
+  assert.doesNotMatch(deliveryRequestNode.parameters.jsCode, /Build bounded Discord digest/);
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
+  assert.match(candidatesNode.parameters.query, /dd\.request_payload AS pending_request_payload/);
+  assert.match(candidatesNode.parameters.query, /current_player_enrichment/);
+  assert.match(candidatesNode.parameters.query, /\$3::text = 'active'/);
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
@@ -396,7 +889,23 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
-  assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare enrichment batch query');
+  assert.equal(workflow.connections['Prepare enrichment batch query'].main[0][0].node, 'Enrichment enabled?');
+  assert.equal(workflow.connections['Enrichment enabled?'].main[1][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Refresh required?'].main[1][0].node, 'Prepare digest candidates query');
+  assert.equal(workflow.connections['Persist soccerdata enrichment result'].main[0][0].node, 'Prepare digest candidates query');
+  assert.equal(contextNode.continueOnFail, true);
+  assert.equal(persistEnrichmentNode.continueOnFail, true);
+  assert.equal(enrichNode.continueOnFail, true);
+  assert.equal(enrichNode.retryOnFail, undefined);
+  assert.equal(enrichNode.parameters.options.timeout, 85000);
+  assert.match(persistEnrichmentNode.parameters.query, /JOIN provider_ids provider_id/);
+  assert.match(persistEnrichmentNode.parameters.query, /\|\| \(expanded\.item->>'item_key'\) \|\| ':' \|\|/);
+  assert.match(persistEnrichmentNode.parameters.query, /jsonb_typeof\(item->'profile'\) = 'object'/);
+  assert.match(persistEnrichmentNode.parameters.query, /jsonb_typeof\(item->'statistics'\) = 'object'/);
+  assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'profile' IS NOT NULL/);
+  assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'statistics' IS NOT NULL/);
+  assert.match(mergeReportsNode.parameters.query, /transfer_report_player_resolutions/);
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);

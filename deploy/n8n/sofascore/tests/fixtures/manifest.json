@@ -1,0 +1,244 @@
+{
+  "capture_date_utc": "2026-07-30T05:44:05.270613+00:00",
+  "fixtures": [
+    {
+      "bundle_sha256": "e9362bacc252f2d94f067936c7f89d7076d44a7c3c205d7eb12d42c47afc57d0",
+      "captured": true,
+      "endpoint_families": [
+        "player",
+        "search",
+        "unique-tournament"
+      ],
+      "fixture": "mbappe.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": "77559",
+      "provider_unique_tournament_id": "8",
+      "responses": [
+        {
+          "endpoint": "search/all?q=Kylian%20Mbapp%C3%A9",
+          "raw_response_sha256": "3d1cfe28513ee0d374be3495ce9a4fe3e9ea9acefad84f0afb70d09dcc28483d"
+        },
+        {
+          "endpoint": "player/826643",
+          "raw_response_sha256": "03686792bf7d767fb2cc3f916b9e4893d0bfd9f282cd0988a1b4a06692a886f5"
+        },
+        {
+          "endpoint": "unique-tournament/8/seasons",
+          "raw_response_sha256": "1028ce1f9b673b7aac0475de7cd2823abe2b5a65a6b280f95b69f6931090c290"
+        },
+        {
+          "endpoint": "unique-tournament/8",
+          "raw_response_sha256": "44777c1429db65d96b0544fbf47b2d798d6d901c6e0a147b4876275d936f2a04"
+        },
+        {
+          "endpoint": "player/826643/unique-tournament/8/season/77559/statistics/overall",
+          "raw_response_sha256": "a58d366426c58421cee2fdc7045429809e54ab1de5eee20ad2e750f50ac71430"
+        }
+      ],
+      "stable_player_id": "826643",
+      "subject_name": "Kylian Mbappé"
+    },
+    {
+      "bundle_sha256": "81e8784920ae44ec41a2805212ee5c9619d76b8ce1c25e68eb24f551b57e343d",
+      "captured": true,
+      "endpoint_families": [
+        "search"
+      ],
+      "fixture": "john_smith.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": null,
+      "provider_unique_tournament_id": null,
+      "responses": [
+        {
+          "endpoint": "search/all?q=John%20Smith",
+          "raw_response_sha256": "08be828dffa2164ae6f5a8c1de38dbd55d9e77ee274cb8efdacbe04a3c6eaa91"
+        }
+      ],
+      "stable_player_id": null,
+      "subject_name": "John Smith"
+    },
+    {
+      "bundle_sha256": "b7a44bcca7a3be948d443d2d650f6e08e06b517ee03b0fc219e57a403ba4d3f0",
+      "captured": true,
+      "endpoint_families": [
+        "player",
+        "search",
+        "unique-tournament"
+      ],
+      "fixture": "quang_hai.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": "78589",
+      "provider_unique_tournament_id": "626",
+      "responses": [
+        {
+          "endpoint": "search/all?q=Nguy%E1%BB%85n%20Quang%20H%E1%BA%A3i",
+          "raw_response_sha256": "3d2d930032611b8996ca0d03f6a82957f3cac5d6fc4b370d9273e615094827cb"
+        },
+        {
+          "endpoint": "player/845067",
+          "raw_response_sha256": "421601ca2fefed7896522d86728277963f19ce7d09aee4756ecd712e43c029c8"
+        },
+        {
+          "endpoint": "unique-tournament/626/seasons",
+          "raw_response_sha256": "5f00105239e5f11307b12d699643e062216982b5d71b4c727dab9246a4351579"
+        },
+        {
+          "endpoint": "unique-tournament/626",
+          "raw_response_sha256": "425225f33da6e19adcd1d31bdc946b7dc5e2b60e6f67f093397947e45ee7b022"
+        },
+        {
+          "endpoint": "player/845067/unique-tournament/626/season/78589/statistics/overall",
+          "raw_response_sha256": "ec70cb23154b52a28a3dd64654586de04b598ccfec22905e6b7966391c336322"
+        }
+      ],
+      "stable_player_id": "845067",
+      "subject_name": "Nguyễn Quang Hải"
+    },
+    {
+      "bundle_sha256": "b289cb9d5db5f5e71950678d3ae9281d4d2793370766a4b69672f3b031fa95f0",
+      "captured": true,
+      "endpoint_families": [
+        "player",
+        "search",
+        "unique-tournament"
+      ],
+      "fixture": "courtois.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": "77559",
+      "provider_unique_tournament_id": "8",
+      "responses": [
+        {
+          "endpoint": "search/all?q=Thibaut%20Courtois",
+          "raw_response_sha256": "21f475c4afcfef7ab22671436f0df3cf42d14e882a95f0ad0d65008d1bbfab0b"
+        },
+        {
+          "endpoint": "player/70988",
+          "raw_response_sha256": "a3e6ce77d7b3c83cbccd365b6b19daefe24c504bbd8cc81b3b0fbfdcd8faccb6"
+        },
+        {
+          "endpoint": "unique-tournament/8/seasons",
+          "raw_response_sha256": "1028ce1f9b673b7aac0475de7cd2823abe2b5a65a6b280f95b69f6931090c290"
+        },
+        {
+          "endpoint": "unique-tournament/8",
+          "raw_response_sha256": "44777c1429db65d96b0544fbf47b2d798d6d901c6e0a147b4876275d936f2a04"
+        },
+        {
+          "endpoint": "player/70988/unique-tournament/8/season/77559/statistics/overall",
+          "raw_response_sha256": "a7042110a35bfd7ab3cafa08e808ba5a4412d879b8ed033df5b61bbbe7b05d41"
+        }
+      ],
+      "stable_player_id": "70988",
+      "subject_name": "Thibaut Courtois"
+    },
+    {
+      "bundle_sha256": "3ac56f759a28cebf7dbdb730ceac50c0918b14902142deec4aac00e003a05564",
+      "captured": true,
+      "endpoint_families": [
+        "player",
+        "search",
+        "unique-tournament"
+      ],
+      "fixture": "semenyo.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": "76986",
+      "provider_unique_tournament_id": "17",
+      "responses": [
+        {
+          "endpoint": "search/all?q=Antoine%20Semenyo",
+          "raw_response_sha256": "ae306a0ee42d000f67d717b0b79abb3bd468076a2896bc93ea031595b997062e"
+        },
+        {
+          "endpoint": "player/934354",
+          "raw_response_sha256": "2929cac2a0e21321909fec4bf1f587e66cf0161924c6387297afdf371838c326"
+        },
+        {
+          "endpoint": "unique-tournament/17/seasons",
+          "raw_response_sha256": "68b763e80e5754c794bced9b0e6bc7006b1d4b39be380ff89ee11bbb3a9d38eb"
+        },
+        {
+          "endpoint": "unique-tournament/17",
+          "raw_response_sha256": "d29ac88aa182d2b92fe4645c9fa903fbd27ea70c36993c8eb8ed3e5c09aabdee"
+        },
+        {
+          "endpoint": "player/934354/unique-tournament/17/season/76986/statistics/overall",
+          "raw_response_sha256": "62f3aaf77d81bff32eff1f8bba05e32ffeb6139bdbde4038f81aca3e22352f43"
+        },
+        {
+          "endpoint": "player/934354/transfer-history",
+          "raw_response_sha256": "09789a322f647fae4c3caf2edb6b8666408b027c38e2353e470178106408016d"
+        }
+      ],
+      "stable_player_id": "934354",
+      "subject_name": "Antoine Semenyo"
+    },
+    {
+      "bundle_sha256": "88b2a47324a519fef9e3550451ee4ff09265dec70727787b1240513e0cea8604",
+      "captured": true,
+      "endpoint_families": [
+        "player",
+        "search",
+        "unique-tournament"
+      ],
+      "fixture": "wirtz.json",
+      "minimization_redaction": "Only fields consumed by the adapter or characterization assertions are retained; no request/response headers, cookies, credentials, or transport internals.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": "76986",
+      "provider_unique_tournament_id": "17",
+      "responses": [
+        {
+          "endpoint": "search/all?q=Florian%20Wirtz",
+          "raw_response_sha256": "b0864340c604c6f6e2b01b141278886e014f601cc4879a84d10545dd2500e3a6"
+        },
+        {
+          "endpoint": "player/1019322",
+          "raw_response_sha256": "7e41aaddde41f9128188aa17425267f401aa32fe4ad4aad4d680b251c758ff31"
+        },
+        {
+          "endpoint": "unique-tournament/17/seasons",
+          "raw_response_sha256": "68b763e80e5754c794bced9b0e6bc7006b1d4b39be380ff89ee11bbb3a9d38eb"
+        },
+        {
+          "endpoint": "unique-tournament/17",
+          "raw_response_sha256": "d29ac88aa182d2b92fe4645c9fa903fbd27ea70c36993c8eb8ed3e5c09aabdee"
+        },
+        {
+          "endpoint": "player/1019322/unique-tournament/17/season/76986/statistics/overall",
+          "raw_response_sha256": "502a8219176550a045a491e03e55d8209cb5e674e646d0327b726e67600c86ca"
+        },
+        {
+          "endpoint": "player/1019322/transfer-history",
+          "raw_response_sha256": "6136e7ae7a2b73f239afc47e9ba57b41a66d38d06fca70cb493a8f3ef077214f"
+        }
+      ],
+      "stable_player_id": "1019322",
+      "subject_name": "Florian Wirtz"
+    },
+    {
+      "bundle_sha256": "720ee2ee2293656d7c88898e73277d8ae07ab01af4acba5cdb319b7e2a59bfe3",
+      "captured": false,
+      "endpoint_families": [
+        "synthetic-failure"
+      ],
+      "fixture": "failures.json",
+      "minimization_redaction": "Synthetic failure values only; no live response data.",
+      "normalized_schema_version": "sofascore-player-v1",
+      "provider_season_id": null,
+      "provider_unique_tournament_id": null,
+      "responses": [],
+      "stable_player_id": null,
+      "subject_name": null,
+      "synthetic": true
+    }
+  ],
+  "minimization_redaction": "Parser-relevant public JSON fields only; headers, cookies, credentials, and transport internals excluded.",
+  "normalized_schema_version": "sofascore-player-v1",
+  "schema_version": "sofascore-fixtures-v1",
+  "soccerdata_version": "1.9.1",
+  "transport": "soccerdata.Sofascore inherited public get() only"
+}

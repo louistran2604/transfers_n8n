@@ -1,0 +1,168 @@
+{
+  "endpoints": [
+    {
+      "endpoint": "search/all?q=Nguy%E1%BB%85n%20Quang%20H%E1%BA%A3i",
+      "response": {
+        "results": [
+          {
+            "entity": {
+              "country": {
+                "name": "Vietnam"
+              },
+              "id": 845067,
+              "name": "Nguyễn Quang Hải",
+              "position": "M",
+              "team": {
+                "gender": "M",
+                "id": 193616,
+                "name": "Công An Hà Nội",
+                "national": false,
+                "primaryUniqueTournament": null,
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              }
+            },
+            "type": "player"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "player/845067",
+      "response": {
+        "player": {
+          "country": {
+            "name": "Vietnam"
+          },
+          "dateOfBirthTimestamp": 860803200,
+          "height": 168,
+          "id": 845067,
+          "name": "Nguyễn Quang Hải",
+          "position": "M",
+          "preferredFoot": "Left",
+          "proposedMarketValueRaw": {
+            "currency": "EUR",
+            "value": 435000
+          },
+          "team": {
+            "gender": "M",
+            "id": 193616,
+            "name": "Công An Hà Nội",
+            "national": false,
+            "primaryUniqueTournament": {
+              "category": {
+                "alpha2": "VN",
+                "name": "Vietnam",
+                "sport": {
+                  "id": 1,
+                  "slug": "football"
+                }
+              },
+              "id": 626,
+              "name": "V-League 1",
+              "slug": "v-league-1"
+            },
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          }
+        }
+      }
+    },
+    {
+      "endpoint": "unique-tournament/626/seasons",
+      "response": {
+        "seasons": [
+          {
+            "endDateTimestamp": null,
+            "id": 78589,
+            "name": "V-League 1 25/26",
+            "startDateTimestamp": null,
+            "year": "25/26"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 65000,
+            "name": "V-League 1 24/25",
+            "startDateTimestamp": null,
+            "year": "24/25"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 55929,
+            "name": "V-League 23/24",
+            "startDateTimestamp": null,
+            "year": "23/24"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 48065,
+            "name": "V-League 2023",
+            "startDateTimestamp": null,
+            "year": "2023"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 40370,
+            "name": "V-League 2022",
+            "startDateTimestamp": null,
+            "year": "2022"
+          },
+          {
+            "endDateTimestamp": null,
+            "id": 35252,
+            "name": "V-League 2021",
+            "startDateTimestamp": null,
+            "year": "2021"
+          }
+        ]
+      }
+    },
+    {
+      "endpoint": "unique-tournament/626",
+      "response": {
+        "uniqueTournament": {
+          "category": {
+            "alpha2": "VN",
+            "name": "Vietnam",
+            "sport": {
+              "id": 1,
+              "slug": "football"
+            }
+          },
+          "endDateTimestamp": 1781222400,
+          "gender": "M",
+          "id": 626,
+          "name": "V-League 1",
+          "slug": "v-league-1",
+          "startDateTimestamp": 1755216000,
+          "tier": null
+        }
+      }
+    },
+    {
+      "endpoint": "player/845067/unique-tournament/626/season/78589/statistics/overall",
+      "response": {
+        "statistics": {
+          "appearances": 24,
+          "assists": 6,
+          "cleanSheet": 0,
+          "goals": 3,
+          "matchesStarted": 24,
+          "minutesPlayed": 2160,
+          "rating": 7.4083333333333,
+          "saves": 0
+        }
+      }
+    }
+  ],
+  "subject": {
+    "name": "Nguyễn Quang Hải",
+    "provider_player_id": "845067",
+    "provider_season_id": "78589",
+    "provider_unique_tournament_id": "626"
+  }
+}
