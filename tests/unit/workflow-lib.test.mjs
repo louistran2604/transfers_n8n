@@ -200,7 +200,37 @@ test('enrichment grouping uses provider ID or Unicode name and club context, nev
     'name:kylian mbappé|club:real madrid',
   ]);
   assert.deepEqual(grouped.request.players[0].report_ids, ['10', '11']);
+  assert.equal(grouped.request.players[0].current_club_name, 'Real Madrid');
+  assert.equal(grouped.request.players[1].current_club_name, 'Real Madrid');
   assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
+});
+
+test('generated enrichment request preserves the current-club discriminator', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const context = {
+    transfer_report_id: '10',
+    reported_player_name: 'Kylian Mbappé',
+    current_club_name: 'Real Madrid',
+    destination_club_name: 'Liverpool',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+    team_mapping_fresh: false,
+    season_mapping_fresh: false,
+  };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const output = await runRequest({ all: () => [{ json: context }] }, (name) => {
+    assert.equal(name, 'Prepare enrichment batch query');
+    return { first: () => ({ json: { mode: 'shadow', workflow_run_id: '1' } }) };
+  });
+  const player = output[0].json.request.players[0];
+  assert.equal(player.item_key, 'name:kylian mbappé|club:real madrid');
+  assert.equal(player.current_club_name, 'Real Madrid');
+  assert.deepEqual(player.report_ids, ['10']);
 });
 
 test('enrichment response normalization converts contract failures into one sanitized result per request item', () => {
@@ -248,6 +278,126 @@ test('enrichment response normalization converts contract failures into one sani
   const failed = normalizeEnrichmentResponse(request, { statusCode: 200, body: 'not-json' });
   assert.deepEqual(failed.items[0].error, { code: 'enrichment_response_not_json' });
   assert.equal(failed.items[0].identity, null);
+});
+
+test('enrichment response normalization preserves valid search candidates with only safe fields', () => {
+  const request = {
+    request_id: 'sofascore:candidates',
+    players: [{ item_key: 'name:john smith|club:current fc', reported_name: 'John Smith', report_ids: ['10'], request_context: {} }],
+  };
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: {
+      request_id: request.request_id,
+      items: [{
+        item_key: request.players[0].item_key,
+        status: 'ambiguous',
+        identity: null,
+        profile: null,
+        statistics: null,
+        candidates: [{
+          provider_player_id: '2544168',
+          canonical_name: 'John Smith',
+          score: 50,
+          raw_query_payload: { entity: { id: '2544168' } },
+        }],
+      }],
+    },
+  });
+  assert.deepEqual(normalized.items[0].candidates, [
+    { provider_player_id: '2544168', canonical_name: 'John Smith', score: 50 },
+  ]);
+});
+
+test('enrichment response normalization bounds search candidates to five entries', () => {
+  const request = {
+    request_id: 'sofascore:candidate-limit',
+    players: [{ item_key: 'provider:1', reported_name: 'Player', report_ids: ['11'], request_context: {} }],
+  };
+  const candidates = Array.from({ length: 7 }, (_, index) => ({
+    provider_player_id: String(index + 1),
+    canonical_name: `Player ${index + 1}`,
+    score: 50 - index,
+  }));
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', identity: null, profile: null, statistics: null, candidates }] },
+  });
+  assert.deepEqual(normalized.items[0].candidates, candidates.slice(0, 5));
+});
+
+test('enrichment response normalization omits malformed search candidates', () => {
+  const request = {
+    request_id: 'sofascore:candidate-safety',
+    players: [{ item_key: 'provider:2', reported_name: 'Player', report_ids: ['12'], request_context: {} }],
+  };
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: {
+      request_id: request.request_id,
+      items: [{
+        item_key: 'provider:2',
+        status: 'unresolved',
+        identity: null,
+        profile: null,
+        statistics: null,
+        candidates: [
+          { provider_player_id: 'not-a-decimal-id', canonical_name: 'Bad ID', score: 50 },
+          { provider_player_id: '2', canonical_name: '', score: 50 },
+          { provider_player_id: '3', canonical_name: 'Bad score', score: '50' },
+          { provider_player_id: '4', canonical_name: 'Non-finite score', score: Infinity },
+          { provider_player_id: 6, canonical_name: 'Numeric ID', score: 50 },
+          { provider_player_id: '7', canonical_name: 'Negative score', score: -1 },
+          { provider_player_id: '8', canonical_name: 'High score', score: 101 },
+          { provider_player_id: '5', canonical_name: ' Valid Name ', score: 0, raw_query_payload: { results: [] } },
+        ],
+      }],
+    },
+  });
+  assert.deepEqual(normalized.items[0].candidates, [
+    { provider_player_id: '5', canonical_name: 'Valid Name', score: 0 },
+  ]);
+});
+
+test('generated enrichment normalization uses the same bounded candidate contract', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const normalizeNode = workflow.nodes.find((node) => node.name === 'Normalize soccerdata enrichment result');
+  const request = {
+    request_id: 'sofascore:generated-candidates',
+    players: [{ item_key: 'provider:3', reported_name: 'Player', report_ids: ['13'], request_context: {} }],
+  };
+  const body = {
+    request_id: request.request_id,
+    items: [{
+      item_key: 'provider:3',
+      status: 'unresolved',
+      identity: null,
+      profile: null,
+      statistics: null,
+      candidates: [
+        { provider_player_id: 'bad', canonical_name: 'Bad ID', score: 50 },
+        ...Array.from({ length: 6 }, (_, index) => ({
+          provider_player_id: String(index + 10),
+          canonical_name: ` Player ${index + 10} `,
+          score: 50 - index,
+          raw_query_payload: { results: [] },
+        })),
+      ],
+    }],
+  };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runNormalize = new AsyncFunction('$json', '$', normalizeNode.parameters.jsCode);
+  const output = await runNormalize({ statusCode: 200, body }, (name) => {
+    assert.equal(name, 'Build soccerdata enrichment request');
+    return { first: () => ({ json: { request, workflow_run_id: '1' } }) };
+  });
+  assert.deepEqual(output[0].json.normalized.items[0].candidates, [
+    { provider_player_id: '10', canonical_name: 'Player 10', score: 50 },
+    { provider_player_id: '11', canonical_name: 'Player 11', score: 49 },
+    { provider_player_id: '12', canonical_name: 'Player 12', score: 48 },
+    { provider_player_id: '13', canonical_name: 'Player 13', score: 47 },
+    { provider_player_id: '14', canonical_name: 'Player 14', score: 46 },
+  ]);
 });
 
 test('retry timing honors server headers within a bounded exponential backoff policy', () => {
@@ -837,6 +987,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const candidatesNode = workflow.nodes.find((node) => node.name === 'Find undelivered revisions');
   const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
   const contextNode = workflow.nodes.find((node) => node.name === 'Load player enrichment contexts');
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
   const enrichNode = workflow.nodes.find((node) => node.name === 'Enrich players via soccerdata');
   const persistEnrichmentNode = workflow.nodes.find((node) => node.name === 'Persist soccerdata enrichment result');
   const deliveryRequestNode = workflow.nodes.find((node) => node.name === 'Build Discord delivery request');
@@ -879,7 +1030,11 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
   assert.match(candidatesNode.parameters.query, /dd\.request_payload AS pending_request_payload/);
   assert.match(candidatesNode.parameters.query, /current_player_enrichment/);
-  assert.match(candidatesNode.parameters.query, /\$3::text = 'active'/);
+  assert.match(candidatesNode.parameters.query, /CASE WHEN \$3::text = 'active' THEN/);
+  assert.match(candidatesNode.parameters.query, /'canonical_name'/);
+  assert.match(candidatesNode.parameters.query, /'current_club_name'/);
+  assert.match(candidatesNode.parameters.query, /'goals'/);
+  assert.match(candidatesNode.parameters.query, /'statistics'/);
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
@@ -903,12 +1058,15 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(persistEnrichmentNode.parameters.query, /\|\| \(expanded\.item->>'item_key'\) \|\| ':' \|\|/);
   assert.match(persistEnrichmentNode.parameters.query, /jsonb_typeof\(item->'profile'\) = 'object'/);
   assert.match(persistEnrichmentNode.parameters.query, /jsonb_typeof\(item->'statistics'\) = 'object'/);
+  assert.match(persistEnrichmentNode.parameters.query, /'candidate_count'/);
+  assert.match(persistEnrichmentNode.parameters.query, /'candidates'/);
   assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'profile' IS NOT NULL/);
   assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'statistics' IS NOT NULL/);
   assert.match(mergeReportsNode.parameters.query, /transfer_report_player_resolutions/);
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
+  assert.match(requestNode.parameters.jsCode, /current_club_name: typeof context\.current_club_name === 'string'/);
   assert.equal(runNode.parameters.options.queryReplacement, '={{ $json.params }}');
   assert.equal(recoveryNode.parameters.options.queryReplacement, undefined);
   assert.equal(

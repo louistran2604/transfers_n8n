@@ -687,7 +687,19 @@ attempts AS (
     COALESCE((expanded.item->>'provider_calls')::integer, 0),
     COALESCE((expanded.item->>'cache_hits')::integer, 0),
     COALESCE(expanded.item->'request_context', '{}'::jsonb),
-    jsonb_build_object('warning_codes', COALESCE(expanded.item->'warning_codes', '[]'::jsonb)),
+    jsonb_build_object(
+      'warning_codes', COALESCE(expanded.item->'warning_codes', '[]'::jsonb),
+      'candidate_count', CASE
+        WHEN jsonb_typeof(expanded.item->'candidates') = 'array'
+          THEN jsonb_array_length(expanded.item->'candidates')
+        ELSE 0
+      END,
+      'candidates', CASE
+        WHEN jsonb_typeof(expanded.item->'candidates') = 'array'
+          THEN expanded.item->'candidates'
+        ELSE '[]'::jsonb
+      END
+    ),
     expanded.item->'error'->>'code',
     CASE WHEN expanded.item->'error'->>'code' IS NULL THEN NULL
       ELSE (expanded.item->>'item_key') || ':' || (expanded.item->'error'->>'code') END,
@@ -1204,6 +1216,7 @@ if (mode !== 'off') {
       item_key: itemKey,
       reported_name: reportedName,
       known_provider_player_id: providerId || null,
+      current_club_name: typeof context.current_club_name === 'string' ? context.current_club_name.trim() : null,
       report_ids: [reportId],
       aliases: [...new Set(aliases.filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
       identity_overrides: overrides,
@@ -1244,9 +1257,22 @@ const failure = (player, code) => ({
   identity: null,
   profile: null,
   statistics: null,
+  candidates: [],
   error: { code },
 });
 const failAll = (code) => ({ request_id: request?.request_id ?? '', items: players.map((player) => failure(player, code)) });
+const normalizeEnrichmentCandidates = (candidates) => {
+  if (!Array.isArray(candidates)) return [];
+  const normalized = [];
+  for (const candidate of candidates) {
+    const providerPlayerId = typeof candidate?.provider_player_id === 'string' ? candidate.provider_player_id : '';
+    const canonicalName = typeof candidate?.canonical_name === 'string' ? candidate.canonical_name.trim() : '';
+    if (!/^\\d+$/.test(providerPlayerId) || !canonicalName || typeof candidate?.score !== 'number' || !Number.isFinite(candidate.score) || candidate.score < 0 || candidate.score > 100) continue;
+    normalized.push({ provider_player_id: providerPlayerId, canonical_name: canonicalName, score: candidate.score });
+    if (normalized.length === 5) break;
+  }
+  return normalized;
+};
 const allowed = new Set(['cache_hit', 'fresh', 'partial', 'unresolved', 'ambiguous', 'deferred', 'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'unsupported_competition', 'missing_season', 'club_conflict', 'unattached']);
 let normalized;
 const statusCode = Number($json.statusCode ?? (typeof $json.status === 'number' ? $json.status : 200));
@@ -1312,6 +1338,7 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
               raw_cache_key: providerId ? 'statistics-' + providerId + '-' + item.statistics.provider_unique_tournament_id + '-' + item.statistics.provider_season_id : null,
               raw_payload: rawStatistics,
             } : null,
+            candidates: normalizeEnrichmentCandidates(item.candidates),
             warning_codes: Array.isArray(item.warnings) ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean) : [],
             error: item.error && typeof item.error === 'object' ? { code: String(item.error.code ?? 'enrichment_failed').slice(0, 100) } : null,
           };

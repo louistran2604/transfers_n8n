@@ -217,6 +217,9 @@ export function buildEnrichmentRequest(contexts, {
       item_key: itemKey,
       reported_name: reportedName,
       known_provider_player_id: knownProviderId || null,
+      current_club_name: typeof context.current_club_name === 'string'
+        ? context.current_club_name.trim()
+        : null,
       report_ids: [reportId],
       aliases: [...new Set((Array.isArray(context.aliases) ? context.aliases : [])
         .filter((alias) => typeof alias === 'string' && alias.trim())
@@ -266,8 +269,37 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     identity: null,
     profile: null,
     statistics: null,
+    candidates: [],
     error: { code },
   };
+}
+
+function normalizeEnrichmentCandidates(candidates) {
+  if (!Array.isArray(candidates)) return [];
+  const normalized = [];
+  for (const candidate of candidates) {
+    const providerPlayerId = typeof candidate?.provider_player_id === 'string'
+      ? candidate.provider_player_id
+      : '';
+    const canonicalName = typeof candidate?.canonical_name === 'string'
+      ? candidate.canonical_name.trim()
+      : '';
+    if (
+      !DECIMAL_ID.test(providerPlayerId)
+      || !canonicalName
+      || typeof candidate?.score !== 'number'
+      || !Number.isFinite(candidate.score)
+      || candidate.score < 0
+      || candidate.score > 100
+    ) continue;
+    normalized.push({
+      provider_player_id: providerPlayerId,
+      canonical_name: canonicalName,
+      score: candidate.score,
+    });
+    if (normalized.length === 5) break;
+  }
+  return normalized;
 }
 
 function enrichmentHash(value) {
@@ -406,6 +438,7 @@ export function normalizeEnrichmentResponse(request, response) {
             : null,
           raw_payload: rawStatistics,
         } : null,
+        candidates: normalizeEnrichmentCandidates(item.candidates),
         warning_codes: Array.isArray(item.warnings)
           ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean)
           : [],

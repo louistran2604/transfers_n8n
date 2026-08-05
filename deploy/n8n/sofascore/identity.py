@@ -8,6 +8,15 @@ from models import DECIMAL_ID
 
 
 RESOLVER_VERSION = "identity-v1"
+NON_DISCRIMINATING_CLUB_KEYS = {
+    "",
+    "free agent",
+    "no team",
+    "not reported",
+    "n a",
+    "unattached",
+    "unknown",
+}
 
 
 def unicode_exact_key(value: str) -> str:
@@ -114,12 +123,29 @@ def _football_player(entry: Any) -> bool:
     return not any(marker in team_name.split() for marker in ("women", "u17", "u19", "u21", "u23"))
 
 
+def _reported_club_matches(reported_club_name: Any, team: dict[str, Any]) -> bool:
+    if not isinstance(reported_club_name, str) or not isinstance(team.get("name"), str):
+        return False
+    reported_exact = unicode_exact_key(reported_club_name)
+    candidate_exact = unicode_exact_key(team["name"])
+    if (
+        reported_exact in NON_DISCRIMINATING_CLUB_KEYS
+        or candidate_exact in NON_DISCRIMINATING_CLUB_KEYS
+    ):
+        return False
+    return (
+        candidate_exact == reported_exact
+        or accent_folded_key(team["name"]) == accent_folded_key(reported_club_name)
+    )
+
+
 def resolve_search(
     reported_name: str,
     search_payload: dict[str, Any],
     *,
     aliases: list[str] | None = None,
     provider_team_id: str | None = None,
+    reported_club_name: str | None = None,
     rejected_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     exact = unicode_exact_key(reported_name)
@@ -146,7 +172,12 @@ def resolve_search(
         else:
             continue
         team = entity.get("team") or {}
-        if provider_team_id and str(team.get("id", "")) == provider_team_id:
+        team_discriminator_matches = (
+            str(team.get("id", "")) == provider_team_id
+            if provider_team_id
+            else _reported_club_matches(reported_club_name, team)
+        )
+        if team_discriminator_matches:
             score += 30
         candidates.append(
             {

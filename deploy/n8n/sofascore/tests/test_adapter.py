@@ -351,6 +351,38 @@ class AdapterNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(3, result["provider_calls"])
 
+    def test_empty_identity_map_bootstraps_profile_statistics_with_bounded_cache_calls(self):
+        item = {
+            "item_key": "name:kylian-mbappe|club:real-madrid",
+            "reported_name": "Kylian Mbappé",
+            "current_club_name": "Real Madrid",
+            "aliases": [],
+        }
+        result = self.adapter.enrich(item)
+
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("826643", result["identity"]["provider_player_id"])
+        self.assertEqual(80, result["identity"]["score"])
+        self.assertEqual("Real Madrid", result["profile"]["current_club"]["name"])
+        self.assertEqual(25, result["statistics"]["goals"])
+        self.assertEqual(5, result["provider_calls"])
+        self.assertEqual(
+            [
+                "search/all?q=Kylian%20Mbapp%C3%A9",
+                "player/826643",
+                "unique-tournament/8",
+                "unique-tournament/8/seasons",
+                "player/826643/unique-tournament/8/season/77559/statistics/overall",
+            ],
+            [call["endpoint"] for call in self.transport.calls],
+        )
+
+        cached = self.adapter.enrich(item)
+        self.assertEqual("fresh", cached["status"])
+        self.assertEqual(3, cached["provider_calls"])
+        self.assertEqual("hit", cached["provenance"]["profile_cache"])
+        self.assertEqual("hit", cached["provenance"]["statistics_cache"])
+
     def test_mistyped_profile_and_statistics_envelopes_fail_closed(self):
         profile_endpoint = "player/826643"
         self.transport.register(profile_endpoint, {"player": []})

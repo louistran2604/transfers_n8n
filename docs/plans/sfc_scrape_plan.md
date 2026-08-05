@@ -454,6 +454,7 @@ Deterministic score:
 | Unicode-exact or accent-folded name | 50 | Required unless an explicit alias supplies name evidence |
 | Explicit active name/transliteration alias | 45 | Alternative name evidence, not added to exact name |
 | Provider current team matches mapped report current club | 30 | Club aliases must resolve to the same provider team ID |
+| Provider search candidate team name matches the reported current club without a mapping | 30 | Exact normalized provider team-name match only; generic labels do not qualify and an existing mapping takes precedence |
 | Provider team matches report destination | 30 | Only for `official_confirmed` or `loan`; rumor destinations do not qualify |
 | Trusted DOB exact match | 30 | Existing internal/manual evidence only |
 | Trusted nationality match | 10 | Supporting only |
@@ -465,7 +466,7 @@ Automatic resolution requires all of:
 
 - score at least 80;
 - exact/folded/explicit-alias name evidence;
-- one independent discriminator: exact mapped club or exact DOB;
+- one independent discriminator: exact mapped club, exact provider search team-name match to the reported current club when no mapping exists, or exact DOB;
 - at least a 15-point lead over every other eligible candidate.
 
 A tie or insufficient lead is `ambiguous`. A low score is `unresolved`. John Smith name-only candidates remain unmapped.
@@ -1789,6 +1790,16 @@ Implementation status (2026-08-01): **completed for the required offline boundar
 - all four Compose configuration checks, the Sofascore image build, migration/rollback suite, Docker smoke suite, and E2E suite passed;
 - final review found no scope expansion, secret-like additions, public Sofascore port, generated-workflow drift, migration-001 change, or idempotency regression;
 - live acceptance remains intentionally unrun and requires both provider-policy approval and its explicit opt-in flags; no activation, push, merge, publication, or pull request occurred.
+
+### Recovered rollout status (2026-08-05)
+
+Recovery found that the original shadow data covered 12 attempt-bearing runs over 78 hours: 186 attempts (33 ambiguous, 153 unresolved), 0 resolutions/profiles/stats, and 10 transfer-only digests. The cause was an identity-resolution gap: exact player names scored only 50 when no authoritative provider team mapping existed, and the workflow did not send the reported current club needed for a safe team-name discriminator.
+
+The repair now carries `current_club_name` into identity resolution and awards the existing 30-point club discriminator only for an exact normalized provider search team-name match when no authoritative mapping exists. Existing mappings remain authoritative, generic club labels do not qualify, and the score threshold (80) and lead margin (15) remain unchanged. The full verification passed: workflow generation checked 78 sources and 2 workflow files, Node tests passed 35/35, Python tests passed 60 with 1 expected skip, E2E and all Compose configuration checks passed, and adversarial resolver checks confirmed exact-club resolution, ambiguity rejection, generic-label rejection, accent folding, and mapping precedence.
+
+Production activation completed on 2026-08-05. The private service was rebuilt and is healthy, `PLAYER_ENRICHMENT_MODE=active` is effective in the n8n container, and the live main workflow is published and active at version `b8f05d27-d0ee-4f1c-aee3-472a79f933d4`. Controlled live provider checks resolved Mbappé/Real Madrid and Pedro Neto/Chelsea at score 80 with profile and current-season statistics, while Christian Früchtl/US Lecce remained safely unresolved at score 50. Executing the deployed formatter with Pedro Neto's live result, without calling Discord, rendered the profile and Premier League statistics and kept the journalist link last. Therefore player enrichment is enabled in the live digest path; this evidence does not claim that an enriched Discord message has already been sent.
+
+Operational follow-up: inspect the next scheduled digest execution for correct identity, profile/stat rendering, provider calls, latency, and exactly-once delivery. Historical unresolved/ambiguous contexts may remain in their 24-hour cooldown before being retried. Roll back to `shadow` or `off` immediately for a wrong identity, enrichment-caused digest failure/duplicate, reserved-payload mutation, repeated timeout/circuit behavior, or provider-policy concern.
 
 ## 12. Test strategy
 

@@ -344,6 +344,7 @@ class SofascoreAdapter:
                 search,
                 aliases=item.get("aliases"),
                 provider_team_id=(item.get("team_mapping") or {}).get("provider_team_id"),
+                reported_club_name=item.get("current_club_name"),
                 rejected_player_ids=rejected_player_ids,
             )
             if resolution["status"] != "resolved" and item.get("aliases"):
@@ -360,6 +361,7 @@ class SofascoreAdapter:
                     provider_team_id=(item.get("team_mapping") or {}).get(
                         "provider_team_id"
                     ),
+                    reported_club_name=item.get("current_club_name"),
                     rejected_player_ids=rejected_player_ids,
                 )
             if resolution["status"] != "resolved":

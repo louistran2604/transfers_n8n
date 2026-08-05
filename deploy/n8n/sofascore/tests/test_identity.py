@@ -47,6 +47,25 @@ class IdentityTests(unittest.TestCase):
         self.assertGreaterEqual(resolved["identity"]["score"], 80)
         self.assertGreaterEqual(resolved["identity"]["margin"], 15)
 
+    def test_exact_reported_club_bootstraps_an_empty_identity_map(self):
+        resolved = resolve_search(
+            "Kylian Mbappé",
+            search_payload("mbappe.json"),
+            reported_club_name="Real Madrid",
+        )
+        self.assertEqual("resolved", resolved["status"])
+        self.assertEqual("826643", resolved["identity"]["provider_player_id"])
+        self.assertEqual(80, resolved["identity"]["score"])
+        self.assertEqual(80, resolved["identity"]["margin"])
+
+        mismatched = resolve_search(
+            "Kylian Mbappé",
+            search_payload("mbappe.json"),
+            reported_club_name="Paris Saint-Germain",
+        )
+        self.assertEqual("unresolved", mismatched["status"])
+        self.assertNotIn("identity", mismatched)
+
     def test_duplicate_exact_names_are_ambiguous_and_bounded(self):
         result = resolve_search("John Smith", search_payload("john_smith.json"))
         self.assertEqual("ambiguous", result["status"])
@@ -55,6 +74,14 @@ class IdentityTests(unittest.TestCase):
             {"2544168", "2332241"},
             {candidate["provider_player_id"] for candidate in result["candidates"]},
         )
+
+        mismatched = resolve_search(
+            "John Smith",
+            search_payload("john_smith.json"),
+            reported_club_name="Unrelated FC",
+        )
+        self.assertEqual("ambiguous", mismatched["status"])
+        self.assertNotIn("identity", mismatched)
 
     def test_explicit_alias_can_resolve_but_fuzzy_name_cannot(self):
         payload = search_payload("mbappe.json")
