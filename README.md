@@ -1,6 +1,6 @@
 # Football Transfer Monitor
 
-An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector. Optional fixture-tested player enrichment uses `soccerdata==1.9.1` with Sofascore and is disabled by default.
+An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector. Fixture-tested player enrichment uses `soccerdata==1.9.1` with Sofascore; first-time setup remains fail-safe with enrichment off, while the current production deployment runs in `active` mode.
 
 The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` GMT+7.
 
@@ -189,7 +189,7 @@ After the sample path succeeds:
 3. Confirm Qwen validation, report persistence, digest reservation, and Discord finalization are green.
 4. Activate the main workflow to enable the four scheduled daily runs.
 
-This activates transfer monitoring, not player enrichment. Keep `PLAYER_ENRICHMENT_MODE=off`; `shadow` and `active` remain blocked until the provider-policy, complete test, resource, and rollout gates below pass.
+Workflow activation enables the scheduled transfer monitor. Player enrichment is controlled separately by `PLAYER_ENRICHMENT_MODE`; keep first-time and unreviewed deployments at `off`, then use the rollout procedure below when enabling the already approved `active` production path.
 
 ## Workflow behavior
 
@@ -235,7 +235,7 @@ contract renewal
 
 Reports are grouped by canonical player/current-club/destination direction. The best source wins, missing values can be filled from lower-tier sources, and conflicting values remain in `normalized_data.conflicts`. A revision is created only when the material snapshot changes.
 
-### Optional player enrichment
+### Player enrichment
 
 `PLAYER_ENRICHMENT_MODE` has three values:
 
@@ -247,18 +247,39 @@ Reports are grouped by canonical player/current-club/destination direction. The 
 
 A missing or invalid value behaves as `off`. Context, service, validation, and enrichment-persistence failures rejoin digest candidate loading. If core PostgreSQL is healthy, even complete enrichment failure still sends one transfer-only digest.
 
-Enrichment does not enter the transfer material hash. Profile or statistics refreshes create no transfer revision and cannot resend a delivered revision. In `active`, failure-gated stale attached-player profiles and statistics may render only within 72 hours of provider retrieval; explicitly unattached profiles may render within 7 days. Stale content is labeled, and unresolved, ambiguous, unavailable, or null content is omitted without an error line.
+Identity resolution uses a known provider ID when available. Otherwise, it requires an exact or configured player alias plus an independent club discriminator. The resolver considers both the reported current club and destination club, and treats only safe trailing organization suffixes such as `AFC`, `CF`, `CP`, `FC`, and `SC` as equivalent. It never falls back to player name alone; low scores and close duplicate-name candidates remain unresolved or ambiguous.
+
+The provider request is capped at 25 distinct player groups. Before applying that cap, the workflow uses the same broad priority as the digest: digest-eligible reports first, then confirmed moves, Romano/Ornstein reports, huge rumors, €70m/£70m rumors, source tier/reliability, classification, and confidence. This prevents database ID order from excluding a digest-visible high-priority player.
+
+Eligible enrichment can include:
+
+- Profile: current club, nationality, age, primary position, and Sofascore market value.
+- Profile details: date of birth, height, and preferred foot.
+- Competition statistics: appearances, minutes, goals, assists, starts, minutes per appearance, expected goals, expected assists, and average rating.
+- Other statistics: yellow/red cards, goalkeeper clean sheets, and saves.
+
+Enrichment does not enter the transfer material hash. Profile or statistics refreshes create no transfer revision and cannot resend a delivered revision. In `active`, failure-gated stale attached-player profiles and statistics may render only within 72 hours of provider retrieval; explicitly unattached profiles may render within 7 days. Stale content is labeled. Null, failed, unavailable, ambiguous, unresolved, or expired enrichment is omitted, leaving the original transfer-only story without an error or empty heading.
 
 ### Discord digest
 
 Each story includes every meaningful non-null extracted detail that fits:
 
-- Club direction, identity hint, classification, and move type.
+- Club direction, classification, and move type.
 - Fee, add-ons, release clause, contract length, and contract expiry.
 - Loan end, purchase option/obligation, and sell-on percentage.
 - Medical status, agreement status, confidence, and linked source.
 
 Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and canonical player/destination, so simultaneous links to different destinations remain separate stories. A material update appears as a new entry in the next digest, unless an `official_confirmed` story for that player/destination was sent in the previous seven days; `rejected_failed` always bypasses that cooldown. The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It admits the first 15 distinct stories, then up to three extra stories only when they are confirmed or reported by Romano/Ornstein. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
+
+When valid enrichment exists, it appears below the transfer facts under `**Player profile & statistics**` and before the linked source. Competition statistics use one compact dynamic line, for example:
+
+```text
+Serie A 25/26 - all clubs: 28 app · 2,184 min · 12 G · 7 A · 24 starts · 78 min/app · 10.42 xG · 6.18 xA · 7.31 rating
+```
+
+Primary and formerly advanced metrics share that line; there is no separate `Advanced:` label. Fresh statistics containing only card or goalkeeper values still retain a `Competition Season - all clubs` context line before `Other:`.
+
+The formatter budgets enrichment before admitting each story into the embed. It tries whole groups in this order: compact profile, merged competition statistics, profile details, then other statistics. An oversized group is skipped without stopping smaller later groups, source links remain last and untruncated, and no empty enrichment heading is emitted. Under the 6,000-character aggregate limit, fully budgeted enriched stories may reduce the number of stories included rather than silently stripping valid enrichment from already admitted stories.
 
 ### Retry and delivery safety
 
@@ -267,6 +288,8 @@ RapidAPI retries up to five times and Qwen retries up to three times. Retry timi
 A revision is reserved in PostgreSQL before the Discord request. The workflow sends one webhook request with `wait=true` and records the returned Discord message ID only after success. If n8n stops after sending but before recording the response, recovery changes `sending` to `unknown` and never automatically resends it. This prefers a possible missed digest over a duplicate message.
 
 Discord retries are allowed only after an explicit HTTP `429` or `5xx`. An interrupted request is not proof that Discord rejected it.
+
+A pending delivery keeps the exact Discord payload reserved on its first attempt. Retries reuse that frozen payload; later profile/statistics refreshes do not mutate it or add enrichment retroactively.
 
 ## Operations
 
@@ -324,9 +347,28 @@ Start in dependency order: support, Qwen, then n8n. The workflow’s recovery st
 
 ### Enrichment rollout and rollback
 
-Keep mode off while building the service, applying migration 002, importing workflows, and checking private health/readiness. Live and shadow requests require provider access-policy approval. Active mode additionally requires the complete offline suite, approved gated live acceptance, 8 reviewed shadow runs over 2 days, identity/mapping review, forced-failure delivery proof, and measured 25-item CPU/RSS/latency within the initial 1 CPU/1 GiB limit.
+The production rollout has completed its provider-policy, offline-suite, live-acceptance, shadow-run, identity/mapping, failure-delivery, and resource gates, and currently runs with `PLAYER_ENRICHMENT_MODE=active`. New installations should still start at `off`; do not infer approval for a different provider, environment, or resource profile.
 
-Resource limits must be changed only from measurements. Provider-policy approval and resource measurement are activation blockers, not defaults to infer.
+After setting `PLAYER_ENRICHMENT_MODE=active` in the ignored `deploy/n8n/.env`, deploy the reviewed service and generated main workflow with:
+
+```bash
+docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml up -d --force-recreate sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read().decode())"
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
+docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n import:workflow --input=/workflows/football-transfer-monitor.json
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n publish:workflow --id=football-transfer-monitor
+docker compose -f deploy/n8n/compose.yaml restart n8n
+curl --fail http://127.0.0.1:5678/healthz
+docker compose -f deploy/n8n/compose.yaml logs --tail=100 n8n
+```
+
+The import command temporarily deactivates the workflow; publishing and restarting n8n make the new current version active. Confirm the logs contain `Activated workflow "Football Transfer Monitor"`, Compose reports `sofascore-enrichment` as healthy, and `/readyz` reports package, native library, fixture, cache, and worker readiness with a closed circuit. Resource limits must be changed only from measurements.
 
 Rollback is application-first:
 
@@ -414,7 +456,7 @@ Confirm the **Digest reserved** true branch ran, the webhook environment variabl
 - Both collectors request only the latest 20 posts per account; a long outage can permanently miss older posts.
 - Live manual tests can consume RapidAPI quota or dedicated X-account capacity and can send real Discord messages.
 - Local Qwen extraction quality depends on the model and quantization; strict validation rejects malformed output.
-- Live or shadow Sofascore use remains blocked until provider access policy is approved and the documented test/resource gates pass.
+- Sofascore data availability is not guaranteed; provider failures, unsupported competitions, missing seasons, ambiguous identities, and unresolved players intentionally produce transfer-only output.
 - `unknown` Discord deliveries require human review because automatic resend could duplicate a message.
 - The source registry is fixed at 78 accounts until the generator and documentation are deliberately updated.
 
