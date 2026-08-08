@@ -234,6 +234,15 @@ SELECT
   tr.destination_club_name,
   tr.classification,
   tr.move_type,
+  tr.fee_amount,
+  tr.fee_currency,
+  tr.confidence,
+  COALESCE((latest_revision.snapshot->>'is_huge_rumor')::boolean, false) AS is_huge_rumor,
+  COALESCE((latest_revision.snapshot->>'is_digest_worthy')::boolean, false) AS is_digest_worthy,
+  source.username AS source_username,
+  source.display_name AS source_name,
+  source.priority_rank AS source_priority_rank,
+  source.reliability_score AS source_reliability_score,
   provider_id.provider_player_id,
   current.profile_snapshot_id::text,
   current.current_provider_team_id::text AS profile_current_provider_team_id,
@@ -266,6 +275,18 @@ SELECT
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
+JOIN LATERAL (
+  SELECT revision.snapshot
+  FROM transfer_report_revisions revision
+  WHERE revision.transfer_report_id = tr.id
+  ORDER BY revision.revision_number DESC, revision.id DESC
+  LIMIT 1
+) latest_revision ON true
+LEFT JOIN transfer_report_sources preferred_source
+  ON preferred_source.transfer_report_id = tr.id
+ AND preferred_source.is_preferred
+LEFT JOIN raw_posts post ON post.id = preferred_source.raw_post_id
+LEFT JOIN source_accounts source ON source.id = post.source_account_id
 LEFT JOIN transfer_report_player_resolutions resolution
   ON resolution.transfer_report_id = tr.id
 LEFT JOIN player_provider_ids provider_id
@@ -1206,15 +1227,35 @@ if (mode !== 'off') {
       && Number.isFinite(latestStarted)
       && latestStarted > now - 86400000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
 }
+const enrichmentPriority = ({ context }) => {
+  if (context.classification === 'official_confirmed') return 0;
+  const username = String(context.source_username ?? '').toLowerCase();
+  const displayName = String(context.source_name ?? '').trim().toLowerCase();
+  if (username === 'fabrizioromano' || username === 'david_ornstein' || displayName === 'fabrizio romano' || displayName === 'david ornstein') return 1;
+  if (context.classification === 'rumor' && context.is_huge_rumor === true) return 2;
+  if (context.classification === 'rumor' && Number(context.fee_amount) >= 70000000 && ['EUR', 'GBP'].includes(String(context.fee_currency ?? '').toUpperCase())) return 3;
+  return 4;
+};
+const classificationWeight = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
+preparedContexts.sort((left, right) => {
+  const eligible = ({ context }) => context.is_digest_worthy === true && namedContext(context.current_club_name) && namedContext(context.destination_club_name);
+  return Number(eligible(right)) - Number(eligible(left))
+    || enrichmentPriority(left) - enrichmentPriority(right)
+    || Number(left.context.source_priority_rank ?? 100) - Number(right.context.source_priority_rank ?? 100)
+    || Number(right.context.source_reliability_score ?? 0) - Number(left.context.source_reliability_score ?? 0)
+    || (classificationWeight[right.context.classification] ?? 0) - (classificationWeight[left.context.classification] ?? 0)
+    || Number(right.context.confidence ?? 0) - Number(left.context.confidence ?? 0)
+    || Number(left.reportId) - Number(right.reportId);
+});
 const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
 const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
 const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
 const groups = new Map();
 for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
     if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
@@ -1233,6 +1274,7 @@ for (const prepared of preparedContexts) {
       reported_name: canonicalReportedName,
       known_provider_player_id: providerId || null,
       current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
+      destination_club_name: typeof canonicalDestinationClub === 'string' ? canonicalDestinationClub : null,
       report_ids: [reportId],
       aliases: [...new Set([...aliases, canonicalReportedName !== reportedName ? reportedName : null].filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
       identity_overrides: overrides,
@@ -1432,7 +1474,7 @@ const enrichmentGroups = (enrichment, now) => {
   const statisticsStale = statistics ? staleLabel(statistics, now, 72 * 60 * 60 * 1000) : null;
   const competition = namedEnrichmentValue(statistics?.competition_name);
   const season = namedEnrichmentValue(statistics?.season_label);
-  const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'selected league, all clubs' : null;
+  const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
   const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
   const primaryStatistics = statisticsValid ? [
     integerStatistic(statistics.appearances, 'app'),
@@ -1440,7 +1482,6 @@ const enrichmentGroups = (enrichment, now) => {
     integerStatistic(statistics.goals, 'G'),
     integerStatistic(statistics.assists, 'A'),
   ].filter(Boolean) : [];
-  const statisticsHeader = statisticsValid ? competition + ' ' + season + ' · ' + scope + (statisticsStale ? ' · ' + statisticsStale : '') : null;
   const marketValue = profile ? compactValue(profile.market_value, profile.market_value_currency) : null;
   const profileParts = profile && profileStale !== null ? [
     profileClub,
@@ -1468,15 +1509,17 @@ const enrichmentGroups = (enrichment, now) => {
     integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
     integerStatistic(statistics.goalkeeper_saves, 'saves'),
   ].filter(Boolean) : [];
-  const statisticsContextLine = statisticsHeader && (primaryStatistics.length || advancedStatistics.length || lowerPriorityStatistics.length || statisticsStale)
-    ? (primaryStatistics.length ? statisticsHeader + ': ' + primaryStatistics.join(' · ') : (statisticsStale ? 'Last confirmed: ' + statisticsHeader : statisticsHeader))
+  const statisticsValues = [...primaryStatistics, ...advancedStatistics];
+  const statisticsContextLine = statisticsValid && (statisticsValues.length || lowerPriorityStatistics.length || statisticsStale)
+    ? (statisticsValues.length || statisticsStale
+      ? competition + ' ' + season + ' - ' + scope + ': ' + [...statisticsValues, statisticsStale || null].filter(Boolean).join(' · ')
+      : competition + ' ' + season + ' - ' + scope)
     : null;
   return [
-    { priority: 1, displayOrder: 2, line: statisticsContextLine },
-    { priority: 2, displayOrder: 1, line: profileLine },
-    { priority: 3, displayOrder: 3, line: advancedStatistics.length ? 'Advanced: ' + advancedStatistics.join(' · ') : null },
-    { priority: 4, displayOrder: 4, line: profileDetails.length ? 'Details: ' + profileDetails.join(' · ') : null },
-    { priority: 5, displayOrder: 5, line: lowerPriorityStatistics.length ? 'Other: ' + lowerPriorityStatistics.join(' · ') : null },
+    { priority: 1, displayOrder: 1, line: profileLine },
+    { priority: 2, displayOrder: 2, line: statisticsContextLine },
+    { priority: 3, displayOrder: 3, line: profileDetails.length ? 'Details: ' + profileDetails.join(' · ') : null },
+    { priority: 4, displayOrder: 4, line: lowerPriorityStatistics.length ? 'Other: ' + lowerPriorityStatistics.join(' · ') : null },
   ];
 };
 const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
@@ -1557,33 +1600,26 @@ for (const report of selected) {
     'Confidence: ' + Math.round(report.confidence * 100) + '%',
     sourceLine,
   ].filter(Boolean);
-  const value = lines.join('\\n');
-  const currentCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
-  const candidateCharacters = currentCharacters - footerText(fields.length).length + footerText(fields.length + 1).length + name.length + value.length;
-  if (value.length > 1024 || candidateCharacters > 6000) continue;
-  fields.push({ name, value, inline: false, revision_id: report.revision_id, lines, report });
-}
-let totalCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
-for (const field of fields) {
+  const source = lines.at(-1);
+  const transferLines = lines.slice(0, -1);
   const enrichmentHeading = '**Player profile & statistics**';
   const accepted = [];
-  const sourceLine = field.lines.at(-1);
-  const transferLines = field.lines.slice(0, -1);
-  for (const group of enrichmentGroups(field.report.enrichment, now.valueOf())) {
+  for (const group of enrichmentGroups(report.enrichment, now.valueOf())) {
     if (!group.line) continue;
     const nextAccepted = [...accepted, group];
     const enrichmentLines = nextAccepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
-    const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\\n');
-    const difference = value.length - field.value.length;
-    if (value.length > 1024 || totalCharacters + difference > 6000) break;
+    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, source].join('\\n');
+    if (candidate.length > 1024) continue;
     accepted.push(group);
   }
-  if (accepted.length) {
-    const enrichmentLines = accepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
-    const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\\n');
-    totalCharacters += value.length - field.value.length;
-    field.value = value;
-  }
+  const enrichmentLines = accepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
+  const value = accepted.length
+    ? [...transferLines, enrichmentHeading, ...enrichmentLines, source].join('\\n')
+    : lines.join('\\n');
+  const currentCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
+  const candidateCharacters = currentCharacters - footerText(fields.length).length + footerText(fields.length + 1).length + name.length + value.length;
+  if (value.length > 1024 || candidateCharacters > 6000) continue;
+  fields.push({ name, value, inline: false, revision_id: report.revision_id });
 }
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
 const end = new Date(start.valueOf() + 6 * 60 * 60 * 1000);

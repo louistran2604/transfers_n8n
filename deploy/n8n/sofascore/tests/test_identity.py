@@ -66,6 +66,30 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual("unresolved", mismatched["status"])
         self.assertNotIn("identity", mismatched)
 
+    def test_destination_club_and_safe_suffix_aliases_are_valid_discriminators(self):
+        payload = {
+            "results": [{
+                "type": "player",
+                "entity": {
+                    "id": 826643,
+                    "name": "Kylian Mbappé",
+                    "team": {
+                        "id": 2829,
+                        "name": "Sporting CP",
+                        "sport": {"slug": "football"},
+                        "gender": "M",
+                    },
+                },
+            }],
+        }
+        resolved = resolve_search(
+            "Kylian Mbappé",
+            payload,
+            reported_club_names=["Former Club", "Sporting"],
+        )
+        self.assertEqual("resolved", resolved["status"])
+        self.assertEqual("826643", resolved["identity"]["provider_player_id"])
+
     def test_duplicate_exact_names_are_ambiguous_and_bounded(self):
         result = resolve_search("John Smith", search_payload("john_smith.json"))
         self.assertEqual("ambiguous", result["status"])

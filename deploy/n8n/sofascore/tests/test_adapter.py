@@ -383,6 +383,20 @@ class AdapterNormalizationTests(unittest.TestCase):
         self.assertEqual("hit", cached["provenance"]["profile_cache"])
         self.assertEqual("hit", cached["provenance"]["statistics_cache"])
 
+    def test_empty_identity_map_accepts_the_reported_destination_club(self):
+        item = {
+            "item_key": "name:kylian-mbappe|club:real-madrid",
+            "reported_name": "Kylian Mbappé",
+            "current_club_name": "Former Club",
+            "destination_club_name": "Real Madrid",
+            "aliases": [],
+        }
+        validated = validate_batch({"request_id": "run:destination", "players": [item]})[2][0]
+        self.assertEqual("Real Madrid", validated["destination_club_name"])
+        result = self.adapter.enrich(validated)
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("826643", result["identity"]["provider_player_id"])
+
     def test_mistyped_profile_and_statistics_envelopes_fail_closed(self):
         profile_endpoint = "player/826643"
         self.transport.register(profile_endpoint, {"player": []})

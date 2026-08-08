@@ -142,6 +142,26 @@ function enrichmentFresh(value, now) {
   return Number.isFinite(timestamp) && timestamp > now;
 }
 
+function enrichmentContextComparator(left, right) {
+  const report = (context) => ({
+    ...context,
+    preferred_source: {
+      username: context.source_username,
+      display_name: context.source_name,
+      priority_rank: Number(context.source_priority_rank ?? 100),
+      reliability_score: Number(context.source_reliability_score ?? 0),
+    },
+  });
+  const leftReport = report(left.context);
+  const rightReport = report(right.context);
+  return Number(isDigestEligible(rightReport)) - Number(isDigestEligible(leftReport))
+    || digestPriority(leftReport) - digestPriority(rightReport)
+    || sourceComparator(leftReport, rightReport)
+    || classificationWeight(rightReport.classification) - classificationWeight(leftReport.classification)
+    || Number(rightReport.confidence ?? 0) - Number(leftReport.confidence ?? 0)
+    || Number(left.reportId) - Number(right.reportId);
+}
+
 export function buildEnrichmentRequest(contexts, {
   mode,
   requestId,
@@ -184,14 +204,14 @@ export function buildEnrichmentRequest(contexts, {
       && Number.isFinite(latestStartedAt)
       && latestStartedAt > now - 24 * 60 * 60 * 1000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
   const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
   const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
   const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
   const groups = new Map();
-  for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
+  for (const prepared of preparedContexts.toSorted(enrichmentContextComparator)) {
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
     if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
@@ -228,6 +248,9 @@ export function buildEnrichmentRequest(contexts, {
       known_provider_player_id: knownProviderId || null,
       current_club_name: typeof canonicalCurrentClub === 'string'
         ? canonicalCurrentClub
+        : null,
+      destination_club_name: typeof canonicalDestinationClub === 'string'
+        ? canonicalDestinationClub
         : null,
       report_ids: [reportId],
       aliases: [...new Set([...(Array.isArray(context.aliases) ? context.aliases : []), canonicalReportedName !== reportedName ? reportedName : null]
@@ -940,9 +963,7 @@ function enrichmentGroups(enrichment, now) {
 
   const competition = namedEnrichmentValue(statistics?.competition_name);
   const season = namedEnrichmentValue(statistics?.season_label);
-  const scope = statistics?.scope === 'selected_domestic_league_all_clubs'
-    ? 'selected league, all clubs'
-    : null;
+  const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
   const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
   const primaryStatistics = statisticsValid ? [
     integerStatistic(statistics.appearances, 'app'),
@@ -950,10 +971,6 @@ function enrichmentGroups(enrichment, now) {
     integerStatistic(statistics.goals, 'G'),
     integerStatistic(statistics.assists, 'A'),
   ].filter(Boolean) : [];
-  const statisticsHeader = statisticsValid
-    ? `${competition} ${season} · ${scope}${statisticsStale ? ` · ${statisticsStale}` : ''}`
-    : null;
-
   const profileParts = profile && profileStale !== null ? [
     profileClub,
     namedEnrichmentValue(profile.nationality),
@@ -989,24 +1006,47 @@ function enrichmentGroups(enrichment, now) {
     integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
     integerStatistic(statistics.goalkeeper_saves, 'saves'),
   ].filter(Boolean) : [];
-  const statisticsContextLine = statisticsHeader && (
-    primaryStatistics.length
-    || advancedStatistics.length
-    || lowerPriorityStatistics.length
-    || statisticsStale
+  const statisticsValues = [...primaryStatistics, ...advancedStatistics];
+  const statisticsContextLine = statisticsValid && (
+    statisticsValues.length || lowerPriorityStatistics.length || statisticsStale
   )
-    ? (primaryStatistics.length
-      ? `${statisticsHeader}: ${primaryStatistics.join(' · ')}`
-      : (statisticsStale ? `Last confirmed: ${statisticsHeader}` : statisticsHeader))
+    ? (statisticsValues.length || statisticsStale
+      ? `${competition} ${season} - ${scope}: ${[
+        ...statisticsValues,
+        statisticsStale || null,
+      ].filter(Boolean).join(' · ')}`
+      : `${competition} ${season} - ${scope}`)
     : null;
 
   return [
-    { priority: 1, displayOrder: 2, line: statisticsContextLine },
-    { priority: 2, displayOrder: 1, line: profileLine },
-    { priority: 3, displayOrder: 3, line: advancedStatistics.length ? `Advanced: ${advancedStatistics.join(' · ')}` : null },
-    { priority: 4, displayOrder: 4, line: profileDetails.length ? `Details: ${profileDetails.join(' · ')}` : null },
-    { priority: 5, displayOrder: 5, line: lowerPriorityStatistics.length ? `Other: ${lowerPriorityStatistics.join(' · ')}` : null },
+    { priority: 1, displayOrder: 1, line: profileLine },
+    { priority: 2, displayOrder: 2, line: statisticsContextLine },
+    { priority: 3, displayOrder: 3, line: profileDetails.length ? `Details: ${profileDetails.join(' · ')}` : null },
+    { priority: 4, displayOrder: 4, line: lowerPriorityStatistics.length ? `Other: ${lowerPriorityStatistics.join(' · ')}` : null },
   ];
+}
+
+function digestStoryValue(report, now) {
+  const lines = storyLines(report);
+  const sourceLine = lines.at(-1);
+  const transferLines = lines.slice(0, -1);
+  const enrichmentHeading = '**Player profile & statistics**';
+  const accepted = [];
+  for (const group of enrichmentGroups(report.enrichment, now)) {
+    if (!group.line) continue;
+    const nextAccepted = [...accepted, group];
+    const enrichmentLines = nextAccepted
+      .toSorted((left, right) => left.displayOrder - right.displayOrder)
+      .map(({ line }) => line);
+    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
+    if (candidate.length > 1024) continue;
+    accepted.push(group);
+  }
+  if (!accepted.length) return lines.join('\n');
+  const enrichmentLines = accepted
+    .toSorted((left, right) => left.displayOrder - right.displayOrder)
+    .map(({ line }) => line);
+  return [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
 }
 
 export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIASES, now = Date.now() } = {}) {
@@ -1044,42 +1084,13 @@ export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, en
   for (const report of selected) {
     if (fields.length >= 25) break;
     const name = truncate(`${fields.length + 1}. ${report.player_name}`, 256);
-    const lines = storyLines(report);
-    const value = lines.join('\n');
+    const value = digestStoryValue(report, Number(now));
     const currentCharacters = title.length + footerText(fields.length).length
       + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
     const candidateCharacters = currentCharacters - footerText(fields.length).length
       + footerText(fields.length + 1).length + name.length + value.length;
     if (value.length > 1024 || candidateCharacters > 6000) continue;
-    fields.push({ name, value, inline: false, lines, report });
-  }
-
-  let totalCharacters = title.length + footerText(fields.length).length
-    + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
-  for (const field of fields) {
-    const enrichmentHeading = '**Player profile & statistics**';
-    const accepted = [];
-    const sourceLine = field.lines.at(-1);
-    const transferLines = field.lines.slice(0, -1);
-    for (const group of enrichmentGroups(field.report.enrichment, Number(now))) {
-      if (!group.line) continue;
-      const nextAccepted = [...accepted, group];
-      const enrichmentLines = nextAccepted
-        .toSorted((left, right) => left.displayOrder - right.displayOrder)
-        .map(({ line }) => line);
-      const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
-      const difference = value.length - field.value.length;
-      if (value.length > 1024 || totalCharacters + difference > 6000) break;
-      accepted.push(group);
-    }
-    if (accepted.length) {
-      const enrichmentLines = accepted
-        .toSorted((left, right) => left.displayOrder - right.displayOrder)
-        .map(({ line }) => line);
-      const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
-      totalCharacters += value.length - field.value.length;
-      field.value = value;
-    }
+    fields.push({ name, value, inline: false });
   }
 
   return {
@@ -1087,7 +1098,7 @@ export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, en
     embeds: [{
       title,
       color: 0x1d9bf0,
-      fields: fields.map(({ lines, report, ...field }) => field),
+      fields,
       footer: { text: footerText(fields.length) },
     }],
   };

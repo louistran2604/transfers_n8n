@@ -17,6 +17,7 @@ NON_DISCRIMINATING_CLUB_KEYS = {
     "unattached",
     "unknown",
 }
+CLUB_SUFFIXES = {"afc", "cf", "cp", "fc", "sc"}
 
 
 def unicode_exact_key(value: str) -> str:
@@ -133,10 +134,17 @@ def _reported_club_matches(reported_club_name: Any, team: dict[str, Any]) -> boo
         or candidate_exact in NON_DISCRIMINATING_CLUB_KEYS
     ):
         return False
-    return (
-        candidate_exact == reported_exact
-        or accent_folded_key(team["name"]) == accent_folded_key(reported_club_name)
-    )
+    candidate_folded = accent_folded_key(team["name"])
+    reported_folded = accent_folded_key(reported_club_name)
+    if candidate_exact == reported_exact or candidate_folded == reported_folded:
+        return True
+    candidate_parts = candidate_folded.split()
+    reported_parts = reported_folded.split()
+    if candidate_parts and candidate_parts[-1] in CLUB_SUFFIXES:
+        candidate_parts.pop()
+    if reported_parts and reported_parts[-1] in CLUB_SUFFIXES:
+        reported_parts.pop()
+    return bool(candidate_parts and candidate_parts == reported_parts)
 
 
 def resolve_search(
@@ -146,6 +154,7 @@ def resolve_search(
     aliases: list[str] | None = None,
     provider_team_id: str | None = None,
     reported_club_name: str | None = None,
+    reported_club_names: list[str] | None = None,
     rejected_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     exact = unicode_exact_key(reported_name)
@@ -172,10 +181,15 @@ def resolve_search(
         else:
             continue
         team = entity.get("team") or {}
+        club_names = [
+            club_name
+            for club_name in [reported_club_name, *(reported_club_names or [])]
+            if isinstance(club_name, str)
+        ]
         team_discriminator_matches = (
             str(team.get("id", "")) == provider_team_id
             if provider_team_id
-            else _reported_club_matches(reported_club_name, team)
+            else any(_reported_club_matches(club_name, team) for club_name in club_names)
         )
         if team_discriminator_matches:
             score += 30

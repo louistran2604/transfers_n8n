@@ -334,6 +334,14 @@ class SofascoreAdapter:
             if not manual_resolved:
                 identity = known_identity(player_id)
         else:
+            reported_club_names = [
+                club_name
+                for club_name in (
+                    item.get("current_club_name"),
+                    item.get("destination_club_name"),
+                )
+                if isinstance(club_name, str)
+            ]
             search, _ = self.fetch_json(
                 f"search/all?q={quote(item['reported_name'], safe='')}",
                 f"search-{hashlib.sha256(item['reported_name'].encode()).hexdigest()}",
@@ -344,7 +352,7 @@ class SofascoreAdapter:
                 search,
                 aliases=item.get("aliases"),
                 provider_team_id=(item.get("team_mapping") or {}).get("provider_team_id"),
-                reported_club_name=item.get("current_club_name"),
+                reported_club_names=reported_club_names,
                 rejected_player_ids=rejected_player_ids,
             )
             if resolution["status"] != "resolved" and item.get("aliases"):
@@ -361,7 +369,7 @@ class SofascoreAdapter:
                     provider_team_id=(item.get("team_mapping") or {}).get(
                         "provider_team_id"
                     ),
-                    reported_club_name=item.get("current_club_name"),
+                    reported_club_names=reported_club_names,
                     rejected_player_ids=rejected_player_ids,
                 )
             if resolution["status"] != "resolved":

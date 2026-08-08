@@ -37,11 +37,12 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
     normalized = dict(value)
     normalized["item_key"] = item_key
     normalized["reported_name"] = reported_name
-    if "current_club_name" in value:
-        normalized["current_club_name"] = optional_string(
-            value.get("current_club_name"),
-            f"players[{index}].current_club_name",
-        )
+    for club_field in ("current_club_name", "destination_club_name"):
+        if club_field in value:
+            normalized[club_field] = optional_string(
+                value.get(club_field),
+                f"players[{index}].{club_field}",
+            )
     normalized["known_provider_player_id"] = decimal_id(
         value.get("known_provider_player_id"),
         f"players[{index}].known_provider_player_id",
