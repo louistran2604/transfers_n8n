@@ -147,31 +147,52 @@ export function buildEnrichmentRequest(contexts, {
   requestId,
   now = Date.now(),
   maximumItems = 25,
+  entityAliases = EMPTY_ENTITY_ALIASES,
 } = {}) {
   const selectedMode = enrichmentMode(mode);
   if (selectedMode === 'off') return { mode: 'off', refreshRequired: false, request: null };
 
-  const groups = new Map();
+  const preparedContexts = [];
   for (const context of Array.isArray(contexts) ? contexts : []) {
     const reportId = String(context?.transfer_report_id ?? '');
-    const reportedName = typeof context?.reported_player_name === 'string'
-      ? context.reported_player_name.trim()
-      : '';
+    const reportedName = typeof context?.reported_player_name === 'string' ? context.reported_player_name.trim() : '';
+    const canonicalReportedName = entityAliases.players[normalizeText(reportedName)] ?? reportedName;
     const knownProviderId = String(context?.provider_player_id ?? '');
     if (!/^\d+$/.test(reportId) || !reportedName || (knownProviderId && !DECIMAL_ID.test(knownProviderId))) continue;
-
+    const canonicalCurrentClub = typeof context.current_club_name === 'string'
+      ? entityAliases.clubs[normalizeText(context.current_club_name)] ?? context.current_club_name.trim()
+      : context.current_club_name;
+    const canonicalDestinationClub = typeof context.destination_club_name === 'string'
+      ? entityAliases.clubs[normalizeText(context.destination_club_name)] ?? context.destination_club_name.trim()
+      : context.destination_club_name;
+    const currentClubKey = enrichmentNamedContext(canonicalCurrentClub);
+    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
+      || context.move_type === 'loan'
+      ? enrichmentNamedContext(canonicalDestinationClub)
+      : null;
+    const clubKey = currentClubKey ?? destinationClubKey;
+    const reportedNameKey = enrichmentUnicodeKey(canonicalReportedName);
+    if (!knownProviderId && (!reportedNameKey || !clubKey)) continue;
     const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
     const latestStatus = String(context.latest_attempt_status ?? '');
     const latestStartedAt = Date.parse(String(context.latest_attempt_started_at ?? ''));
     const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
-    if (
-      (Number.isFinite(retryAt) && retryAt > now)
-      || (!knownProviderId && overrides.length === 0
-        && ['ambiguous', 'unresolved'].includes(latestStatus)
-        && Number.isFinite(latestStartedAt)
-        && latestStartedAt > now - 24 * 60 * 60 * 1000)
-    ) continue;
-
+    const itemKey = knownProviderId ? `provider:${knownProviderId}` : `name:${reportedNameKey}|club:${clubKey}`;
+    const hardBackoff = Number.isFinite(retryAt) && retryAt > now;
+    const ambiguityCooldown = !knownProviderId
+      && ['ambiguous', 'unresolved'].includes(latestStatus)
+      && Number.isFinite(latestStartedAt)
+      && latestStartedAt > now - 24 * 60 * 60 * 1000;
+    const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+  }
+  const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
+  const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
+  const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
+  const groups = new Map();
+  for (const prepared of preparedContexts) {
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
+    if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
     if (
@@ -184,19 +205,6 @@ export function buildEnrichmentRequest(contexts, {
       )
     ) continue;
 
-    const currentClubKey = enrichmentNamedContext(context.current_club_name);
-    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
-      || context.move_type === 'loan'
-      ? enrichmentNamedContext(context.destination_club_name)
-      : null;
-    const clubKey = currentClubKey ?? destinationClubKey;
-    if (!knownProviderId && !clubKey) continue;
-
-    const reportedNameKey = enrichmentUnicodeKey(reportedName);
-    if (!knownProviderId && !reportedNameKey) continue;
-    const itemKey = knownProviderId
-      ? `provider:${knownProviderId}`
-      : `name:${reportedNameKey}|club:${clubKey}`;
     const existing = groups.get(itemKey);
     if (existing) {
       existing.report_ids.push(reportId);
@@ -205,6 +213,7 @@ export function buildEnrichmentRequest(contexts, {
           existing.aliases.push(alias.trim());
         }
       }
+      if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
       for (const override of overrides) {
         if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) {
           existing.identity_overrides.push(override);
@@ -215,13 +224,13 @@ export function buildEnrichmentRequest(contexts, {
 
     groups.set(itemKey, {
       item_key: itemKey,
-      reported_name: reportedName,
+      reported_name: canonicalReportedName,
       known_provider_player_id: knownProviderId || null,
-      current_club_name: typeof context.current_club_name === 'string'
-        ? context.current_club_name.trim()
+      current_club_name: typeof canonicalCurrentClub === 'string'
+        ? canonicalCurrentClub
         : null,
       report_ids: [reportId],
-      aliases: [...new Set((Array.isArray(context.aliases) ? context.aliases : [])
+      aliases: [...new Set([...(Array.isArray(context.aliases) ? context.aliases : []), canonicalReportedName !== reportedName ? reportedName : null]
         .filter((alias) => typeof alias === 'string' && alias.trim())
         .map((alias) => alias.trim()))],
       identity_overrides: overrides,
@@ -783,8 +792,22 @@ function hasNamedClub(value) {
     && !/^(not[ _-]?reported|unknown|n\/?a)$/i.test(value.trim());
 }
 
-function digestStoryKey(report) {
+function digestHistoryKey(report) {
   return [report.player_name, report.destination_club_name].map(normalizeIdentity).join('|');
+}
+
+function digestSurname(report) {
+  return normalizeText(report.player_name).split(' ').at(-1);
+}
+
+function configuredSiblingPair(left, right, entityAliases) {
+  const leftName = normalizeText(left.player_name);
+  const rightName = normalizeText(right.player_name);
+  if (!leftName || leftName === rightName) return false;
+  return entityAliases.sibling_groups.some((group) => {
+    const members = group.map(normalizeText);
+    return members.includes(leftName) && members.includes(rightName);
+  });
 }
 
 function isDigestEligible(report) {
@@ -805,7 +828,7 @@ function digestMaterialKey(report) {
 }
 
 function sameDigestStory(left, right) {
-  return digestStoryKey(left) === digestStoryKey(right);
+  return digestHistoryKey(left) === digestHistoryKey(right);
 }
 
 function isNewDigestUpdate(report, entityAliases, now) {
@@ -998,15 +1021,15 @@ export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIA
     || String(right.last_reported_at ?? '').localeCompare(String(left.last_reported_at ?? ''))
     ));
   const seenRevisionIds = new Set();
-  const seenStoryKeys = new Set();
-  const distinct = sorted.filter((report) => {
+  const distinct = [];
+  for (const report of sorted) {
     const revisionId = String(report.revision_id ?? '');
-    const storyKey = digestStoryKey(report);
-    if ((revisionId && seenRevisionIds.has(revisionId)) || seenStoryKeys.has(storyKey)) return false;
+    if (revisionId && seenRevisionIds.has(revisionId)) continue;
+    const sameSurname = distinct.filter((selected) => digestSurname(selected) === digestSurname(report));
+    if (sameSurname.some((selected) => !configuredSiblingPair(selected, report, entityAliases))) continue;
     if (revisionId) seenRevisionIds.add(revisionId);
-    seenStoryKeys.add(storyKey);
-    return true;
-  });
+    distinct.push(report);
+  }
   const normal = distinct.slice(0, 15);
   const extra = distinct.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3);
   return [...normal, ...extra];
@@ -1034,6 +1057,7 @@ export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, en
   let totalCharacters = title.length + footerText(fields.length).length
     + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
   for (const field of fields) {
+    const enrichmentHeading = '**Player profile & statistics**';
     const accepted = [];
     const sourceLine = field.lines.at(-1);
     const transferLines = field.lines.slice(0, -1);
@@ -1043,7 +1067,7 @@ export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, en
       const enrichmentLines = nextAccepted
         .toSorted((left, right) => left.displayOrder - right.displayOrder)
         .map(({ line }) => line);
-      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
       const difference = value.length - field.value.length;
       if (value.length > 1024 || totalCharacters + difference > 6000) break;
       accepted.push(group);
@@ -1052,7 +1076,7 @@ export function buildDiscordDigest(reports, { windowStartedAt, windowEndedAt, en
       const enrichmentLines = accepted
         .toSorted((left, right) => left.displayOrder - right.displayOrder)
         .map(({ line }) => line);
-      const value = [...transferLines, ...enrichmentLines, sourceLine].join('\n');
+      const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
       totalCharacters += value.length - field.value.length;
       field.value = value;
     }

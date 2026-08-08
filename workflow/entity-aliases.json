@@ -9,7 +9,9 @@
   ],
   "players": [
     { "canonical": "Randal Kolo Muani", "aliases": ["Kolo Muani", "Randal Kolo-Muani"] },
-    { "canonical": "Kerim Alajbegović", "aliases": ["Kerim Alajbegovic"] }
+    { "canonical": "Kerim Alajbegović", "aliases": ["Kerim Alajbegovic"] },
+    { "canonical": "Rodri Hernández", "aliases": ["Rodri", "Rodri Hernandez"] },
+    { "canonical": "Maghnes Akliouche", "aliases": ["Aklouche"] }
   ],
   "sibling_groups": [
     ["Kylian Mbappé", "Ethan Mbappé"],

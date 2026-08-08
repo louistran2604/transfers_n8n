@@ -205,6 +205,27 @@ test('enrichment grouping uses provider ID or Unicode name and club context, nev
   assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
 });
 
+test('enrichment grouping canonicalizes configured player aliases', () => {
+  const context = (transferReportId, reportedPlayerName) => ({
+    transfer_report_id: transferReportId,
+    reported_player_name: reportedPlayerName,
+    current_club_name: 'Manchester City',
+    destination_club_name: 'Real Madrid',
+    classification: 'rumor',
+    move_type: 'permanent',
+    aliases: [],
+    identity_overrides: [],
+  });
+  for (const names of [['Rodri', 'Rodri Hernandez'], ['Aklouche', 'Maghnes Akliouche']]) {
+    const grouped = buildEnrichmentRequest([
+      context('10', names[0]),
+      context('11', names[1]),
+    ], { mode: 'shadow', requestId: 'sofascore:aliases', now: 0, entityAliases });
+    assert.equal(grouped.request.players.length, 1);
+    assert.deepEqual(grouped.request.players[0].report_ids, ['10', '11']);
+  }
+});
+
 test('generated enrichment request preserves the current-club discriminator', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
@@ -231,6 +252,120 @@ test('generated enrichment request preserves the current-club discriminator', as
   assert.equal(player.item_key, 'name:kylian mbappé|club:real madrid');
   assert.equal(player.current_club_name, 'Real Madrid');
   assert.deepEqual(player.report_ids, ['10']);
+});
+
+test('generated enrichment request canonicalizes configured player aliases', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const context = (transferReportId, reportedPlayerName) => ({ json: {
+    transfer_report_id: transferReportId,
+    reported_player_name: reportedPlayerName,
+    current_club_name: 'Manchester City',
+    destination_club_name: 'Real Madrid',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+  } });
+  for (const names of [['Rodri', 'Rodri Hernandez'], ['Aklouche', 'Maghnes Akliouche']]) {
+    const output = await runRequest({ all: () => [context('10', names[0]), context('11', names[1])] }, () => ({
+      first: () => ({ json: { mode: 'shadow', workflow_run_id: '1' } }),
+    }));
+    assert.equal(output[0].json.request.players.length, 1);
+    assert.deepEqual(output[0].json.request.players[0].report_ids, ['10', '11']);
+  }
+});
+
+test('equivalent alias cooldown suppresses the entire canonical enrichment group', async () => {
+  const now = Date.parse('2026-07-30T12:00:00Z');
+  const context = (transferReportId, reportedPlayerName, overrides = {}) => ({
+    transfer_report_id: transferReportId,
+    reported_player_name: reportedPlayerName,
+    current_club_name: 'Manchester City',
+    destination_club_name: 'Real Madrid',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+    ...overrides,
+  });
+  const contexts = [
+    context('10', 'Rodri'),
+    context('11', 'Rodri Hernandez', { latest_attempt_status: 'ambiguous', latest_attempt_started_at: '2026-07-30T11:00:00Z' }),
+  ];
+  assert.equal(buildEnrichmentRequest(contexts, { mode: 'active', requestId: 'cooldown', now, entityAliases }).request, null);
+  const activeOverride = { action: 'resolve', provider_player_id: '37292', active: true };
+  const recoveredContexts = [{ ...contexts[0], identity_overrides: [activeOverride] }, contexts[1]];
+  const recovered = buildEnrichmentRequest(recoveredContexts, { mode: 'active', requestId: 'recovered', now, entityAliases });
+  assert.deepEqual(recovered.request.players[0].report_ids, ['10', '11']);
+  assert.deepEqual(recovered.request.players[0].identity_overrides, [activeOverride]);
+  const activeReject = { action: 'reject', provider_player_id: '37293', active: true };
+  const rejectedCandidateContexts = [{ ...contexts[0], identity_overrides: [activeReject] }, contexts[1]];
+  assert.deepEqual(
+    buildEnrichmentRequest(rejectedCandidateContexts, { mode: 'active', requestId: 'rejected-candidate', now, entityAliases }).request.players[0].identity_overrides,
+    [activeReject],
+  );
+  assert.equal(buildEnrichmentRequest([
+    { ...contexts[0], identity_overrides: [activeOverride], latest_attempt_next_retry_at: '2026-07-30T13:00:00Z' },
+    contexts[1],
+  ], { mode: 'active', requestId: 'hard-backoff', now, entityAliases }).request, null);
+
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', 'const Date = class extends globalThis.Date { static now() { return ' + now + '; } };\n' + requestNode.parameters.jsCode);
+  const generated = await runRequest({ all: () => contexts.map((json) => ({ json })) }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  assert.equal(generated[0].json.request, null);
+  const generatedRecovered = await runRequest({ all: () => recoveredContexts.map((json) => ({ json })) }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  assert.deepEqual(generatedRecovered[0].json.request.players[0].report_ids, ['10', '11']);
+  assert.deepEqual(generatedRecovered[0].json.request.players[0].identity_overrides, [activeOverride]);
+  const generatedRejectedCandidate = await runRequest({ all: () => rejectedCandidateContexts.map((json) => ({ json })) }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  assert.deepEqual(generatedRejectedCandidate[0].json.request.players[0].identity_overrides, [activeReject]);
+});
+
+test('canonical club aliases produce an order-independent enrichment payload', async () => {
+  const context = (transferReportId, currentClubName) => ({
+    transfer_report_id: transferReportId,
+    reported_player_name: 'Kylian Mbappé',
+    current_club_name: currentClubName,
+    destination_club_name: 'Liverpool',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+  });
+  const orders = [
+    [context('10', 'PSG'), context('11', 'Paris Saint-Germain')],
+    [context('11', 'Paris Saint-Germain'), context('10', 'PSG')],
+  ];
+  for (const contexts of orders) {
+    const player = buildEnrichmentRequest(contexts, { mode: 'active', requestId: 'club', entityAliases }).request.players[0];
+    assert.equal(player.current_club_name, 'Paris Saint-Germain');
+    assert.equal(player.request_context.current_club_key, 'paris saint germain');
+  }
+
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  for (const contexts of orders) {
+    const output = await runRequest({ all: () => contexts.map((json) => ({ json })) }, () => ({
+      first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+    }));
+    assert.equal(output[0].json.request.players[0].current_club_name, 'Paris Saint-Germain');
+    assert.equal(output[0].json.request.players[0].request_context.current_club_key, 'paris saint germain');
+  }
 });
 
 test('enrichment response normalization converts contract failures into one sanitized result per request item', () => {
@@ -452,12 +587,12 @@ test('digest positions 16 through 18 exclude huge and big-money rumors', () => {
   assert.ok(!selected.some((report) => ['Huge extra', 'Big money extra'].includes(report.player_name)));
 });
 
-test('digest requires relevance and complete clubs, then keeps one story per player and destination', () => {
+test('digest requires relevance and complete clubs, then keeps the highest-ranked story per player surname', () => {
   const samePlayerLowerPriority = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club A' }), preferred_source: source('someone'), revision_id: '1' };
   const samePlayerPreferred = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Club B', classification: 'official_confirmed' }), preferred_source: source('David_Ornstein'), revision_id: '2' };
   const lowProfile = { ...validReport({ player_name: 'Low Profile', is_digest_worthy: false }), preferred_source: source('David_Ornstein'), revision_id: '3' };
   const incomplete = { ...validReport({ player_name: 'Incomplete', current_club_name: 'not_reported' }), preferred_source: source('David_Ornstein'), revision_id: '4' };
-  assert.deepEqual(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred, lowProfile, incomplete]).map((report) => report.destination_club_name), ['Club B', 'Club A']);
+  assert.deepEqual(selectDigestReports([samePlayerLowerPriority, samePlayerPreferred, lowProfile, incomplete]).map((report) => report.destination_club_name), ['Club B']);
 });
 
 test('digest sends material updates, suppresses confirmed moves for seven days, and allows a deal-off', () => {
@@ -469,6 +604,16 @@ test('digest sends material updates, suppresses confirmed moves for seven days, 
   assert.equal(selectDigestReports([confirmedUpdate], { entityAliases, now }).length, 0);
   const dealOff = { ...confirmedUpdate, classification: 'rejected_failed', revision_id: 'deal-off' };
   assert.equal(selectDigestReports([dealOff], { entityAliases, now }).length, 1);
+});
+
+test('sent history matches canonical player and destination instead of surname batch identity', () => {
+  const sentAt = '2026-07-30T06:00:00.000Z';
+  const history = (snapshot) => [{ snapshot, sent_at: sentAt }];
+  const alex = validReport({ player_name: 'Alex Smith', destination_club_name: 'Arsenal' });
+  const jamie = { ...validReport({ player_name: 'Jamie Smith', destination_club_name: 'Arsenal' }), revision_id: 'jamie', sent_history: history(alex) };
+  const oldDestination = validReport({ player_name: 'Same Player', destination_club_name: 'Arsenal' });
+  const newDestination = { ...validReport({ player_name: 'Same Player', destination_club_name: 'Liverpool' }), revision_id: 'new-destination', sent_history: history(oldDestination) };
+  assert.deepEqual(selectDigestReports([jamie, newDestination]).map(({ revision_id }) => revision_id), ['jamie', 'new-destination']);
 });
 
 test('digest displays every meaningful non-null transfer detail', () => {
@@ -528,6 +673,7 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   };
   const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
   const value = embed.fields[0].value;
+  assert.match(value, /Confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
   assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
   assert.match(value, /LaLiga 2025\/26 · selected league, all clubs · stale 18h: 31 app · 2,604 min · 25 G · 5 A/);
   assert.match(value, /Advanced: 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating/);
@@ -536,6 +682,38 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   assert.ok(value.endsWith(`[David Ornstein](${postUrl})`));
   assert.ok(value.length <= 1024);
   assert.ok(discordCharacterCount(embed) <= 6000);
+});
+
+test('digest deduplicates aliases and surnames except exact configured siblings', () => {
+  const report = (playerName, destinationClubName, confidence = 0.7) => ({
+    ...validReport({ player_name: playerName, destination_club_name: destinationClubName, confidence }),
+    revision_id: `${playerName}-${destinationClubName}`,
+  });
+  assert.deepEqual(
+    selectDigestReports([report('Rodri', 'Real Madrid'), report('Rodri Hernandez', 'Barcelona', 0.9)], { entityAliases }).map(({ player_name }) => player_name),
+    ['Rodri Hernández'],
+  );
+  assert.deepEqual(
+    selectDigestReports([report('Aklouche', 'Arsenal'), report('Maghnes Akliouche', 'Liverpool', 0.9)], { entityAliases }).map(({ player_name }) => player_name),
+    ['Maghnes Akliouche'],
+  );
+  assert.equal(selectDigestReports([report('Alex Smith', 'Arsenal'), report('Jamie Smith', 'Liverpool', 0.9)], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('Kylian Mbappé', 'Arsenal'), report('Ethan Mbappé', 'Liverpool')], { entityAliases }).length, 2);
+  assert.equal(selectDigestReports([report('Jurriën Timber', 'Arsenal'), report('Quinten Timber', 'Liverpool')], { entityAliases }).length, 2);
+  assert.equal(selectDigestReports([
+    report('Kylian Mbappé', 'Arsenal'),
+    report('Ethan Mbappé', 'Liverpool'),
+    report('Jordan Mbappé', 'Chelsea', 0.9),
+  ], { entityAliases }).length, 1);
+  const aliasesWithSiblingVariant = {
+    ...entityAliases,
+    players: { ...entityAliases.players, 'kylian mbappe': 'Kylian Mbappé' },
+  };
+  assert.equal(selectDigestReports([
+    report('Kylian Mbappe', 'Arsenal'),
+    report('Kylian Mbappé', 'Barcelona'),
+    report('Ethan Mbappé', 'Liverpool'),
+  ], { entityAliases: aliasesWithSiblingVariant }).length, 2);
 });
 
 test('digest renders null or failed enrichment as the unchanged transfer-only story', () => {
@@ -556,7 +734,7 @@ test('digest renders null or failed enrichment as the unchanged transfer-only st
   ]) {
     const value = buildDiscordDigest([{ ...report, enrichment }]).embeds[0].fields[0].value;
     assert.equal(value, transferOnly);
-    assert.doesNotMatch(value, /Profile|Advanced|Sofascore|provider|unknown|N\/A/);
+    assert.doesNotMatch(value, /Player profile|Profile|Advanced|Sofascore|provider|unknown|N\/A/);
   }
 });
 
@@ -578,6 +756,7 @@ test('digest enrichment budget keeps the highest-priority whole group and never 
   }
   assert.ok(accepted);
   assert.match(accepted.field.value, /LaLiga 2025\/26 · selected league, all clubs/);
+  assert.match(accepted.field.value, /\*\*Player profile & statistics\*\*/);
   assert.doesNotMatch(accepted.field.value, /Profile:|Advanced:|Details:|Other:/);
   assert.ok(accepted.field.value.endsWith(`[David Ornstein](${accepted.postUrl})`));
   assert.ok(accepted.field.value.length <= 1024);
@@ -612,6 +791,72 @@ test('generated digest renders the same rich enrichment labels within Discord li
   assert.ok(value.endsWith('[David Ornstein](https://x.com/David_Ornstein/status/999000000000000005)'));
   assert.ok(embed.fields.every((field) => field.value.length <= 1024));
   assert.ok(discordCharacterCount(embed) <= 6000);
+});
+
+test('generated digest applies surname deduplication and exact sibling exceptions', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const candidate = (revisionId, playerName, destinationClubName, confidence = 0.7) => ({ json: {
+    row_type: 'candidate',
+    payload: {
+      revision_id: revisionId,
+      snapshot: validReport({ player_name: playerName, destination_club_name: destinationClubName, confidence }),
+      post_url: `https://x.com/source/status/${revisionId}`,
+      priority_rank: '2',
+      reliability_score: '0.95',
+      source_name: 'Source',
+    },
+  } });
+  const output = await runDigest({ all: () => [
+    { json: { row_type: 'sent_history', payload: [] } },
+    candidate('1', 'Rodri', 'Arsenal'),
+    candidate('2', 'Rodri Hernandez', 'Liverpool', 0.9),
+    candidate('3', 'Alex Smith', 'Arsenal'),
+    candidate('4', 'Jamie Smith', 'Liverpool', 0.9),
+    candidate('5', 'Kylian Mbappé', 'Arsenal'),
+    candidate('6', 'Ethan Mbappé', 'Liverpool'),
+  ] });
+  const payload = JSON.parse(output[0].json.params[0]);
+  assert.deepEqual(payload.discord_payload.embeds[0].fields.map(({ name }) => name), [
+    '1. Rodri Hernández',
+    '2. Jamie Smith',
+    '3. Kylian Mbappé',
+    '4. Ethan Mbappé',
+  ]);
+  const mixedFamily = await runDigest({ all: () => [
+    { json: { row_type: 'sent_history', payload: [] } },
+    candidate('5', 'Kylian Mbappé', 'Arsenal'),
+    candidate('6', 'Ethan Mbappé', 'Liverpool'),
+    candidate('7', 'Jordan Mbappé', 'Chelsea', 0.9),
+  ] });
+  assert.deepEqual(JSON.parse(mixedFamily[0].json.params[0]).revision_ids, ['7']);
+});
+
+test('generated digest keeps history identity separate from surname batch identity', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const candidate = (revisionId, snapshot) => ({ json: { row_type: 'candidate', payload: {
+    revision_id: revisionId,
+    snapshot,
+    post_url: `https://x.com/source/status/${revisionId}`,
+    priority_rank: '2',
+    reliability_score: '0.95',
+    source_name: 'Source',
+  } } });
+  const sentHistory = [
+    { snapshot: validReport({ player_name: 'Alex Smith', destination_club_name: 'Arsenal' }), sent_at: '2026-07-30T06:00:00.000Z' },
+    { snapshot: validReport({ player_name: 'Same Player', destination_club_name: 'Arsenal' }), sent_at: '2026-07-30T06:00:00.000Z' },
+  ];
+  const output = await runDigest({ all: () => [
+    { json: { row_type: 'sent_history', payload: sentHistory } },
+    candidate('jamie', validReport({ player_name: 'Jamie Smith', destination_club_name: 'Arsenal' })),
+    candidate('new-destination', validReport({ player_name: 'Same Player', destination_club_name: 'Liverpool' })),
+  ] });
+  assert.deepEqual(JSON.parse(output[0].json.params[0]).revision_ids, ['jamie', 'new-destination']);
 });
 
 test('enrichment request modes, freshness, cooldown, dedupe, and maximum batch are fail-closed', () => {
@@ -1066,7 +1311,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
-  assert.match(requestNode.parameters.jsCode, /current_club_name: typeof context\.current_club_name === 'string'/);
+  assert.match(requestNode.parameters.jsCode, /current_club_name: typeof canonicalCurrentClub === 'string'/);
   assert.equal(runNode.parameters.options.queryReplacement, '={{ $json.params }}');
   assert.equal(recoveryNode.parameters.options.queryReplacement, undefined);
   assert.equal(

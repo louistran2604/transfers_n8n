@@ -1154,6 +1154,7 @@ return [{ json: {
 
 function buildEnrichmentRequestCode() {
   return `
+${entityAliasHelpers()}
 const prepared = $('Prepare enrichment batch query').first().json;
 const mode = ['shadow', 'active'].includes(prepared.mode) ? prepared.mode : 'off';
 const now = Date.now();
@@ -1176,12 +1177,13 @@ const fresh = (value) => {
   const timestamp = Date.parse(String(value ?? ''));
   return Number.isFinite(timestamp) && timestamp > now;
 };
-const groups = new Map();
+const preparedContexts = [];
 if (mode !== 'off') {
   for (const input of $input.all()) {
     const context = input.json ?? {};
     const reportId = String(context.transfer_report_id ?? '');
     const reportedName = typeof context.reported_player_name === 'string' ? context.reported_player_name.trim() : '';
+    const canonicalReportedName = canonicalEntity(reportedName, entityAliases.players);
     const providerId = String(context.provider_player_id ?? '');
     if (!/^\\d+$/.test(reportId) || !reportedName || (providerId && !/^\\d+$/.test(providerId))) continue;
     const aliases = parseValue(context.aliases, []);
@@ -1189,42 +1191,55 @@ if (mode !== 'off') {
     const latestStatus = String(context.latest_attempt_status ?? '');
     const latestStarted = Date.parse(String(context.latest_attempt_started_at ?? ''));
     const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
-    if ((Number.isFinite(retryAt) && retryAt > now)
-      || (!providerId && overrides.length === 0
-        && ['ambiguous', 'unresolved'].includes(latestStatus)
-        && Number.isFinite(latestStarted)
-        && latestStarted > now - 86400000)) continue;
+    const canonicalCurrentClub = canonicalEntity(context.current_club_name, entityAliases.clubs);
+    const canonicalDestinationClub = canonicalEntity(context.destination_club_name, entityAliases.clubs);
+    const currentClubKey = namedContext(canonicalCurrentClub);
+    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
+      || context.move_type === 'loan' ? namedContext(canonicalDestinationClub) : null;
+    const clubKey = currentClubKey ?? destinationClubKey;
+    const reportedNameKey = unicodeKey(canonicalReportedName);
+    if (!providerId && (!reportedNameKey || !clubKey)) continue;
+    const itemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
+    const hardBackoff = Number.isFinite(retryAt) && retryAt > now;
+    const ambiguityCooldown = !providerId
+      && ['ambiguous', 'unresolved'].includes(latestStatus)
+      && Number.isFinite(latestStarted)
+      && latestStarted > now - 86400000;
+    const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+  }
+}
+const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
+const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
+const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
+const groups = new Map();
+for (const prepared of preparedContexts) {
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
+    if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
         || context.profile_current_provider_team_id === null
         || latestStatus === 'unattached')) continue;
-    const currentClubKey = namedContext(context.current_club_name);
-    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
-      || context.move_type === 'loan' ? namedContext(context.destination_club_name) : null;
-    const clubKey = currentClubKey ?? destinationClubKey;
-    const reportedNameKey = unicodeKey(reportedName);
-    if (!providerId && (!reportedNameKey || !clubKey)) continue;
-    const itemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
     const existing = groups.get(itemKey);
     if (existing) {
       existing.report_ids.push(reportId);
       for (const alias of aliases) if (typeof alias === 'string' && alias.trim() && !existing.aliases.includes(alias.trim())) existing.aliases.push(alias.trim());
+      if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
       for (const override of overrides) if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) existing.identity_overrides.push(override);
       continue;
     }
     groups.set(itemKey, {
       item_key: itemKey,
-      reported_name: reportedName,
+      reported_name: canonicalReportedName,
       known_provider_player_id: providerId || null,
-      current_club_name: typeof context.current_club_name === 'string' ? context.current_club_name.trim() : null,
+      current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
       report_ids: [reportId],
-      aliases: [...new Set(aliases.filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
+      aliases: [...new Set([...aliases, canonicalReportedName !== reportedName ? reportedName : null].filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
       identity_overrides: overrides,
       team_mapping: context.team_mapping_fresh === true ? parseValue(context.team_mapping, null) : null,
       season_mapping: context.season_mapping_fresh === true ? parseValue(context.season_mapping, null) : null,
       request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, destination_club_key: destinationClubKey },
     });
-  }
 }
 const players = [...groups.values()].slice(0, 25);
 const request = players.length ? {
@@ -1466,10 +1481,20 @@ const enrichmentGroups = (enrichment, now) => {
 };
 const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
-const digestStoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
+const digestHistoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
+const digestSurname = (report) => normalizeAlias(report.player_name).split(' ').at(-1);
+const configuredSiblingPair = (left, right) => {
+  const leftName = normalizeAlias(left.player_name);
+  const rightName = normalizeAlias(right.player_name);
+  if (!leftName || leftName === rightName) return false;
+  return entityAliases.sibling_groups.some((group) => {
+    const members = group.map(normalizeAlias);
+    return members.includes(leftName) && members.includes(rightName);
+  });
+};
 const digestUpdateFields = ['classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'];
 const digestMaterialKey = (report) => JSON.stringify(Object.fromEntries(digestUpdateFields.map((field) => [field, report[field] ?? null])));
-const sameDigestStory = (left, right) => digestStoryKey(left) === digestStoryKey(right);
+const sameDigestStory = (left, right) => digestHistoryKey(left) === digestHistoryKey(right);
 const digestPriority = (report) => {
   if (report.classification === 'official_confirmed') return 0;
   const username = String(report.preferred_source.username ?? '').toLowerCase();
@@ -1496,15 +1521,15 @@ const isNewDigestUpdate = (report) => {
 };
 const candidateReports = pending ? reports.filter((report) => report.pending_idempotency_key === pending.pending_idempotency_key) : reports.filter((report) => isDigestEligible(report) && isNewDigestUpdate(report));
 const seenRevisionIds = new Set();
-const seenStoryKeys = new Set();
-const distinctCandidateReports = candidateReports.filter((report) => {
+const distinctCandidateReports = [];
+for (const report of candidateReports) {
   const revisionId = String(report.revision_id ?? '');
-  const storyKey = digestStoryKey(report);
-  if (!revisionId || seenRevisionIds.has(revisionId) || seenStoryKeys.has(storyKey)) return false;
+  if (!revisionId || seenRevisionIds.has(revisionId)) continue;
+  const sameSurname = distinctCandidateReports.filter((selectedReport) => digestSurname(selectedReport) === digestSurname(report));
+  if (sameSurname.some((selectedReport) => !configuredSiblingPair(selectedReport, report))) continue;
   seenRevisionIds.add(revisionId);
-  seenStoryKeys.add(storyKey);
-  return true;
-});
+  distinctCandidateReports.push(report);
+}
 const selected = [...distinctCandidateReports.slice(0, 15), ...distinctCandidateReports.slice(15).filter((report) => digestPriority(report) < 2).slice(0, 3)];
 const now = new Date();
 const title = 'Football transfer digest';
@@ -1540,6 +1565,7 @@ for (const report of selected) {
 }
 let totalCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
 for (const field of fields) {
+  const enrichmentHeading = '**Player profile & statistics**';
   const accepted = [];
   const sourceLine = field.lines.at(-1);
   const transferLines = field.lines.slice(0, -1);
@@ -1547,14 +1573,14 @@ for (const field of fields) {
     if (!group.line) continue;
     const nextAccepted = [...accepted, group];
     const enrichmentLines = nextAccepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
-    const value = [...transferLines, ...enrichmentLines, sourceLine].join('\\n');
+    const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\\n');
     const difference = value.length - field.value.length;
     if (value.length > 1024 || totalCharacters + difference > 6000) break;
     accepted.push(group);
   }
   if (accepted.length) {
     const enrichmentLines = accepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
-    const value = [...transferLines, ...enrichmentLines, sourceLine].join('\\n');
+    const value = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\\n');
     totalCharacters += value.length - field.value.length;
     field.value = value;
   }
