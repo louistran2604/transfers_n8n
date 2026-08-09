@@ -210,7 +210,12 @@ Journalist name, source URL, platform, post timestamp, priority, and reliability
 
 Qwen must return `{ transfer_related, reports[] }` matching [the strict schema](workflow/qwen-response-schema.json). Every report property is required; unknown nullable facts use `null`. Classifications and move types are locked enums, dates use ISO `YYYY-MM-DD`, currencies use ISO three-letter codes, and monetary values use base units.
 
-Only senior men's football is in scope. Known women's-football players are listed in [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt), one name or spelling variant per line. This file is the authoritative exclusion list. After adding a name, regenerate and re-import the main workflow:
+Only senior men's football is in scope. Filter configuration lives in:
+
+- [workflow/entity-aliases.json](workflow/entity-aliases.json): `clubs`, `players`, `enrichment_player_aliases`, `sibling_groups`, and `common_surnames`.
+- [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt): the authoritative exclusion list, with one name or spelling variant per line.
+
+After editing either file, run from the repository root:
 
 ```bash
 node workflow/build-workflows.mjs
@@ -218,22 +223,14 @@ node workflow/build-workflows.mjs --check
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n import:workflow --input=/workflows/football-transfer-monitor.json
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
-  n8n publish:workflow --id=football-transfer-monitor
+  n8n publish:workflow --id=football-transfer-monitor --versionId=<new-version-id>
 # Restart n8n only if the publish command requests it.
 docker compose -f deploy/n8n/compose.yaml restart n8n
 ```
 
-`PLAYER_ENRICHMENT_MODE=off` is optional and harmless for the generator commands because the generator does not read it; verification examples use the prefix as a safety convention. The setting matters for Compose/runtime commands, and production `deploy/n8n/.env` remains `active`.
+The `PLAYER_ENRICHMENT_MODE` prefix is unnecessary for the two Node commands because the generator does not read it. Import deactivates the workflow and replaces its draft; identify the imported draft's new `versionId`, publish that version, and restart n8n if the CLI requests it. Production `deploy/n8n/.env` remains `active`.
 
 The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
-
-Identity and digest-name configuration is maintained in [workflow/entity-aliases.json](workflow/entity-aliases.json):
-
-- `clubs`: canonical club names and spelling variants.
-- `players`: global player aliases applied before report persistence, enrichment, and digest selection.
-- `enrichment_player_aliases`: player aliases used only for enrichment when the canonical current club matches a configured scope. They do not rewrite persisted reports.
-- `sibling_groups`: exact full-name pairs allowed to coexist despite a shared surname.
-- `common_surnames`: unaccented final-token surnames whose distinct stated given names may coexist in one digest.
 
 The generated Qwen prompt asks the model to preserve stated given names for common surnames, without inventing a missing name or reordering surname-first names. The JavaScript digest filter remains authoritative.
 
