@@ -90,6 +90,40 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual("resolved", resolved["status"])
         self.assertEqual("826643", resolved["identity"]["provider_player_id"])
 
+    def test_only_curated_club_variants_bridge_provider_names(self):
+        cases = [
+            ("Barcelona", "FC Barcelona"),
+            ("Napoli", "SSC Napoli"),
+            ("Marseille", "Olympique de Marseille"),
+        ]
+        for reported, provider in cases:
+            with self.subTest(reported=reported):
+                payload = {
+                    "results": [{
+                        "type": "player",
+                        "entity": {
+                            "id": 10,
+                            "name": "Test Player",
+                            "team": {"id": 20, "name": provider, "sport": {"slug": "football"}, "gender": "M"},
+                        },
+                    }],
+                }
+                result = resolve_search(
+                    "Test Player",
+                    payload,
+                    reported_club_name=reported,
+                    reported_club_names=[reported, provider],
+                )
+                self.assertEqual("resolved", result["status"])
+
+        unknown = resolve_search(
+            "Test Player",
+            {"results": [{"type": "player", "entity": {"id": 10, "name": "Test Player", "team": {"id": 20, "name": "Olympique Lyonnais", "sport": {"slug": "football"}, "gender": "M"}}}]},
+            reported_club_name="Olympique de Marseille",
+            reported_club_names=["Marseille", "Olympique de Marseille"],
+        )
+        self.assertEqual("unresolved", unknown["status"])
+
     def test_duplicate_exact_names_are_ambiguous_and_bounded(self):
         result = resolve_search("John Smith", search_payload("john_smith.json"))
         self.assertEqual("ambiguous", result["status"])

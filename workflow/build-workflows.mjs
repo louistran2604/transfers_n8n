@@ -222,15 +222,59 @@ SELECT (SELECT id::text FROM report) AS transfer_report_id,
 
 function enrichmentContextSql() {
   return `
-WITH requested AS (
+WITH requested_input AS (
   SELECT value::text::bigint AS transfer_report_id
   FROM jsonb_array_elements_text($1::jsonb)
+),
+historical_candidates AS (
+  SELECT tr.id AS transfer_report_id
+  FROM transfer_reports tr
+  JOIN LATERAL (
+    SELECT attempt.status, attempt.retryable, attempt.next_retry_at, attempt.started_at,
+      attempt.evidence->>'resolver_version' AS resolver_version
+    FROM player_enrichment_attempts attempt
+    WHERE attempt.transfer_report_id = tr.id
+    ORDER BY attempt.started_at DESC, attempt.id DESC
+    LIMIT 1
+  ) latest_attempt ON true
+  WHERE NOT EXISTS (
+    SELECT 1 FROM transfer_report_player_resolutions resolution
+    WHERE resolution.transfer_report_id = tr.id
+  )
+    AND (
+      (
+        latest_attempt.status IN ('unresolved', 'ambiguous')
+        AND (
+          latest_attempt.started_at <= CURRENT_TIMESTAMP - interval '24 hours'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3'
+        )
+      )
+      OR (
+        latest_attempt.status IN ('provider_failure', 'timeout', 'rate_limited', 'deferred', 'schema_failure')
+        AND latest_attempt.retryable
+        AND (
+          latest_attempt.next_retry_at <= CURRENT_TIMESTAMP
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3'
+        )
+      )
+    )
+  ORDER BY
+    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3') DESC,
+    latest_attempt.started_at,
+    tr.id
+  LIMIT 25
+),
+requested AS (
+  SELECT transfer_report_id FROM requested_input
+  UNION
+  SELECT transfer_report_id FROM historical_candidates
 )
 SELECT
   tr.id::text AS transfer_report_id,
   tr.player_id::text AS placeholder_player_id,
   tr.reported_player_name,
   tr.current_club_name,
+  tr.normalized_data->>'former_club_name' AS former_club_name,
   tr.destination_club_name,
   tr.classification,
   tr.move_type,
@@ -272,9 +316,26 @@ SELECT
   latest_attempt.status AS latest_attempt_status,
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
+  latest_attempt.resolver_version AS latest_attempt_resolver_version,
+  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3' AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
+JOIN LATERAL (
+  SELECT
+    COALESCE(
+      tr.normalized_data->>'reported_name_key',
+      NULLIF(btrim(regexp_replace(lower(normalize(tr.reported_player_name, NFKC)), '[[:punct:][:space:]]+', ' ', 'g')), '')
+    ) AS reported_name_key,
+    COALESCE(
+      tr.normalized_data->>'current_club_key',
+      NULLIF(btrim(regexp_replace(lower(normalize(tr.current_club_name, NFKC)), '[[:punct:][:space:]]+', ' ', 'g')), '')
+    ) AS current_club_key,
+    COALESCE(
+      tr.normalized_data->>'destination_club_key',
+      NULLIF(btrim(regexp_replace(lower(normalize(tr.destination_club_name, NFKC)), '[[:punct:][:space:]]+', ' ', 'g')), '')
+    ) AS destination_club_key
+) context_key ON true
 JOIN LATERAL (
   SELECT revision.snapshot
   FROM transfer_report_revisions revision
@@ -287,10 +348,26 @@ LEFT JOIN transfer_report_sources preferred_source
  AND preferred_source.is_preferred
 LEFT JOIN raw_posts post ON post.id = preferred_source.raw_post_id
 LEFT JOIN source_accounts source ON source.id = post.source_account_id
-LEFT JOIN transfer_report_player_resolutions resolution
-  ON resolution.transfer_report_id = tr.id
-LEFT JOIN player_provider_ids provider_id
-  ON provider_id.id = resolution.player_provider_id
+LEFT JOIN LATERAL (
+  SELECT selected.provider_player_id, selected.player_id
+  FROM (
+    SELECT provider.provider_player_id, provider.player_id, 0 AS priority
+    FROM transfer_report_player_resolutions resolution
+    JOIN player_provider_ids provider ON provider.id = resolution.player_provider_id
+    WHERE resolution.transfer_report_id = tr.id
+    UNION ALL
+    SELECT min(provider.provider_player_id), min(provider.player_id), 1 AS priority
+    FROM player_aliases alias
+    JOIN player_provider_ids provider
+      ON provider.player_id = alias.player_id AND provider.provider = 'sofascore'
+    WHERE alias.provider = 'sofascore'
+      AND alias.is_active
+      AND alias.unicode_key IS NOT DISTINCT FROM context_key.reported_name_key
+    HAVING count(DISTINCT provider.provider_player_id) = 1
+  ) selected
+  ORDER BY selected.priority
+  LIMIT 1
+) provider_id ON true
 LEFT JOIN current_player_enrichment current
   ON current.transfer_report_id = tr.id
 LEFT JOIN provider_teams team
@@ -325,12 +402,13 @@ LEFT JOIN LATERAL (
   WHERE identity_override.provider = 'sofascore'
     AND identity_override.revoked_at IS NULL
     AND identity_override.effective_at <= CURRENT_TIMESTAMP
-    AND identity_override.reported_name_key = regexp_replace(
-      lower(btrim(tr.reported_player_name)), '[[:punct:][:space:]]+', ' ', 'g'
-    )
+    AND identity_override.reported_name_key IS NOT DISTINCT FROM context_key.reported_name_key
+    AND identity_override.current_club_key IS NOT DISTINCT FROM context_key.current_club_key
+    AND identity_override.destination_club_key IS NOT DISTINCT FROM context_key.destination_club_key
 ) overrides ON true
 LEFT JOIN LATERAL (
-  SELECT attempt.status, attempt.started_at, attempt.next_retry_at
+  SELECT attempt.status, attempt.started_at, attempt.next_retry_at,
+    attempt.evidence->>'resolver_version' AS resolver_version
   FROM player_enrichment_attempts attempt
   WHERE attempt.transfer_report_id = tr.id
   ORDER BY attempt.started_at DESC, attempt.id DESC
@@ -360,6 +438,7 @@ resolved_items AS (
     item->'identity'->>'canonical_name' AS canonical_name
   FROM expanded
   WHERE item->'identity' IS NOT NULL
+    AND item->>'status' IN ('fresh', 'cache_hit', 'partial', 'unsupported_competition', 'missing_season', 'club_conflict', 'unattached')
     AND item->'identity'->>'provider' = 'sofascore'
     AND item->'identity'->>'provider_player_id' ~ '^[0-9]+$'
   ORDER BY item->'identity'->>'provider_player_id', transfer_report_id
@@ -418,6 +497,7 @@ report_resolutions AS (
   FROM expanded
   JOIN provider_ids provider_id
     ON provider_id.provider_player_id = expanded.item->'identity'->>'provider_player_id'
+  WHERE expanded.item->>'status' IN ('fresh', 'cache_hit', 'partial', 'unsupported_competition', 'missing_season', 'club_conflict', 'unattached')
   ON CONFLICT (transfer_report_id) DO UPDATE
   SET player_provider_id = EXCLUDED.player_provider_id,
       resolution_source = EXCLUDED.resolution_source,
@@ -441,7 +521,10 @@ aliases AS (
   INSERT INTO player_aliases (
     player_id, provider, alias, unicode_key, folded_key, alias_type, source, evidence
   )
-  SELECT DISTINCT canonical.player_id, 'sofascore', report.reported_player_name,
+  SELECT DISTINCT ON (
+    canonical.player_id,
+    expanded.item->'request_context'->>'reported_name_key'
+  ) canonical.player_id, 'sofascore', report.reported_player_name,
     expanded.item->'request_context'->>'reported_name_key',
     expanded.item->'request_context'->>'reported_name_key',
     'report', 'transfer_report',
@@ -450,6 +533,10 @@ aliases AS (
   JOIN canonical_reports canonical ON canonical.id = expanded.transfer_report_id
   JOIN transfer_reports report ON report.id = expanded.transfer_report_id
   WHERE NULLIF(expanded.item->'request_context'->>'reported_name_key', '') IS NOT NULL
+  ORDER BY canonical.player_id,
+    expanded.item->'request_context'->>'reported_name_key',
+    report.id,
+    expanded.item->>'item_key'
   ON CONFLICT (player_id, provider, unicode_key) DO UPDATE
   SET alias = EXCLUDED.alias, evidence = EXCLUDED.evidence, is_active = true
   RETURNING id
@@ -558,25 +645,36 @@ seasons AS (
       fresh_until = EXCLUDED.fresh_until
   RETURNING id, provider_competition_id, provider_season_id
 ),
-team_mappings AS (
-  INSERT INTO team_competition_mappings (
-    provider_team_id, provider_competition_id, mapping_source, rule_version,
-    evidence, effective_from, verified_at, fresh_until
-  )
-  SELECT DISTINCT team.id, competition.id, 'automatic', 'competition-v1',
-    jsonb_build_object('validated_by_service', true),
-    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '24 hours'
+incoming_team_mappings AS (
+  SELECT DISTINCT team.id AS provider_team_id, competition.id AS provider_competition_id
   FROM items
   JOIN teams team
     ON team.provider_team_id = item->'profile'->'current_club'->>'provider_team_id'
   JOIN competitions competition
     ON competition.provider_unique_tournament_id =
       item->'statistics'->>'provider_unique_tournament_id'
+),
+unambiguous_team_mappings AS (
+  SELECT provider_team_id, min(provider_competition_id) AS provider_competition_id
+  FROM incoming_team_mappings
+  GROUP BY provider_team_id
+  HAVING count(DISTINCT provider_competition_id) = 1
+),
+team_mappings AS (
+  INSERT INTO team_competition_mappings (
+    provider_team_id, provider_competition_id, mapping_source, rule_version,
+    evidence, effective_from, verified_at, fresh_until
+  )
+  SELECT incoming.provider_team_id, incoming.provider_competition_id,
+    'automatic', 'competition-v1',
+    jsonb_build_object('validated_by_service', true),
+    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + interval '24 hours'
+  FROM unambiguous_team_mappings incoming
   WHERE NOT EXISTS (
     SELECT 1 FROM team_competition_mappings existing
-    WHERE existing.provider_team_id = team.id
+    WHERE existing.provider_team_id = incoming.provider_team_id
       AND existing.superseded_at IS NULL
-      AND existing.provider_competition_id <> competition.id
+      AND existing.provider_competition_id <> incoming.provider_competition_id
   )
   ON CONFLICT (provider_team_id) WHERE superseded_at IS NULL DO UPDATE
   SET provider_competition_id = EXCLUDED.provider_competition_id,
@@ -700,9 +798,15 @@ attempts AS (
        AND expanded.item->'warning_codes' ? 'missing_season' THEN 'missing_season'
       ELSE expanded.item->>'status'
     END,
-    COALESCE((expanded.item->>'retryable')::boolean, false),
-    CASE WHEN COALESCE((expanded.item->>'retryable')::boolean, false)
-      THEN CURRENT_TIMESTAMP + interval '10 minutes' ELSE NULL END,
+    CASE WHEN expanded.item->>'status' IN ('unresolved', 'ambiguous')
+      THEN true ELSE COALESCE((expanded.item->>'retryable')::boolean, false) END,
+    CASE
+      WHEN expanded.item->>'status' IN ('unresolved', 'ambiguous')
+        THEN CURRENT_TIMESTAMP + interval '24 hours'
+      WHEN COALESCE((expanded.item->>'retryable')::boolean, false)
+        THEN CURRENT_TIMESTAMP + interval '10 minutes'
+      ELSE NULL
+    END,
     NULLIF(expanded.item->'identity'->>'score', '')::numeric,
     NULLIF(expanded.item->'identity'->>'margin', '')::numeric,
     COALESCE((expanded.item->>'provider_calls')::integer, 0),
@@ -719,7 +823,8 @@ attempts AS (
         WHEN jsonb_typeof(expanded.item->'candidates') = 'array'
           THEN expanded.item->'candidates'
         ELSE '[]'::jsonb
-      END
+      END,
+      'resolver_version', expanded.item->>'resolver_version'
     ),
     expanded.item->'error'->>'code',
     CASE WHEN expanded.item->'error'->>'code' IS NULL THEN NULL
@@ -968,6 +1073,11 @@ function runtimeHelpers() {
   return `
 ${entityAliasHelpers()}
 const normalize = normalizeAlias;
+const unicodeKey = (value) => String(value ?? '').normalize('NFKC').toLocaleLowerCase('und').replace(/[\\p{P}\\p{Z}]+/gu, ' ').trim().replace(/\\s+/gu, ' ');
+const namedKey = (value) => {
+  const normalized = unicodeKey(value);
+  return normalized && !/^(not reported|unknown|n a)$/u.test(normalized) ? normalized : null;
+};
 const key = (report) => [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const compareSource = (left, right) => (left.source.priority_rank - right.source.priority_rank) || (right.source.reliability_score - left.source.reliability_score) || String(left.posted_at).localeCompare(String(right.posted_at));
@@ -1016,6 +1126,7 @@ const canonicalizeReport = (report) => ({
   ...report,
   player_name: canonicalEntity(report.player_name, entityAliases.players),
   current_club_name: canonicalEntity(report.current_club_name, entityAliases.clubs),
+  former_club_name: canonicalEntity(report.former_club_name, entityAliases.clubs),
   destination_club_name: canonicalEntity(report.destination_club_name, entityAliases.clubs),
 });`;
 }
@@ -1089,7 +1200,7 @@ function qwenParseCode() {
   return `
 ${entityAliasHelpers()}
 const requests = $('Build Qwen request').all();
-const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])};
+const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
@@ -1100,7 +1211,7 @@ return $input.all().flatMap((item, index) => {
   let parsed;
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
-  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
+  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
   const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
@@ -1137,7 +1248,7 @@ for (const reports of groups.values()) {
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
-  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
+  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
     ...snapshot,
@@ -1145,7 +1256,7 @@ for (const reports of groups.values()) {
     normalized_player_name: normalize(merged.player_name),
     first_reported_at: merged.first_reported_at,
     last_reported_at: merged.last_reported_at,
-    normalized_data: { conflicts },
+    normalized_data: { conflicts, former_club_name: merged.former_club_name ?? null, reported_name_key: unicodeKey(merged.player_name), current_club_key: namedKey(merged.current_club_name), destination_club_key: namedKey(merged.destination_club_name) },
     preferred_raw_post_id: String(best.raw_post_id),
     sources: reports.map((report) => ({ raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source })),
     snapshot,
@@ -1213,21 +1324,27 @@ if (mode !== 'off') {
     const latestStarted = Date.parse(String(context.latest_attempt_started_at ?? ''));
     const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
     const canonicalCurrentClub = canonicalEntity(context.current_club_name, entityAliases.clubs);
+    const canonicalFormerClub = canonicalEntity(context.former_club_name, entityAliases.clubs);
     const canonicalDestinationClub = canonicalEntity(context.destination_club_name, entityAliases.clubs);
     const currentClubKey = namedContext(canonicalCurrentClub);
+    const formerClubKey = namedContext(canonicalFormerClub);
     const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
       || context.move_type === 'loan' ? namedContext(canonicalDestinationClub) : null;
-    const clubKey = currentClubKey ?? destinationClubKey;
+    const destinationEligible = destinationClubKey !== null;
+    const clubKey = currentClubKey ?? destinationClubKey ?? formerClubKey;
     const reportedNameKey = unicodeKey(canonicalReportedName);
     if (!providerId && (!reportedNameKey || !clubKey)) continue;
-    const itemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
-    const hardBackoff = Number.isFinite(retryAt) && retryAt > now;
+    const groupedItemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
+    const forceResolverRetry = context.force_resolver_retry === true;
+    const hardBackoff = !forceResolverRetry && Number.isFinite(retryAt) && retryAt > now;
     const ambiguityCooldown = !providerId
+      && !forceResolverRetry
       && ['ambiguous', 'unresolved'].includes(latestStatus)
       && Number.isFinite(latestStarted)
       && latestStarted > now - 86400000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    const itemKey = hasActiveOverride ? groupedItemKey + '|report:' + reportId : groupedItemKey;
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
 }
 const enrichmentPriority = ({ context }) => {
@@ -1253,10 +1370,11 @@ preparedContexts.sort((left, right) => {
 const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
 const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
 const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
+const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
 const groups = new Map();
 for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, providerId, aliases, overrides, latestStatus, currentClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
-    if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
+    if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
         || context.profile_current_provider_team_id === null
@@ -1274,13 +1392,17 @@ for (const prepared of preparedContexts) {
       reported_name: canonicalReportedName,
       known_provider_player_id: providerId || null,
       current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
-      destination_club_name: typeof canonicalDestinationClub === 'string' ? canonicalDestinationClub : null,
+      current_club_aliases: entityAliases.club_variants[normalizeAlias(canonicalCurrentClub)] ?? [],
+      former_club_name: typeof canonicalFormerClub === 'string' ? canonicalFormerClub : null,
+      former_club_aliases: entityAliases.club_variants[normalizeAlias(canonicalFormerClub)] ?? [],
+      destination_club_name: destinationEligible && typeof canonicalDestinationClub === 'string' ? canonicalDestinationClub : null,
+      destination_club_aliases: destinationEligible ? entityAliases.club_variants[normalizeAlias(canonicalDestinationClub)] ?? [] : [],
       report_ids: [reportId],
       aliases: [...new Set([...aliases, canonicalReportedName !== reportedName ? reportedName : null].filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()))],
       identity_overrides: overrides,
       team_mapping: context.team_mapping_fresh === true ? parseValue(context.team_mapping, null) : null,
       season_mapping: context.season_mapping_fresh === true ? parseValue(context.season_mapping, null) : null,
-      request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, destination_club_key: destinationClubKey },
+      request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, former_club_key: formerClubKey, destination_club_key: destinationClubKey },
     });
 }
 const players = [...groups.values()].slice(0, 25);
@@ -1308,6 +1430,7 @@ const failure = (player, code) => ({
   report_ids: player.report_ids,
   request_context: player.request_context ?? {},
   status: 'schema_failure',
+  resolver_version: 'identity-v3',
   retryable: true,
   provider_calls: 0,
   cache_hits: 0,
@@ -1354,10 +1477,12 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
         request_id: request.request_id,
         items: players.map((player) => {
           const item = byKey.get(player.item_key);
-          if (!item || !allowed.has(item.status)) return failure(player, 'service_contract_invalid');
+          if (!item || !allowed.has(item.status) || typeof item.resolver_version !== 'string' || !item.resolver_version) return failure(player, 'service_contract_invalid');
           const identity = item.identity;
           const providerId = String(identity?.provider_player_id ?? '');
-          if (identity !== null && (!identity || identity.provider !== 'sofascore' || !/^\\d+$/.test(providerId))) return failure(player, 'service_contract_invalid');
+          const identityForbidden = ['unresolved', 'ambiguous', 'deferred', 'provider_failure', 'rate_limited', 'timeout', 'schema_failure'].includes(item.status);
+          if (identityForbidden && identity !== null) return failure(player, 'service_contract_invalid');
+          if (identity !== null && (!identity || identity.provider !== 'sofascore' || !/^\\d+$/.test(providerId) || typeof identity.score !== 'number' || !Number.isFinite(identity.score) || identity.score < 0 || identity.score > 100 || typeof identity.margin !== 'number' || !Number.isFinite(identity.margin) || identity.margin < 0 || identity.margin > 100 || identity.margin > identity.score)) return failure(player, 'service_contract_invalid');
           if (['fresh', 'cache_hit', 'partial'].includes(item.status) && (!identity || !item.profile || typeof item.profile !== 'object')) return failure(player, 'service_contract_invalid');
           if (['fresh', 'cache_hit'].includes(item.status) && (!item.statistics || typeof item.statistics !== 'object')) return failure(player, 'service_contract_invalid');
           if (item.profile && (!Number.isFinite(Date.parse(String(item.profile.retrieved_at ?? ''))) || (item.profile.current_club !== null && (typeof item.profile.current_club !== 'object' || !/^\\d+$/.test(String(item.profile.current_club.provider_team_id ?? '')) || typeof item.profile.current_club.name !== 'string' || !item.profile.current_club.name.trim())) || (item.profile.market_value_currency !== null && item.profile.market_value_currency !== undefined && !/^[A-Z]{3}$/.test(String(item.profile.market_value_currency))))) return failure(player, 'service_contract_invalid');
@@ -1369,6 +1494,7 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
             report_ids: player.report_ids,
             request_context: player.request_context ?? {},
             status: item.status,
+            resolver_version: item.resolver_version,
             retryable: item.error?.retryable === true || (Array.isArray(item.warnings) && item.warnings.some((warning) => warning?.retryable === true)),
             provider_calls: Number.isInteger(item.provider_calls) && item.provider_calls >= 0 ? item.provider_calls : 0,
             cache_hits: Number(item.provenance?.profile_cache === 'hit') + Number(item.provenance?.statistics_cache === 'hit'),
@@ -1379,7 +1505,7 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
               canonical_name: typeof item.profile?.canonical_name === 'string' ? item.profile.canonical_name : player.reported_name,
               score: Number.isFinite(identity.score) ? identity.score : null,
               margin: Number.isFinite(identity.margin) ? identity.margin : null,
-              resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version ? identity.resolver_version : 'identity-v1',
+              resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version ? identity.resolver_version : item.resolver_version,
             } : null,
             profile: item.profile && typeof item.profile === 'object' ? {
               ...item.profile,
@@ -1523,6 +1649,22 @@ const enrichmentGroups = (enrichment, now) => {
   ];
 };
 const hasNamedClub = (value) => typeof value === 'string' && value.trim().length > 0 && !/^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim());
+const equivalentClub = (left, right) => {
+  if (!hasNamedClub(left) || !hasNamedClub(right)) return false;
+  const parts = (value) => normalizeAlias(entityAliases.clubs[normalizeAlias(value)] ?? value).split(' ').filter(Boolean);
+  const stripSuffix = (values) => ['afc', 'cf', 'cp', 'fc', 'sc'].includes(values.at(-1)) ? values.slice(0, -1) : values;
+  const leftParts = stripSuffix(parts(left));
+  const rightParts = stripSuffix(parts(right));
+  return leftParts.length > 0 && leftParts.join(' ') === rightParts.join(' ');
+};
+const withPresentationCurrentClub = (report) => {
+  if (hasNamedClub(report.current_club_name) || report.pending_idempotency_key) return report;
+  const profile = report.enrichment?.profile;
+  const profileClub = namedEnrichmentValue(profile?.current_club_name);
+  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
+  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name)) return report;
+  return { ...report, current_club_name: profileClub };
+};
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
 const digestHistoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
 const digestSurname = (report) => normalizeAlias(report.player_name).split(' ').at(-1);
@@ -1553,7 +1695,7 @@ const reports = rows.filter((row) => row.row_type === 'candidate').map((row) => 
   const item = row.payload ?? {};
   const snapshot = typeof item.snapshot === 'string' ? JSON.parse(item.snapshot) : item.snapshot;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || typeof snapshot.classification !== 'string') return null;
-  return canonicalizeReport({ ...snapshot, enrichment: item.enrichment ?? null, revision_id: item.revision_id, post_url: item.post_url, pending_idempotency_key: item.pending_idempotency_key, pending_window_started_at: item.pending_window_started_at, pending_window_ended_at: item.pending_window_ended_at, pending_request_payload: item.pending_request_payload, sent_history: sentHistory, preferred_source: { priority_rank: Number(item.priority_rank), reliability_score: Number(item.reliability_score), username: item.source_username, display_name: item.source_name } });
+  return withPresentationCurrentClub(canonicalizeReport({ ...snapshot, enrichment: item.enrichment ?? null, revision_id: item.revision_id, post_url: item.post_url, pending_idempotency_key: item.pending_idempotency_key, pending_window_started_at: item.pending_window_started_at, pending_window_ended_at: item.pending_window_ended_at, pending_request_payload: item.pending_request_payload, sent_history: sentHistory, preferred_source: { priority_rank: Number(item.priority_rank), reliability_score: Number(item.reliability_score), username: item.source_username, display_name: item.source_name } }));
 }).filter(Boolean).sort((a, b) => (digestPriority(a) - digestPriority(b)) || (a.preferred_source.priority_rank - b.preferred_source.priority_rank) || (b.preferred_source.reliability_score - a.preferred_source.reliability_score) || (precedence[b.classification] - precedence[a.classification]) || (b.confidence - a.confidence));
 const pending = reports.find((report) => report.pending_idempotency_key);
 const isNewDigestUpdate = (report) => {

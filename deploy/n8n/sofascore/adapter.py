@@ -15,7 +15,15 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from competition import movement_scope, select_reporting_season, validated_competition
-from identity import known_identity, manual_identity_decision, resolve_search
+from identity import (
+    RESOLVER_VERSION,
+    exact_name_candidates,
+    is_discriminating_club_name,
+    known_identity,
+    manual_identity_decision,
+    resolve_search,
+    transfer_history_matches_club,
+)
 from models import nullable_float, nullable_int
 
 
@@ -166,7 +174,7 @@ class SofascoreAdapter:
                     return self._last_good[cache_key], "stale"
                 raise
         self._last_good[cache_key] = payload
-        if cache_key.startswith(("seasons-", "tournament-")):
+        if cache_key.startswith(("seasons-", "tournament-", "transfer-history-")):
             self._mapping_cache[cache_key] = (
                 self.now() + timedelta(hours=max_age_hours),
                 payload,
@@ -180,6 +188,11 @@ class SofascoreAdapter:
         digest = hashlib.sha256(cache_path.read_bytes()).hexdigest()[:12]
         quarantine = cache_path.with_name(f"{cache_path.name}.corrupt-{digest}")
         os.replace(cache_path, quarantine)
+
+    def _invalidate_cache(self, cache_key: str) -> None:
+        self._mapping_cache.pop(cache_key, None)
+        self._last_good.pop(cache_key, None)
+        (self.cache_dir / f"{cache_key}.json").unlink(missing_ok=True)
 
     def _profile(self, player_id: str) -> tuple[dict[str, Any], str]:
         payload, cache_status = self.fetch_json(
@@ -296,6 +309,11 @@ class SofascoreAdapter:
         }
 
     def enrich(self, item: dict[str, Any]) -> dict[str, Any]:
+        result = self._enrich(item)
+        result["resolver_version"] = RESOLVER_VERSION
+        return result
+
+    def _enrich(self, item: dict[str, Any]) -> dict[str, Any]:
         calls_before = self.provider_calls
         item_key = item["item_key"]
         override = manual_identity_decision(
@@ -336,10 +354,12 @@ class SofascoreAdapter:
         else:
             reported_club_names = [
                 club_name
-                for club_name in (
+                for club_name in [
                     item.get("current_club_name"),
+                    *(item.get("current_club_aliases") or []),
                     item.get("destination_club_name"),
-                )
+                    *(item.get("destination_club_aliases") or []),
+                ]
                 if isinstance(club_name, str)
             ]
             search, _ = self.fetch_json(
@@ -347,6 +367,7 @@ class SofascoreAdapter:
                 f"search-{hashlib.sha256(item['reported_name'].encode()).hexdigest()}",
                 self.profile_max_age_hours,
             )
+            search_payloads = [search]
             resolution = resolve_search(
                 item["reported_name"],
                 search,
@@ -362,6 +383,7 @@ class SofascoreAdapter:
                     f"search-{hashlib.sha256(alias.encode()).hexdigest()}",
                     self.profile_max_age_hours,
                 )
+                search_payloads.append(alias_search)
                 resolution = resolve_search(
                     item["reported_name"],
                     alias_search,
@@ -372,6 +394,62 @@ class SofascoreAdapter:
                     reported_club_names=reported_club_names,
                     rejected_player_ids=rejected_player_ids,
                 )
+            former_club = item.get("former_club_name")
+            has_current_club = is_discriminating_club_name(item.get("current_club_name"))
+            if resolution["status"] != "resolved" and not has_current_club and isinstance(former_club, str):
+                candidates_by_id = {}
+                for search_payload in search_payloads:
+                    for candidate in exact_name_candidates(
+                        item["reported_name"],
+                        search_payload,
+                        aliases=item.get("aliases"),
+                        rejected_player_ids=rejected_player_ids,
+                    ):
+                        candidates_by_id[candidate["provider_player_id"]] = candidate
+                exact_candidates = sorted(
+                    candidates_by_id.values(),
+                    key=lambda candidate: int(candidate["provider_player_id"]),
+                )
+                if len(exact_candidates) > 3:
+                    resolution = {"status": "ambiguous", "candidates": exact_candidates[:5]}
+                else:
+                    former_names = [
+                        name
+                        for name in [
+                            former_club,
+                            *(item.get("former_club_aliases") or []),
+                        ]
+                        if isinstance(name, str)
+                    ]
+                    history_matches = []
+                    for candidate in exact_candidates:
+                        candidate_id = candidate["provider_player_id"]
+                        history, _ = self.fetch_json(
+                            f"player/{candidate_id}/transfer-history",
+                            f"transfer-history-{candidate_id}",
+                            24,
+                        )
+                        try:
+                            matched = transfer_history_matches_club(history, former_names)
+                        except ValueError as error:
+                            self._invalidate_cache(f"transfer-history-{candidate_id}")
+                            raise SchemaError(str(error)) from error
+                        if matched:
+                            history_matches.append(candidate)
+                    if len(history_matches) == 1:
+                        candidate = history_matches[0]
+                        identity = known_identity(candidate["provider_player_id"])
+                        identity.update(score=80, margin=80)
+                        resolution = {
+                            "status": "resolved",
+                            "identity": identity,
+                            "candidates": exact_candidates[:5],
+                        }
+                    elif len(history_matches) > 1:
+                        tied = [{**candidate, "score": 80} for candidate in history_matches]
+                        resolution = {"status": "ambiguous", "candidates": tied[:5]}
+                    else:
+                        resolution = {"status": "unresolved", "candidates": exact_candidates[:5]}
             if resolution["status"] != "resolved":
                 status = resolution["status"]
                 return {

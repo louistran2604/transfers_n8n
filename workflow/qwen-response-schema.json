@@ -15,6 +15,7 @@
           "player_name",
           "player_identity_hint",
           "current_club_name",
+          "former_club_name",
           "destination_club_name",
           "classification",
           "move_type",
@@ -40,6 +41,7 @@
           "player_name": { "type": "string", "minLength": 1 },
           "player_identity_hint": { "type": ["string", "null"] },
           "current_club_name": { "type": ["string", "null"] },
+          "former_club_name": { "type": ["string", "null"] },
           "destination_club_name": { "type": ["string", "null"] },
           "classification": {
             "type": "string",

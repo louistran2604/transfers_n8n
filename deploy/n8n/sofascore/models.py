@@ -37,7 +37,7 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
     normalized = dict(value)
     normalized["item_key"] = item_key
     normalized["reported_name"] = reported_name
-    for club_field in ("current_club_name", "destination_club_name"):
+    for club_field in ("current_club_name", "former_club_name", "destination_club_name"):
         if club_field in value:
             normalized[club_field] = optional_string(
                 value.get(club_field),
@@ -59,6 +59,17 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
         raise ValueError(f"players[{index}].aliases must be an array of strings")
     normalized["report_ids"] = report_ids
     normalized["aliases"] = aliases
+    for alias_field in (
+        "current_club_aliases",
+        "former_club_aliases",
+        "destination_club_aliases",
+    ):
+        club_aliases = value.get(alias_field, [])
+        if not isinstance(club_aliases, list) or any(
+            not isinstance(item, str) or not item.strip() for item in club_aliases
+        ):
+            raise ValueError(f"players[{index}].{alias_field} must be an array of strings")
+        normalized[alias_field] = club_aliases
 
     for mapping_name, id_fields in (
         ("team_mapping", ("provider_team_id", "provider_unique_tournament_id")),

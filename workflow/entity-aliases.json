@@ -2,6 +2,8 @@
   "clubs": [
     { "canonical": "Bayer Leverkusen", "aliases": ["Bayer 04 Leverkusen"] },
     { "canonical": "Barcelona", "aliases": ["FC Barcelona", "Barca", "Barça"] },
+    { "canonical": "Napoli", "aliases": ["SSC Napoli"] },
+    { "canonical": "Marseille", "aliases": ["Olympique de Marseille"] },
     { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München"] },
     { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
     { "canonical": "Manchester United", "aliases": ["Man Utd", "Man United", "MUFC"] },

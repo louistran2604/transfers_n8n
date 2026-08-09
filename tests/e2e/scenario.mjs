@@ -82,7 +82,7 @@ const activeEnrichment = {
 };
 const activeValue = buildDiscordDigest([{ ...transferOnlyReport, enrichment: activeEnrichment }]).embeds[0].fields[0].value;
 assert.match(activeValue, /Profile: Real Madrid/);
-assert.match(activeValue, /LaLiga 2025\/26 · selected league, all clubs/);
+assert.match(activeValue, /LaLiga 2025\/26 - all clubs/);
 
 const sparse = await callEnrichment('active-sparse', {
   ...enrichmentContext,

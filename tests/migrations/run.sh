@@ -141,6 +141,12 @@ for test_file in \
   psql_file "$main_container" transfers "$test_file"
 done
 
+node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \
+  "$temporary/generated-enrichment-persistence.sql"
+docker cp "$temporary/generated-enrichment-persistence.sql" \
+  "$main_container:/tmp/generated-enrichment-persistence.sql" >/dev/null
+psql_file "$main_container" transfers /tmp/generated-enrichment-persistence.sql
+
 start_postgres "$restore_container" "$restore_volume"
 docker cp "$temporary/pre-002.dump" "$restore_container:/tmp/pre-002.dump" >/dev/null
 docker exec "$restore_container" pg_restore \

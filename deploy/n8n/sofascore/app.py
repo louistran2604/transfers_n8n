@@ -18,6 +18,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from adapter import ProviderError, SofascoreAdapter, create_reader
+from identity import RESOLVER_VERSION
 from models import validate_batch
 
 
@@ -199,6 +200,7 @@ def provider_child(
                 "statistics": None,
                 "error": {"code": "provider_connection_failed", "retryable": True},
             }
+        result["resolver_version"] = RESOLVER_VERSION
         output_queue.put({"type": "result", "task_id": task["task_id"], "result": result})
 
 
@@ -347,6 +349,7 @@ def failure_item(item: dict[str, Any], status: str, code: str) -> dict[str, Any]
     return {
         "item_key": item["item_key"],
         "status": status,
+        "resolver_version": RESOLVER_VERSION,
         "identity": None,
         "profile": None,
         "statistics": None,
@@ -409,6 +412,7 @@ async def enrich_handler(request: web.Request) -> web.Response:
                     "schema_failure",
                 }:
                     circuit.failure()
+            result["resolver_version"] = RESOLVER_VERSION
             results.append(result)
 
     timeout = min(deadline_ms / 1000, request.app["config"].batch_timeout_seconds)

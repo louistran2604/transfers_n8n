@@ -7,7 +7,7 @@ from typing import Any
 from models import DECIMAL_ID
 
 
-RESOLVER_VERSION = "identity-v1"
+RESOLVER_VERSION = "identity-v3"
 NON_DISCRIMINATING_CLUB_KEYS = {
     "",
     "free agent",
@@ -35,6 +35,10 @@ def accent_folded_key(value: str) -> str:
         for character in unicodedata.normalize("NFKD", unicode_exact_key(value))
         if not unicodedata.combining(character)
     )
+
+
+def is_discriminating_club_name(value: Any) -> bool:
+    return isinstance(value, str) and unicode_exact_key(value) not in NON_DISCRIMINATING_CLUB_KEYS
 
 
 def known_identity(provider_player_id: str) -> dict[str, Any]:
@@ -145,6 +149,69 @@ def _reported_club_matches(reported_club_name: Any, team: dict[str, Any]) -> boo
     if reported_parts and reported_parts[-1] in CLUB_SUFFIXES:
         reported_parts.pop()
     return bool(candidate_parts and candidate_parts == reported_parts)
+
+
+def exact_name_candidates(
+    reported_name: str,
+    search_payload: dict[str, Any],
+    *,
+    aliases: list[str] | None = None,
+    rejected_player_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    results = search_payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError("invalid search envelope")
+    exact_names = {
+        unicode_exact_key(name)
+        for name in [reported_name, *(aliases or [])]
+        if isinstance(name, str)
+    }
+    candidates = []
+    for entry in results:
+        if not _football_player(entry):
+            continue
+        entity = entry["entity"]
+        player_id = str(entity["id"])
+        candidate_name = str(entity.get("name", ""))
+        if player_id in (rejected_player_ids or set()):
+            continue
+        if unicode_exact_key(candidate_name) not in exact_names:
+            continue
+        candidates.append(
+            {
+                "provider_player_id": player_id,
+                "canonical_name": candidate_name,
+                "score": 50,
+            }
+        )
+    return sorted(
+        candidates,
+        key=lambda candidate: int(candidate["provider_player_id"]),
+    )
+
+
+def transfer_history_matches_club(
+    payload: dict[str, Any], club_names: list[str]
+) -> bool:
+    history = payload.get("transferHistory")
+    if not isinstance(history, list):
+        raise ValueError("invalid transfer history envelope")
+    for entry in history:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid transfer history entry")
+        teams = []
+        for field in ("transferFrom", "transferTo"):
+            team = entry.get(field)
+            if not isinstance(team, dict) or not isinstance(team.get("name"), str) or not team["name"].strip():
+                raise ValueError("invalid transfer history team")
+            teams.append(team)
+        if any(
+            _reported_club_matches(club_name, team)
+            for club_name in club_names
+            for team in teams
+        ):
+            return True
+    return False
 
 
 def resolve_search(

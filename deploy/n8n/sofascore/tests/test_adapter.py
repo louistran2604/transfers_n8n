@@ -72,6 +72,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
+        self.assertEqual("identity-v3", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",
@@ -396,6 +397,127 @@ class AdapterNormalizationTests(unittest.TestCase):
         result = self.adapter.enrich(validated)
         self.assertEqual("fresh", result["status"])
         self.assertEqual("826643", result["identity"]["provider_player_id"])
+
+    def test_former_club_history_recovers_one_exact_player_and_reuses_24h_cache(self):
+        endpoint = "player/826643/transfer-history"
+        self.transport.register(endpoint, {"transferHistory": [{
+            "transferFrom": {"id": 1, "name": "Paris Saint-Germain"},
+            "transferTo": {"id": 2, "name": "Real Madrid"},
+        }]})
+        item = {
+            "item_key": "name:kylian-mbappé|club:paris-saint-germain",
+            "reported_name": "Kylian Mbappé",
+            "current_club_name": None,
+            "former_club_name": "PSG",
+            "former_club_aliases": ["PSG", "Paris Saint-Germain"],
+            "aliases": [],
+        }
+        first = self.adapter.enrich(item)
+        self.assertEqual("fresh", first["status"])
+        self.assertEqual("826643", first["identity"]["provider_player_id"])
+        self.assertEqual(80, first["identity"]["score"])
+        self.assertEqual(1, [call["endpoint"] for call in self.transport.calls].count(endpoint))
+        history_call = next(call for call in self.transport.calls if call["endpoint"] == endpoint)
+        self.assertEqual(24 * 60 * 60, int(history_call["max_age"].total_seconds()))
+
+        self.adapter.enrich(item)
+        self.assertEqual(1, [call["endpoint"] for call in self.transport.calls].count(endpoint))
+
+    def test_former_club_history_fetches_all_bounded_exact_candidates(self):
+        search_endpoint = "search/all?q=Alex%20Smith"
+        results = [{
+            "type": "player",
+            "entity": {
+                "id": identifier,
+                "name": "Alex Smith",
+                "team": {"id": 100 + identifier, "name": f"Current {identifier}", "sport": {"slug": "football"}, "gender": "M"},
+            },
+        } for identifier in (1, 2, 3)]
+        self.transport.register(search_endpoint, {"results": results})
+        for identifier in (1, 2, 3):
+            self.transport.register(f"player/{identifier}/transfer-history", {"transferHistory": [{
+                "transferFrom": {"id": 9, "name": "Former FC" if identifier < 3 else "Other FC"},
+                "transferTo": {"id": 10, "name": f"Current {identifier}"},
+            }]})
+        result = self.adapter.enrich({
+            "item_key": "name:alex-smith|club:former",
+            "reported_name": "Alex Smith",
+            "former_club_name": "Former",
+            "former_club_aliases": ["Former", "Former FC"],
+            "aliases": [],
+        })
+        self.assertEqual("ambiguous", result["status"])
+        self.assertEqual({"1", "2"}, {candidate["provider_player_id"] for candidate in result["candidates"]})
+        self.assertEqual(3, sum("transfer-history" in call["endpoint"] for call in self.transport.calls))
+
+    def test_former_club_history_none_over_cap_and_malformed_fail_closed(self):
+        def result(identifier):
+            return {"type": "player", "entity": {"id": identifier, "name": "Alex Smith", "team": {"id": 100 + identifier, "name": "Current", "sport": {"slug": "football"}, "gender": "M"}}}
+        endpoint = "search/all?q=Alex%20Smith"
+        self.transport.register(endpoint, {"results": [result(identifier) for identifier in (1, 2, 3, 4)]})
+        item = {"item_key": "former", "reported_name": "Alex Smith", "former_club_name": "Former FC", "aliases": []}
+        over_cap = self.adapter.enrich(item)
+        self.assertEqual("ambiguous", over_cap["status"])
+        self.assertEqual(0, sum("transfer-history" in call["endpoint"] for call in self.transport.calls))
+
+        self.transport.calls.clear()
+        malformed_endpoint = "search/all?q=Malformed%20Smith"
+        malformed_result = result(1)
+        malformed_result["entity"]["name"] = "Malformed Smith"
+        self.transport.register(malformed_endpoint, {"results": [malformed_result]})
+        self.transport.register("player/1/transfer-history", {"transferHistory": [{"transferFrom": {}, "transferTo": {"name": "Current"}}]})
+        with self.assertRaises(SchemaError):
+            self.adapter.enrich({**item, "reported_name": "Malformed Smith"})
+        self.transport.register("player/1/transfer-history", {"transferHistory": [{
+            "transferFrom": {"id": 1, "name": "Other FC"},
+            "transferTo": {"id": 2, "name": "Current"},
+        }]})
+        corrected = self.adapter.enrich({**item, "reported_name": "Malformed Smith"})
+        self.assertEqual("unresolved", corrected["status"])
+        self.assertEqual(2, sum(call["endpoint"] == "player/1/transfer-history" for call in self.transport.calls))
+
+    def test_explicit_current_club_blocks_former_club_recovery(self):
+        history_endpoint = "player/826643/transfer-history"
+        self.transport.register(history_endpoint, {"transferHistory": [{
+            "transferFrom": {"id": 1, "name": "Paris Saint-Germain"},
+            "transferTo": {"id": 2, "name": "Real Madrid"},
+        }]})
+        result = self.adapter.enrich({
+            "item_key": "explicit-current-conflict", "reported_name": "Kylian Mbappé",
+            "current_club_name": "Wrong FC", "former_club_name": "Paris Saint-Germain",
+            "former_club_aliases": ["PSG"], "aliases": [],
+        })
+        self.assertEqual("unresolved", result["status"])
+        self.assertFalse(any(call["endpoint"] == history_endpoint for call in self.transport.calls))
+
+    def test_former_club_history_fetch_failure_is_not_a_non_match(self):
+        self.transport.register("search/all?q=Failed%20Smith", {"results": [{
+            "type": "player",
+            "entity": {"id": 77, "name": "Failed Smith", "team": {"id": 7, "name": "Current", "sport": {"slug": "football"}, "gender": "M"}},
+        }]})
+        self.transport.register("player/77/transfer-history", RuntimeError("provider failed"))
+        with self.assertRaisesRegex(RuntimeError, "provider failed"):
+            self.adapter.enrich({
+                "item_key": "failed-history", "reported_name": "Failed Smith",
+                "former_club_name": "Former FC", "aliases": [],
+            })
+
+    def test_former_club_history_non_match_stays_unresolved(self):
+        self.transport.register("search/all?q=No%20Match", {"results": [{
+            "type": "player",
+            "entity": {"id": 78, "name": "No Match", "team": {"id": 8, "name": "Current", "sport": {"slug": "football"}, "gender": "M"}},
+        }]})
+        self.transport.register("player/78/transfer-history", {"transferHistory": [{
+            "transferFrom": {"id": 1, "name": "Other FC"},
+            "transferTo": {"id": 8, "name": "Current"},
+        }]})
+        result = self.adapter.enrich({
+            "item_key": "no-history-match", "reported_name": "No Match",
+            "former_club_name": "Former FC", "aliases": [],
+        })
+        self.assertEqual("unresolved", result["status"])
+        self.assertIsNone(result["identity"])
+        self.assertEqual(2, result["provider_calls"])
 
     def test_mistyped_profile_and_statistics_envelopes_fail_closed(self):
         profile_endpoint = "player/826643"

@@ -22,6 +22,7 @@ const REPORT_FIELDS = Object.freeze([
   'player_name',
   'player_identity_hint',
   'current_club_name',
+  'former_club_name',
   'destination_club_name',
   'classification',
   'move_type',
@@ -73,7 +74,7 @@ export function normalizeIdentity(value) {
   return normalizeText(value).replace(/\s/g, '-');
 }
 
-const EMPTY_ENTITY_ALIASES = Object.freeze({ clubs: Object.freeze({}), players: Object.freeze({}), sibling_groups: Object.freeze([]) });
+const EMPTY_ENTITY_ALIASES = Object.freeze({ clubs: Object.freeze({}), club_variants: Object.freeze({}), players: Object.freeze({}), sibling_groups: Object.freeze([]) });
 
 function aliasMap(entries, label) {
   if (!Array.isArray(entries)) throw new Error(`${label} aliases must be an array`);
@@ -91,6 +92,16 @@ function aliasMap(entries, label) {
   return Object.freeze(aliases);
 }
 
+function aliasVariants(entries, label) {
+  if (!Array.isArray(entries)) throw new Error(`${label} aliases must be an array`);
+  const variants = {};
+  for (const entry of entries) {
+    const names = [entry.canonical, ...entry.aliases];
+    for (const name of names) variants[normalizeText(name)] = Object.freeze([...names]);
+  }
+  return Object.freeze(variants);
+}
+
 export function parseEntityAliases(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Entity aliases must be an object');
   if (!Array.isArray(value.sibling_groups) || !value.sibling_groups.every((group) => Array.isArray(group) && group.length >= 2 && group.every((name) => typeof name === 'string' && name.trim()))) {
@@ -98,6 +109,7 @@ export function parseEntityAliases(value) {
   }
   return Object.freeze({
     clubs: aliasMap(value.clubs, 'club'),
+    club_variants: aliasVariants(value.clubs, 'club'),
     players: aliasMap(value.players, 'player'),
     sibling_groups: Object.freeze(value.sibling_groups.map((group) => Object.freeze([...group]))),
   });
@@ -113,6 +125,7 @@ export function canonicalizeReport(report, entityAliases = EMPTY_ENTITY_ALIASES)
     ...report,
     player_name: canonical(report.player_name, entityAliases.players),
     current_club_name: canonical(report.current_club_name, entityAliases.clubs),
+    former_club_name: canonical(report.former_club_name, entityAliases.clubs),
     destination_club_name: canonical(report.destination_club_name, entityAliases.clubs),
   };
 }
@@ -185,34 +198,43 @@ export function buildEnrichmentRequest(contexts, {
     const canonicalDestinationClub = typeof context.destination_club_name === 'string'
       ? entityAliases.clubs[normalizeText(context.destination_club_name)] ?? context.destination_club_name.trim()
       : context.destination_club_name;
+    const canonicalFormerClub = typeof context.former_club_name === 'string'
+      ? entityAliases.clubs[normalizeText(context.former_club_name)] ?? context.former_club_name.trim()
+      : context.former_club_name;
     const currentClubKey = enrichmentNamedContext(canonicalCurrentClub);
     const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
       || context.move_type === 'loan'
       ? enrichmentNamedContext(canonicalDestinationClub)
       : null;
-    const clubKey = currentClubKey ?? destinationClubKey;
+    const destinationEligible = destinationClubKey !== null;
+    const formerClubKey = enrichmentNamedContext(canonicalFormerClub);
+    const clubKey = currentClubKey ?? destinationClubKey ?? formerClubKey;
     const reportedNameKey = enrichmentUnicodeKey(canonicalReportedName);
     if (!knownProviderId && (!reportedNameKey || !clubKey)) continue;
     const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
     const latestStatus = String(context.latest_attempt_status ?? '');
     const latestStartedAt = Date.parse(String(context.latest_attempt_started_at ?? ''));
     const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
-    const itemKey = knownProviderId ? `provider:${knownProviderId}` : `name:${reportedNameKey}|club:${clubKey}`;
-    const hardBackoff = Number.isFinite(retryAt) && retryAt > now;
+    const groupedItemKey = knownProviderId ? `provider:${knownProviderId}` : `name:${reportedNameKey}|club:${clubKey}`;
+    const forceResolverRetry = context.force_resolver_retry === true;
+    const hardBackoff = !forceResolverRetry && Number.isFinite(retryAt) && retryAt > now;
     const ambiguityCooldown = !knownProviderId
+      && !forceResolverRetry
       && ['ambiguous', 'unresolved'].includes(latestStatus)
       && Number.isFinite(latestStartedAt)
       && latestStartedAt > now - 24 * 60 * 60 * 1000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    const itemKey = hasActiveOverride ? `${groupedItemKey}|report:${reportId}` : groupedItemKey;
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
   const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
   const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
   const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) => hasActiveOverride).map(({ itemKey }) => itemKey));
+  const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
   const groups = new Map();
   for (const prepared of preparedContexts.toSorted(enrichmentContextComparator)) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalDestinationClub, knownProviderId, currentClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
-    if (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey))) continue;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
+    if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
     if (
@@ -249,9 +271,15 @@ export function buildEnrichmentRequest(contexts, {
       current_club_name: typeof canonicalCurrentClub === 'string'
         ? canonicalCurrentClub
         : null,
-      destination_club_name: typeof canonicalDestinationClub === 'string'
+      current_club_aliases: entityAliases.club_variants[normalizeText(canonicalCurrentClub)] ?? [],
+      former_club_name: typeof canonicalFormerClub === 'string' ? canonicalFormerClub : null,
+      former_club_aliases: entityAliases.club_variants[normalizeText(canonicalFormerClub)] ?? [],
+      destination_club_name: destinationEligible && typeof canonicalDestinationClub === 'string'
         ? canonicalDestinationClub
         : null,
+      destination_club_aliases: destinationEligible
+        ? entityAliases.club_variants[normalizeText(canonicalDestinationClub)] ?? []
+        : [],
       report_ids: [reportId],
       aliases: [...new Set([...(Array.isArray(context.aliases) ? context.aliases : []), canonicalReportedName !== reportedName ? reportedName : null]
         .filter((alias) => typeof alias === 'string' && alias.trim())
@@ -266,6 +294,7 @@ export function buildEnrichmentRequest(contexts, {
       request_context: {
         reported_name_key: reportedNameKey,
         current_club_key: currentClubKey,
+        former_club_key: formerClubKey,
         destination_club_key: destinationClubKey,
       },
     });
@@ -295,6 +324,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
+    resolver_version: 'identity-v3',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,
@@ -379,13 +409,24 @@ export function normalizeEnrichmentResponse(request, response) {
     request_id: request.request_id,
     items: players.map((player) => {
       const item = byKey.get(player.item_key);
-      if (!item || !ENRICHMENT_STATUSES.has(item.status)) return enrichmentFailure(player);
+      if (!item || !ENRICHMENT_STATUSES.has(item.status) || typeof item.resolver_version !== 'string' || !item.resolver_version) return enrichmentFailure(player);
       const identity = item.identity;
       const providerPlayerId = String(identity?.provider_player_id ?? '');
+      const identityForbidden = ['unresolved', 'ambiguous', 'deferred', 'provider_failure', 'rate_limited', 'timeout', 'schema_failure'].includes(item.status);
+      if (identityForbidden && identity !== null) return enrichmentFailure(player);
       if (identity !== null && (
         !identity
         || identity.provider !== 'sofascore'
         || !DECIMAL_ID.test(providerPlayerId)
+        || typeof identity.score !== 'number'
+        || !Number.isFinite(identity.score)
+        || identity.score < 0
+        || identity.score > 100
+        || typeof identity.margin !== 'number'
+        || !Number.isFinite(identity.margin)
+        || identity.margin < 0
+        || identity.margin > 100
+        || identity.margin > identity.score
       )) return enrichmentFailure(player);
       if (
         ['fresh', 'cache_hit', 'partial'].includes(item.status)
@@ -435,6 +476,7 @@ export function normalizeEnrichmentResponse(request, response) {
         report_ids: player.report_ids,
         request_context: player.request_context ?? {},
         status: item.status,
+        resolver_version: item.resolver_version,
         retryable: item.error?.retryable === true
           || (Array.isArray(item.warnings) && item.warnings.some((warning) => warning?.retryable === true)),
         provider_calls: Number.isInteger(item.provider_calls) && item.provider_calls >= 0
@@ -452,7 +494,7 @@ export function normalizeEnrichmentResponse(request, response) {
           margin: Number.isFinite(identity.margin) ? identity.margin : null,
           resolver_version: typeof identity.resolver_version === 'string' && identity.resolver_version
             ? identity.resolver_version
-            : 'identity-v1',
+            : item.resolver_version,
         } : null,
         profile: item.profile && typeof item.profile === 'object' ? {
           ...item.profile,
@@ -672,7 +714,7 @@ export function validateQwenResponse(value) {
       for (const field of REPORT_FIELDS) if (!keys.has(field)) errors.push(`${label}.${field} is required`);
       for (const field of keys) if (!REPORT_FIELDS.includes(field)) errors.push(`${label}.${field} is not allowed`);
       if (typeof report.player_name !== 'string' || !report.player_name.trim()) errors.push(`${label}.player_name must be non-empty string`);
-      for (const field of ['player_identity_hint', 'current_club_name', 'destination_club_name']) {
+      for (const field of ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name']) {
         if (!isNullableString(report[field])) errors.push(`${label}.${field} must be string or null`);
       }
       if (!CLASSIFICATIONS.includes(report.classification)) errors.push(`${label}.classification is invalid`);
@@ -750,7 +792,13 @@ export function mergeReportGroup(group, entityAliases = EMPTY_ENTITY_ALIASES) {
     posted_at: report.posted_at,
     source: report.source,
   }));
-  merged.normalized_data = { conflicts };
+  merged.normalized_data = {
+    conflicts,
+    former_club_name: merged.former_club_name,
+    reported_name_key: enrichmentUnicodeKey(merged.player_name),
+    current_club_key: enrichmentNamedContext(merged.current_club_name),
+    destination_club_key: enrichmentNamedContext(merged.destination_club_name),
+  };
   return merged;
 }
 
@@ -813,6 +861,26 @@ function hasNamedClub(value) {
   return typeof value === 'string'
     && value.trim().length > 0
     && !/^(not[ _-]?reported|unknown|n\/?a)$/i.test(value.trim());
+}
+
+function equivalentClub(left, right, entityAliases) {
+  if (!hasNamedClub(left) || !hasNamedClub(right)) return false;
+  const canonical = (value) => entityAliases.clubs[normalizeText(value)] ?? value;
+  const parts = (value) => normalizeText(canonical(value)).split(' ').filter(Boolean);
+  const stripSuffix = (values) => ['afc', 'cf', 'cp', 'fc', 'sc'].includes(values.at(-1)) ? values.slice(0, -1) : values;
+  const leftParts = stripSuffix(parts(left));
+  const rightParts = stripSuffix(parts(right));
+  return leftParts.length > 0 && leftParts.join(' ') === rightParts.join(' ');
+}
+
+function withPresentationCurrentClub(report, entityAliases) {
+  if (hasNamedClub(report.current_club_name) || report.pending_idempotency_key) return report;
+  const profile = report.enrichment?.profile;
+  const profileClub = namedEnrichmentValue(profile?.current_club_name);
+  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
+  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan') return report;
+  if (equivalentClub(profileClub, report.destination_club_name, entityAliases)) return report;
+  return { ...report, current_club_name: profileClub };
 }
 
 function digestHistoryKey(report) {
@@ -1052,6 +1120,7 @@ function digestStoryValue(report, now) {
 export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIASES, now = Date.now() } = {}) {
   const sorted = reports
     .map((report) => canonicalizeReport(report, entityAliases))
+    .map((report) => withPresentationCurrentClub(report, entityAliases))
     .filter((report) => isDigestEligible(report) && isNewDigestUpdate(report, entityAliases, now))
     .sort((left, right) => (
     digestPriority(left) - digestPriority(right)

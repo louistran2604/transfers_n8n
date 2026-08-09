@@ -12,7 +12,7 @@ const state = {
 const validExtraction = {
   transfer_related: true,
   reports: [{
-    player_name: 'Mock Player', player_identity_hint: null, current_club_name: 'Mock FC', destination_club_name: 'Test United',
+    player_name: 'Mock Player', player_identity_hint: null, current_club_name: 'Mock FC', former_club_name: null, destination_club_name: 'Test United',
     classification: 'advanced_negotiations', move_type: 'permanent', fee_amount: null, fee_currency: null,
     add_ons_amount: null, add_ons_currency: null, release_clause_amount: null, release_clause_currency: null,
     contract_length_months: null, contract_expires_on: null, loan_ends_on: null, has_option_to_buy: null,
@@ -48,6 +48,7 @@ function enrichmentItem(item, mode) {
     return {
       item_key: item.item_key,
       status: 'provider_failure',
+      resolver_version: 'identity-v3',
       identity: null,
       profile: null,
       statistics: null,
@@ -58,6 +59,7 @@ function enrichmentItem(item, mode) {
     return {
       item_key: item.item_key,
       status: 'ambiguous',
+      resolver_version: 'identity-v3',
       identity: null,
       profile: null,
       statistics: null,
@@ -72,6 +74,7 @@ function enrichmentItem(item, mode) {
   return {
     item_key: item.item_key,
     status: 'fresh',
+    resolver_version: 'identity-v3',
     provider_calls: 2,
     identity: {
       provider: 'sofascore',
@@ -79,7 +82,7 @@ function enrichmentItem(item, mode) {
       stable_source_identifier: `sofascore:player:${sparse ? '845067' : '826643'}`,
       score: 100,
       margin: 100,
-      resolver_version: 'identity-v1',
+      resolver_version: 'identity-v3',
     },
     profile: {
       canonical_name: sparse ? 'Nguyễn Quang Hải' : 'Kylian Mbappé',
