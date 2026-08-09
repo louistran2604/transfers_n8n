@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   buildEnrichmentRequest,
   buildDiscordDigest,
+  canonicalizeReport,
   chooseClassification,
   dedupeKey,
   enrichmentUnicodeKey,
@@ -204,8 +205,24 @@ test('entity aliases canonicalize player and club variants without merging sibli
       { canonical: 'Club B', aliases: ['Shared Club'] },
     ],
     players: [],
+    enrichment_player_aliases: [],
     sibling_groups: [],
+    common_surnames: [],
   }), /Conflicting club alias/);
+  assert.throws(() => parseEntityAliases({
+    clubs: [{ canonical: 'Napoli', aliases: [] }], players: [], sibling_groups: [], common_surnames: [],
+    enrichment_player_aliases: [{ reported: 'Lukaku', canonical: 'Romelu Lukaku', current_clubs: ['Roma'] }],
+  }), /Unknown enrichment player alias club/);
+  assert.throws(() => parseEntityAliases({
+    clubs: [{ canonical: 'Napoli', aliases: ['SSC Napoli'] }], players: [], sibling_groups: [], common_surnames: [],
+    enrichment_player_aliases: [
+      { reported: 'Lukaku', canonical: 'Romelu Lukaku', current_clubs: ['Napoli'] },
+      { reported: 'Lukaku', canonical: 'Other Lukaku', current_clubs: ['SSC Napoli'] },
+    ],
+  }), /Duplicate enrichment player alias scope/);
+  assert.throws(() => parseEntityAliases({
+    clubs: [], players: [], enrichment_player_aliases: [], sibling_groups: [], common_surnames: ['Rodríguez'],
+  }), /Invalid common surname/);
 });
 
 test('enrichment grouping uses provider ID or Unicode name and club context, never placeholder player ID', () => {
@@ -260,6 +277,27 @@ test('enrichment grouping canonicalizes configured player aliases', () => {
   }
 });
 
+test('scoped enrichment aliases rewrite only matching current-club requests', () => {
+  const context = (id, currentClub) => ({
+    transfer_report_id: id,
+    reported_player_name: 'Lukaku',
+    current_club_name: currentClub,
+    destination_club_name: 'Other',
+    classification: 'rumor',
+    move_type: 'permanent',
+    aliases: [],
+    identity_overrides: [],
+  });
+  assert.equal(canonicalizeReport({ player_name: 'Lukaku' }, entityAliases).player_name, 'Lukaku');
+  const napoli = buildEnrichmentRequest([context('31', 'SSC Napoli')], { mode: 'active', requestId: 'napoli', entityAliases }).request.players[0];
+  assert.equal(napoli.reported_name, 'Romelu Lukaku');
+  assert.ok(napoli.aliases.includes('Lukaku'));
+  assert.equal(napoli.current_club_name, 'Napoli');
+  const unrelated = buildEnrichmentRequest([context('32', 'Roma')], { mode: 'active', requestId: 'roma', entityAliases }).request.players[0];
+  assert.equal(unrelated.reported_name, 'Lukaku');
+  assert.deepEqual(unrelated.aliases, []);
+});
+
 test('generated enrichment request preserves the current-club discriminator', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
@@ -311,6 +349,26 @@ test('generated enrichment request canonicalizes configured player aliases', asy
     assert.equal(output[0].json.request.players.length, 1);
     assert.deepEqual(output[0].json.request.players[0].report_ids, ['10', '11']);
   }
+});
+
+test('generated scoped enrichment alias matches Napoli without rewriting other clubs', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const context = (id, club) => ({ json: {
+    transfer_report_id: id, reported_player_name: 'Lukaku', current_club_name: club,
+    destination_club_name: 'Other', classification: 'rumor', move_type: 'permanent',
+    provider_player_id: null, aliases: [], identity_overrides: [],
+  } });
+  const execute = (club) => runRequest({ all: () => [context('33', club)] }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  const napoli = (await execute('sscnapoli'))[0].json.request.players[0];
+  assert.equal(napoli.reported_name, 'Romelu Lukaku');
+  assert.ok(napoli.aliases.includes('Lukaku'));
+  const roma = (await execute('Roma'))[0].json.request.players[0];
+  assert.equal(roma.reported_name, 'Lukaku');
 });
 
 test('equivalent alias cooldown suppresses the entire canonical enrichment group', async () => {
@@ -423,7 +481,7 @@ test('enrichment transports curated club variants and suppresses rumor destinati
   };
   const rumor = buildEnrichmentRequest([base], { mode: 'active', requestId: 'rumor-clubs', entityAliases }).request.players[0];
   assert.equal(rumor.current_club_name, 'Napoli');
-  assert.deepEqual(rumor.current_club_aliases, ['Napoli', 'SSC Napoli']);
+  assert.deepEqual(rumor.current_club_aliases, ['Napoli', 'SSC Napoli', 'sscnapoli']);
   assert.equal(rumor.destination_club_name, null);
   assert.deepEqual(rumor.destination_club_aliases, []);
 
@@ -534,7 +592,7 @@ test('enrichment response normalization converts contract failures into one sani
       items: [{
         item_key: 'provider:826643',
         status: 'fresh',
-        resolver_version: 'identity-v3',
+        resolver_version: 'identity-v4',
         provider_calls: 2,
         identity: {
           provider: 'sofascore',
@@ -542,7 +600,7 @@ test('enrichment response normalization converts contract failures into one sani
           stable_source_identifier: 'sofascore:player:826643',
           score: 80,
           margin: 80,
-          resolver_version: 'identity-v3',
+          resolver_version: 'identity-v4',
         },
         profile: {
           canonical_name: 'Kylian Mbappé',
@@ -579,7 +637,7 @@ test('enrichment response normalization preserves valid search candidates with o
       items: [{
         item_key: request.players[0].item_key,
         status: 'ambiguous',
-        resolver_version: 'identity-v3',
+        resolver_version: 'identity-v4',
         identity: null,
         profile: null,
         statistics: null,
@@ -602,11 +660,11 @@ test('enrichment response rejects identity on unresolved statuses and invalid sc
   const request = { request_id: 'identity-contract', players: [player] };
   const identity = {
     provider: 'sofascore', provider_player_id: '9', stable_source_identifier: 'sofascore:player:9',
-    score: 80, margin: 80, resolver_version: 'identity-v3',
+    score: 80, margin: 80, resolver_version: 'identity-v4',
   };
   const response = (status, candidateIdentity) => ({ statusCode: 200, body: {
     request_id: request.request_id,
-    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v3', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
+    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v4', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
   } });
   assert.equal(normalizeEnrichmentResponse(request, response('unresolved', identity)).items[0].status, 'schema_failure');
   for (const invalid of [
@@ -630,7 +688,7 @@ test('enrichment response normalization bounds search candidates to five entries
   }));
   const normalized = normalizeEnrichmentResponse(request, {
     statusCode: 200,
-    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v3', identity: null, profile: null, statistics: null, candidates }] },
+    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v4', identity: null, profile: null, statistics: null, candidates }] },
   });
   assert.deepEqual(normalized.items[0].candidates, candidates.slice(0, 5));
 });
@@ -647,7 +705,7 @@ test('enrichment response normalization omits malformed search candidates', () =
       items: [{
         item_key: 'provider:2',
         status: 'unresolved',
-        resolver_version: 'identity-v3',
+        resolver_version: 'identity-v4',
         identity: null,
         profile: null,
         statistics: null,
@@ -681,7 +739,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
     items: [{
       item_key: 'provider:3',
       status: 'unresolved',
-      resolver_version: 'identity-v3',
+      resolver_version: 'identity-v4',
       identity: null,
       profile: null,
       statistics: null,
@@ -711,7 +769,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
   ]);
   const invalidIdentity = {
     provider: 'sofascore', provider_player_id: '3', stable_source_identifier: 'sofascore:player:3',
-    score: 70, margin: 80, resolver_version: 'identity-v3',
+    score: 70, margin: 80, resolver_version: 'identity-v4',
   };
   const invalidOutput = await runNormalize({ statusCode: 200, body: {
     ...body, items: [{ ...body.items[0], identity: invalidIdentity }],
@@ -907,7 +965,7 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   assert.ok(discordCharacterCount(embed) <= 6000);
 });
 
-test('digest deduplicates aliases and surnames except exact configured siblings', () => {
+test('digest canonicalizes first and applies configured common-surname conflicts', () => {
   const report = (playerName, destinationClubName, confidence = 0.7) => ({
     ...validReport({ player_name: playerName, destination_club_name: destinationClubName, confidence }),
     revision_id: `${playerName}-${destinationClubName}`,
@@ -920,7 +978,14 @@ test('digest deduplicates aliases and surnames except exact configured siblings'
     selectDigestReports([report('Aklouche', 'Arsenal'), report('Maghnes Akliouche', 'Liverpool', 0.9)], { entityAliases }).map(({ player_name }) => player_name),
     ['Maghnes Akliouche'],
   );
-  assert.equal(selectDigestReports([report('Alex Smith', 'Arsenal'), report('Jamie Smith', 'Liverpool', 0.9)], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('Alex Smith', 'Arsenal'), report('Jamie Smith', 'Liverpool', 0.9)], { entityAliases }).length, 2);
+  assert.equal(selectDigestReports([report('Cristian Romero', 'Arsenal'), report('Luka Romero', 'Liverpool')], { entityAliases }).length, 2);
+  assert.equal(selectDigestReports([report('Romero', 'Arsenal'), report('Cristian Romero', 'Liverpool')], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('J. Martinez', 'Arsenal'), report('Juan Martinez', 'Liverpool')], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('José Luis Rodriguez', 'Arsenal'), report('Luis Rodriguez', 'Liverpool')], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('Bruno Fernandes', 'Arsenal'), report('Enzo Fernandes', 'Liverpool')], { entityAliases }).length, 2);
+  assert.equal(selectDigestReports([report('Cristian Romero', 'Arsenal'), report('Cuti Romero', 'Liverpool')], { entityAliases }).length, 1);
+  assert.equal(selectDigestReports([report('Alex Unlisted', 'Arsenal'), report('Jamie Unlisted', 'Liverpool')], { entityAliases }).length, 1);
   assert.equal(selectDigestReports([report('Kylian Mbappé', 'Arsenal'), report('Ethan Mbappé', 'Liverpool')], { entityAliases }).length, 2);
   assert.equal(selectDigestReports([report('Jurriën Timber', 'Arsenal'), report('Quinten Timber', 'Liverpool')], { entityAliases }).length, 2);
   assert.equal(selectDigestReports([
@@ -1119,9 +1184,24 @@ test('generated digest applies surname deduplication and exact sibling exception
   assert.deepEqual(payload.discord_payload.embeds[0].fields.map(({ name }) => name), [
     '1. Rodri Hernández',
     '2. Jamie Smith',
-    '3. Kylian Mbappé',
-    '4. Ethan Mbappé',
+    '3. Alex Smith',
+    '4. Kylian Mbappé',
+    '5. Ethan Mbappé',
   ]);
+  const selectedCount = async (names) => {
+    const result = await runDigest({ all: () => [
+      { json: { row_type: 'sent_history', payload: [] } },
+      ...names.map((name, index) => candidate(String(100 + index), name, `Club ${index}`)),
+    ] });
+    return JSON.parse(result[0].json.params[0]).revision_ids.length;
+  };
+  assert.equal(await selectedCount(['Cristian Romero', 'Luka Romero']), 2);
+  assert.equal(await selectedCount(['Romero', 'Cristian Romero']), 1);
+  assert.equal(await selectedCount(['J. Martinez', 'Juan Martinez']), 1);
+  assert.equal(await selectedCount(['José Luis Rodriguez', 'Luis Rodriguez']), 1);
+  assert.equal(await selectedCount(['Bruno Fernandes', 'Enzo Fernandes']), 2);
+  assert.equal(await selectedCount(['Cristian Romero', 'Cuti Romero']), 1);
+  assert.equal(await selectedCount(['Alex Unlisted', 'Jamie Unlisted']), 1);
   const mixedFamily = await runDigest({ all: () => [
     { json: { row_type: 'sent_history', payload: [] } },
     candidate('5', 'Kylian Mbappé', 'Arsenal'),
@@ -1250,6 +1330,31 @@ test('generated enrichment request gives digest-priority players the bounded bat
   assert.ok(players.some((player) => player.report_ids.includes('26')));
   assert.ok(!players.some((player) => player.report_ids.includes('25')));
   assert.equal(players[0].destination_club_name, 'Destination FC');
+});
+
+test('current enrichment contexts precede higher-priority historical retries in library and generated requests', async () => {
+  const historical = Array.from({ length: 33 }, (_, index) => ({
+    transfer_report_id: String(index + 1), reported_player_name: `History ${index + 1}`,
+    current_club_name: 'Current FC', destination_club_name: 'Destination FC',
+    classification: 'official_confirmed', move_type: 'permanent', is_digest_worthy: true,
+    provider_player_id: String(910000 + index), aliases: [], identity_overrides: [],
+    source_username: 'realmadrid', source_priority_rank: 1, source_reliability_score: 1,
+    is_current_request: false,
+  }));
+  const current = [
+    { ...historical[0], transfer_report_id: '101', reported_player_name: 'Cuti Romero', current_club_name: 'Tottenham', provider_player_id: null, classification: 'rumor', source_username: 'someone', is_current_request: true },
+    { ...historical[0], transfer_report_id: '102', reported_player_name: 'Lukaku', current_club_name: 'Napoli', provider_player_id: null, classification: 'rumor', source_username: 'someone', is_current_request: true },
+  ];
+  const contexts = [...historical, ...current];
+  const libraryPlayers = buildEnrichmentRequest(contexts, { mode: 'active', requestId: 'current-first', entityAliases }).request.players;
+  assert.deepEqual(libraryPlayers.slice(0, 2).map(({ reported_name }) => reported_name), ['Cristian Romero', 'Romelu Lukaku']);
+
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const generated = await runRequest({ all: () => contexts.map((json) => ({ json })) }, () => ({ first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }) }));
+  assert.deepEqual(generated[0].json.request.players.slice(0, 2).map(({ reported_name }) => reported_name), ['Cristian Romero', 'Romelu Lukaku']);
 });
 
 test('enrichment response rejects JSON null, duplicate keys, wrong request IDs, and malformed typed fields', () => {
@@ -1558,6 +1663,31 @@ test('generated digest deduplicates repeated candidate rows before applying its 
   assert.equal(payload.discord_payload.embeds[0].fields.length, 1);
 });
 
+test('generated pending delivery preserves the stored JSONB payload structurally through Discord delivery', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const deliveryNode = workflow.nodes.find((node) => node.name === 'Build Discord delivery request');
+  const storedPayload = JSON.parse(JSON.stringify({
+    allowed_mentions: { parse: [] },
+    embeds: [{ title: 'Frozen payload', fields: [{ name: 'Original', value: 'Stored', inline: false }] }],
+  }));
+  const candidate = { json: { row_type: 'candidate', payload: {
+    revision_id: 'pending-revision', snapshot: validReport(), post_url: 'https://example.test/pending',
+    priority_rank: '2', reliability_score: '0.95', source_name: 'Source',
+    pending_idempotency_key: 'pending-key', pending_window_started_at: '2026-08-09T00:00:00Z',
+    pending_window_ended_at: '2026-08-09T06:00:00Z', pending_request_payload: storedPayload,
+  } } };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const digestOutput = await runDigest({ all: () => [{ json: { row_type: 'sent_history', payload: [] } }, candidate] });
+  const reserved = JSON.parse(digestOutput[0].json.params[0]);
+  assert.deepEqual(reserved.discord_payload, storedPayload);
+
+  const runDelivery = new AsyncFunction('$json', deliveryNode.parameters.jsCode);
+  const deliveryOutput = await runDelivery({ digest_delivery_id: '1', request_payload: JSON.stringify(storedPayload) });
+  assert.deepEqual(deliveryOutput[0].json.body, storedPayload);
+});
+
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const sourceNode = workflow.nodes.find((node) => node.name === 'Load generated sources');
@@ -1590,6 +1720,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenNode.parameters.jsCode, /Misa Rodríguez/);
   assert.match(qwenNode.parameters.jsCode, /Misa Rodriguez/);
   assert.match(qwenNode.parameters.jsCode, /Known football siblings/);
+  assert.match(qwenNode.parameters.jsCode, /Normalized common football surnames/);
+  assert.match(qwenNode.parameters.jsCode, /preserve any first or given name stated/);
+  assert.match(qwenNode.parameters.jsCode, /never reorder a surname-first name/);
   assert.match(qwenParserNode.parameters.jsCode, /Randal Kolo Muani/);
   assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
   assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
@@ -1628,6 +1761,16 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
   assert.match(candidatesNode.parameters.query, /sent_delivery\.sent_at >= CURRENT_TIMESTAMP - interval '7 days'/);
+  assert.match(contextNode.parameters.query, /SELECT DISTINCT value::text::bigint AS transfer_report_id/);
+  assert.match(contextNode.parameters.query, /requested_input\.transfer_report_id = tr\.id/);
+  assert.match(contextNode.parameters.query, /true AS is_current_request/);
+  assert.match(contextNode.parameters.query, /false AS is_current_request/);
+  assert.match(contextNode.parameters.query, /UNION ALL/);
+  assert.match(contextNode.parameters.query, /LIMIT 25/);
+  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v4'/);
+  assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
+  assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
+  assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);
   assert.match(candidatesNode.parameters.query, /'sent_history'::text AS row_type/);
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));

@@ -72,7 +72,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
-        self.assertEqual("identity-v3", result["resolver_version"])
+        self.assertEqual("identity-v4", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",

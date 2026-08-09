@@ -7,7 +7,7 @@ from typing import Any
 from models import DECIMAL_ID
 
 
-RESOLVER_VERSION = "identity-v3"
+RESOLVER_VERSION = "identity-v4"
 NON_DISCRIMINATING_CLUB_KEYS = {
     "",
     "free agent",

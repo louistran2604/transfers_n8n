@@ -158,6 +158,41 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual("unresolved", fuzzy["status"])
 
+    def test_curated_romero_and_club_scoped_lukaku_requests_resolve_live_cache_shapes(self):
+        def payload(identifier: int, player: str, club: str) -> dict:
+            return {"results": [{"type": "player", "entity": {
+                "id": identifier,
+                "name": player,
+                "team": {"id": identifier + 1, "name": club, "sport": {"slug": "football"}, "gender": "M"},
+            }}]}
+
+        cuti = resolve_search(
+            "Cristian Romero",
+            payload(829932, "Cristian Romero", "Tottenham Hotspur"),
+            aliases=["Cuti Romero"],
+            reported_club_name="Tottenham Hotspur",
+            reported_club_names=["Tottenham Hotspur", "Tottenham"],
+        )
+        self.assertEqual("829932", cuti["identity"]["provider_player_id"])
+
+        lukaku = resolve_search(
+            "Romelu Lukaku",
+            payload(78893, "Romelu Lukaku", "SSC Napoli"),
+            aliases=["Lukaku"],
+            reported_club_name="Napoli",
+            reported_club_names=["Napoli", "SSC Napoli", "sscnapoli"],
+        )
+        self.assertEqual("78893", lukaku["identity"]["provider_player_id"])
+
+        unrelated = resolve_search(
+            "Lukaku",
+            payload(78893, "Romelu Lukaku", "SSC Napoli"),
+            reported_club_name="Roma",
+            reported_club_names=["Roma"],
+        )
+        self.assertEqual("unresolved", unrelated["status"])
+        self.assertEqual([], unrelated["candidates"])
+
     def test_nonfootball_women_youth_and_rejected_candidates_are_excluded(self):
         payload = {
             "results": [

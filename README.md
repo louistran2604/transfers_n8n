@@ -210,7 +210,7 @@ Journalist name, source URL, platform, post timestamp, priority, and reliability
 
 Qwen must return `{ transfer_related, reports[] }` matching [the strict schema](workflow/qwen-response-schema.json). Every report property is required; unknown nullable facts use `null`. Classifications and move types are locked enums, dates use ISO `YYYY-MM-DD`, currencies use ISO three-letter codes, and monetary values use base units.
 
-Only senior men's football is in scope. Known women's-football players are listed in [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt), one name or spelling variant per line. After adding a name, regenerate and re-import the main workflow:
+Only senior men's football is in scope. Known women's-football players are listed in [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt), one name or spelling variant per line. This file is the authoritative exclusion list. After adding a name, regenerate and re-import the main workflow:
 
 ```bash
 node workflow/build-workflows.mjs
@@ -220,7 +220,15 @@ docker compose -f deploy/n8n/compose.yaml exec -T n8n \
 
 The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
 
-Club and player spelling variants, plus sibling groups, are maintained in [workflow/entity-aliases.json](workflow/entity-aliases.json). Add a canonical name and its known aliases there, then regenerate and re-import the workflow. Aliases are applied before report persistence and digest selection; sibling groups are supplied to Qwen so a shared surname is not automatically merged with the wrong player.
+Identity and digest-name configuration is maintained in [workflow/entity-aliases.json](workflow/entity-aliases.json):
+
+- `clubs`: canonical club names and spelling variants.
+- `players`: global player aliases applied before report persistence, enrichment, and digest selection.
+- `enrichment_player_aliases`: player aliases used only for enrichment when the canonical current club matches a configured scope. They do not rewrite persisted reports.
+- `sibling_groups`: exact full-name pairs allowed to coexist despite a shared surname.
+- `common_surnames`: unaccented final-token surnames whose distinct stated given names may coexist in one digest.
+
+The generated Qwen prompt asks the model to preserve stated given names for common surnames, without inventing a missing name or reordering surname-first names. The JavaScript digest filter remains authoritative.
 
 Classification precedence during merging is:
 
@@ -249,7 +257,7 @@ A missing or invalid value behaves as `off`. Context, service, validation, and e
 
 Identity resolution uses a known provider ID when available. Otherwise, it requires an exact or configured player alias plus an independent club discriminator. The resolver considers both the reported current club and destination club, and treats only safe trailing organization suffixes such as `AFC`, `CF`, `CP`, `FC`, and `SC` as equivalent. It never falls back to player name alone; low scores and close duplicate-name candidates remain unresolved or ambiguous.
 
-The provider request is capped at 25 distinct player groups. Before applying that cap, the workflow uses the same broad priority as the digest: digest-eligible reports first, then confirmed moves, Romano/Ornstein reports, huge rumors, €70m/£70m rumors, source tier/reliability, classification, and confidence. This prevents database ID order from excluding a digest-visible high-priority player.
+The enrichment SQL first selects up to 25 historical retries, after excluding current requests, ordered deterministically by resolver-version mismatch and oldest attempt. The JavaScript request builder then keeps current reports before those historical candidates and applies the existing digest/source/classification/confidence ordering within each set before enforcing the 25-player request cap. Historical retries only piggyback on runs that reach the enrichment query.
 
 Eligible enrichment can include:
 

@@ -223,7 +223,7 @@ SELECT (SELECT id::text FROM report) AS transfer_report_id,
 function enrichmentContextSql() {
   return `
 WITH requested_input AS (
-  SELECT value::text::bigint AS transfer_report_id
+  SELECT DISTINCT value::text::bigint AS transfer_report_id
   FROM jsonb_array_elements_text($1::jsonb)
 ),
 historical_candidates AS (
@@ -237,7 +237,8 @@ historical_candidates AS (
     ORDER BY attempt.started_at DESC, attempt.id DESC
     LIMIT 1
   ) latest_attempt ON true
-  WHERE NOT EXISTS (
+  WHERE NOT EXISTS (SELECT 1 FROM requested_input WHERE requested_input.transfer_report_id = tr.id)
+    AND NOT EXISTS (
     SELECT 1 FROM transfer_report_player_resolutions resolution
     WHERE resolution.transfer_report_id = tr.id
   )
@@ -246,7 +247,7 @@ historical_candidates AS (
         latest_attempt.status IN ('unresolved', 'ambiguous')
         AND (
           latest_attempt.started_at <= CURRENT_TIMESTAMP - interval '24 hours'
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v4'
         )
       )
       OR (
@@ -254,23 +255,24 @@ historical_candidates AS (
         AND latest_attempt.retryable
         AND (
           latest_attempt.next_retry_at <= CURRENT_TIMESTAMP
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v4'
         )
       )
     )
   ORDER BY
-    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3') DESC,
+    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v4') DESC,
     latest_attempt.started_at,
     tr.id
   LIMIT 25
 ),
 requested AS (
-  SELECT transfer_report_id FROM requested_input
-  UNION
-  SELECT transfer_report_id FROM historical_candidates
+  SELECT transfer_report_id, true AS is_current_request FROM requested_input
+  UNION ALL
+  SELECT transfer_report_id, false AS is_current_request FROM historical_candidates
 )
 SELECT
   tr.id::text AS transfer_report_id,
+  requested.is_current_request,
   tr.player_id::text AS placeholder_player_id,
   tr.reported_player_name,
   tr.current_club_name,
@@ -317,7 +319,7 @@ SELECT
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
   latest_attempt.resolver_version AS latest_attempt_resolver_version,
-  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v3' AS force_resolver_retry,
+  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v4' AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
@@ -1315,7 +1317,6 @@ if (mode !== 'off') {
     const context = input.json ?? {};
     const reportId = String(context.transfer_report_id ?? '');
     const reportedName = typeof context.reported_player_name === 'string' ? context.reported_player_name.trim() : '';
-    const canonicalReportedName = canonicalEntity(reportedName, entityAliases.players);
     const providerId = String(context.provider_player_id ?? '');
     if (!/^\\d+$/.test(reportId) || !reportedName || (providerId && !/^\\d+$/.test(providerId))) continue;
     const aliases = parseValue(context.aliases, []);
@@ -1324,6 +1325,8 @@ if (mode !== 'off') {
     const latestStarted = Date.parse(String(context.latest_attempt_started_at ?? ''));
     const retryAt = Date.parse(String(context.latest_attempt_next_retry_at ?? ''));
     const canonicalCurrentClub = canonicalEntity(context.current_club_name, entityAliases.clubs);
+    const globallyCanonicalName = canonicalEntity(reportedName, entityAliases.players);
+    const canonicalReportedName = entityAliases.enrichment_player_aliases[normalizeAlias(reportedName) + '|' + normalizeAlias(canonicalCurrentClub)] ?? globallyCanonicalName;
     const canonicalFormerClub = canonicalEntity(context.former_club_name, entityAliases.clubs);
     const canonicalDestinationClub = canonicalEntity(context.destination_club_name, entityAliases.clubs);
     const currentClubKey = namedContext(canonicalCurrentClub);
@@ -1359,7 +1362,8 @@ const enrichmentPriority = ({ context }) => {
 const classificationWeight = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 preparedContexts.sort((left, right) => {
   const eligible = ({ context }) => context.is_digest_worthy === true && namedContext(context.current_club_name) && namedContext(context.destination_club_name);
-  return Number(eligible(right)) - Number(eligible(left))
+  return Number(right.context.is_current_request !== false) - Number(left.context.is_current_request !== false)
+    || Number(eligible(right)) - Number(eligible(left))
     || enrichmentPriority(left) - enrichmentPriority(right)
     || Number(left.context.source_priority_rank ?? 100) - Number(right.context.source_priority_rank ?? 100)
     || Number(right.context.source_reliability_score ?? 0) - Number(left.context.source_reliability_score ?? 0)
@@ -1430,7 +1434,7 @@ const failure = (player, code) => ({
   report_ids: player.report_ids,
   request_context: player.request_context ?? {},
   status: 'schema_failure',
-  resolver_version: 'identity-v3',
+  resolver_version: 'identity-v4',
   retryable: true,
   provider_calls: 0,
   cache_hits: 0,
@@ -1667,7 +1671,6 @@ const withPresentationCurrentClub = (report) => {
 };
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
 const digestHistoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
-const digestSurname = (report) => normalizeAlias(report.player_name).split(' ').at(-1);
 const configuredSiblingPair = (left, right) => {
   const leftName = normalizeAlias(left.player_name);
   const rightName = normalizeAlias(right.player_name);
@@ -1676,6 +1679,21 @@ const configuredSiblingPair = (left, right) => {
     const members = group.map(normalizeAlias);
     return members.includes(leftName) && members.includes(rightName);
   });
+};
+const digestPlayerConflict = (left, right) => {
+  const leftName = normalizeAlias(left.player_name);
+  const rightName = normalizeAlias(right.player_name);
+  if (leftName === rightName) return true;
+  if (configuredSiblingPair(left, right)) return false;
+  const leftTokens = leftName.split(' ').filter(Boolean);
+  const rightTokens = rightName.split(' ').filter(Boolean);
+  const surname = leftTokens.at(-1);
+  if (!surname || surname !== rightTokens.at(-1)) return false;
+  if (leftTokens.length === 1 || rightTokens.length === 1) return true;
+  if (!entityAliases.common_surnames.includes(surname)) return true;
+  const leftGiven = new Set(leftTokens.slice(0, -1).filter((token) => token.length > 1));
+  const rightGiven = new Set(rightTokens.slice(0, -1).filter((token) => token.length > 1));
+  return leftGiven.size === 0 || rightGiven.size === 0 || [...leftGiven].some((token) => rightGiven.has(token));
 };
 const digestUpdateFields = ['classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'];
 const digestMaterialKey = (report) => JSON.stringify(Object.fromEntries(digestUpdateFields.map((field) => [field, report[field] ?? null])));
@@ -1710,8 +1728,7 @@ const distinctCandidateReports = [];
 for (const report of candidateReports) {
   const revisionId = String(report.revision_id ?? '');
   if (!revisionId || seenRevisionIds.has(revisionId)) continue;
-  const sameSurname = distinctCandidateReports.filter((selectedReport) => digestSurname(selectedReport) === digestSurname(report));
-  if (sameSurname.some((selectedReport) => !configuredSiblingPair(selectedReport, report))) continue;
+  if (distinctCandidateReports.some((selectedReport) => digestPlayerConflict(selectedReport, report))) continue;
   seenRevisionIds.add(revisionId);
   distinctCandidateReports.push(report);
 }
@@ -2050,7 +2067,8 @@ async function qwenPromptWithWomensBlacklist(prompt) {
     .filter((line) => line && !line.startsWith('#'));
   const uniqueNames = [...new Set(names)];
   const siblings = entityAliases.sibling_groups.map((group) => `- ${group.join(' / ')}`).join('\n');
-  return `${prompt.trim()}\n\nWomen's-football blacklist:\n${uniqueNames.map((name) => `- ${name}`).join('\n')}\n\nIf a post names any player on this blacklist, including a case or diacritic variant, return {"transfer_related":false,"reports":[]}.\n\nKnown football siblings:\n${siblings}\n\nWhen a post uses a surname shared by listed siblings, use the full player name only when the post context identifies that sibling. Do not merge siblings or guess between them.`;
+  const commonSurnames = entityAliases.common_surnames.map((surname) => `- ${surname}`).join('\n');
+  return `${prompt.trim()}\n\nWomen's-football blacklist:\n${uniqueNames.map((name) => `- ${name}`).join('\n')}\n\nIf a post names any player on this blacklist, including a case or diacritic variant, return {"transfer_related":false,"reports":[]}.\n\nKnown football siblings:\n${siblings}\n\nWhen a post uses a surname shared by listed siblings, use the full player name only when the post context identifies that sibling. Do not merge siblings or guess between them.\n\nNormalized common football surnames:\n${commonSurnames}\n\nFor a listed surname, preserve any first or given name stated in the post. Never invent a missing first name, and never reorder a surname-first name. The downstream JavaScript filter is authoritative for digest identity conflicts.`;
 }
 
 async function main() {

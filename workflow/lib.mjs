@@ -74,7 +74,14 @@ export function normalizeIdentity(value) {
   return normalizeText(value).replace(/\s/g, '-');
 }
 
-const EMPTY_ENTITY_ALIASES = Object.freeze({ clubs: Object.freeze({}), club_variants: Object.freeze({}), players: Object.freeze({}), sibling_groups: Object.freeze([]) });
+const EMPTY_ENTITY_ALIASES = Object.freeze({
+  clubs: Object.freeze({}),
+  club_variants: Object.freeze({}),
+  players: Object.freeze({}),
+  enrichment_player_aliases: Object.freeze({}),
+  sibling_groups: Object.freeze([]),
+  common_surnames: Object.freeze([]),
+});
 
 function aliasMap(entries, label) {
   if (!Array.isArray(entries)) throw new Error(`${label} aliases must be an array`);
@@ -104,14 +111,44 @@ function aliasVariants(entries, label) {
 
 export function parseEntityAliases(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Entity aliases must be an object');
+  const clubs = aliasMap(value.clubs, 'club');
+  const canonicalClubs = new Set(value.clubs.map((entry) => entry.canonical));
+  if (!Array.isArray(value.enrichment_player_aliases)) throw new Error('Enrichment player aliases must be an array');
+  const enrichmentPlayerAliases = {};
+  for (const entry of value.enrichment_player_aliases) {
+    if (!entry || typeof entry !== 'object' || typeof entry.reported !== 'string' || !entry.reported.trim()
+      || typeof entry.canonical !== 'string' || !entry.canonical.trim() || !Array.isArray(entry.current_clubs)
+      || entry.current_clubs.length === 0 || !entry.current_clubs.every((club) => typeof club === 'string' && club.trim())) {
+      throw new Error('Invalid enrichment player alias entry');
+    }
+    for (const club of entry.current_clubs) {
+      const canonicalClub = clubs[normalizeText(club)];
+      if (!canonicalClub || !canonicalClubs.has(canonicalClub)) throw new Error(`Unknown enrichment player alias club: ${club}`);
+      const key = `${normalizeText(entry.reported)}|${normalizeText(canonicalClub)}`;
+      if (enrichmentPlayerAliases[key]) throw new Error(`Duplicate enrichment player alias scope: ${entry.reported} / ${canonicalClub}`);
+      enrichmentPlayerAliases[key] = entry.canonical.trim();
+    }
+  }
   if (!Array.isArray(value.sibling_groups) || !value.sibling_groups.every((group) => Array.isArray(group) && group.length >= 2 && group.every((name) => typeof name === 'string' && name.trim()))) {
     throw new Error('Sibling groups must contain at least two player names');
   }
+  if (!Array.isArray(value.common_surnames)) throw new Error('Common surnames must be an array');
+  const commonSurnames = [];
+  const seenSurnames = new Set();
+  for (const surname of value.common_surnames) {
+    const normalized = typeof surname === 'string' ? normalizeText(surname) : '';
+    if (!normalized || normalized.includes(' ') || surname.normalize('NFD') !== surname) throw new Error(`Invalid common surname: ${surname}`);
+    if (seenSurnames.has(normalized)) throw new Error(`Duplicate common surname: ${surname}`);
+    seenSurnames.add(normalized);
+    commonSurnames.push(normalized);
+  }
   return Object.freeze({
-    clubs: aliasMap(value.clubs, 'club'),
+    clubs,
     club_variants: aliasVariants(value.clubs, 'club'),
     players: aliasMap(value.players, 'player'),
+    enrichment_player_aliases: Object.freeze(enrichmentPlayerAliases),
     sibling_groups: Object.freeze(value.sibling_groups.map((group) => Object.freeze([...group]))),
+    common_surnames: Object.freeze(commonSurnames),
   });
 }
 
@@ -167,7 +204,8 @@ function enrichmentContextComparator(left, right) {
   });
   const leftReport = report(left.context);
   const rightReport = report(right.context);
-  return Number(isDigestEligible(rightReport)) - Number(isDigestEligible(leftReport))
+  return Number(right.context.is_current_request !== false) - Number(left.context.is_current_request !== false)
+    || Number(isDigestEligible(rightReport)) - Number(isDigestEligible(leftReport))
     || digestPriority(leftReport) - digestPriority(rightReport)
     || sourceComparator(leftReport, rightReport)
     || classificationWeight(rightReport.classification) - classificationWeight(leftReport.classification)
@@ -189,12 +227,15 @@ export function buildEnrichmentRequest(contexts, {
   for (const context of Array.isArray(contexts) ? contexts : []) {
     const reportId = String(context?.transfer_report_id ?? '');
     const reportedName = typeof context?.reported_player_name === 'string' ? context.reported_player_name.trim() : '';
-    const canonicalReportedName = entityAliases.players[normalizeText(reportedName)] ?? reportedName;
     const knownProviderId = String(context?.provider_player_id ?? '');
     if (!/^\d+$/.test(reportId) || !reportedName || (knownProviderId && !DECIMAL_ID.test(knownProviderId))) continue;
     const canonicalCurrentClub = typeof context.current_club_name === 'string'
       ? entityAliases.clubs[normalizeText(context.current_club_name)] ?? context.current_club_name.trim()
       : context.current_club_name;
+    const globallyCanonicalName = entityAliases.players[normalizeText(reportedName)] ?? reportedName;
+    const canonicalReportedName = entityAliases.enrichment_player_aliases[
+      `${normalizeText(reportedName)}|${normalizeText(canonicalCurrentClub)}`
+    ] ?? globallyCanonicalName;
     const canonicalDestinationClub = typeof context.destination_club_name === 'string'
       ? entityAliases.clubs[normalizeText(context.destination_club_name)] ?? context.destination_club_name.trim()
       : context.destination_club_name;
@@ -324,7 +365,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
-    resolver_version: 'identity-v3',
+    resolver_version: 'identity-v4',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,
@@ -887,10 +928,6 @@ function digestHistoryKey(report) {
   return [report.player_name, report.destination_club_name].map(normalizeIdentity).join('|');
 }
 
-function digestSurname(report) {
-  return normalizeText(report.player_name).split(' ').at(-1);
-}
-
 function configuredSiblingPair(left, right, entityAliases) {
   const leftName = normalizeText(left.player_name);
   const rightName = normalizeText(right.player_name);
@@ -899,6 +936,24 @@ function configuredSiblingPair(left, right, entityAliases) {
     const members = group.map(normalizeText);
     return members.includes(leftName) && members.includes(rightName);
   });
+}
+
+function digestPlayerConflict(left, right, entityAliases) {
+  const leftName = normalizeText(left.player_name);
+  const rightName = normalizeText(right.player_name);
+  if (leftName === rightName) return true;
+  if (configuredSiblingPair(left, right, entityAliases)) return false;
+  const leftTokens = leftName.split(' ').filter(Boolean);
+  const rightTokens = rightName.split(' ').filter(Boolean);
+  const surname = leftTokens.at(-1);
+  if (!surname || surname !== rightTokens.at(-1)) return false;
+  if (leftTokens.length === 1 || rightTokens.length === 1) return true;
+  if (!entityAliases.common_surnames.includes(surname)) return true;
+  const leftGiven = new Set(leftTokens.slice(0, -1).filter((token) => token.length > 1));
+  const rightGiven = new Set(rightTokens.slice(0, -1).filter((token) => token.length > 1));
+  return leftGiven.size === 0
+    || rightGiven.size === 0
+    || [...leftGiven].some((token) => rightGiven.has(token));
 }
 
 function isDigestEligible(report) {
@@ -1134,8 +1189,7 @@ export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIA
   for (const report of sorted) {
     const revisionId = String(report.revision_id ?? '');
     if (revisionId && seenRevisionIds.has(revisionId)) continue;
-    const sameSurname = distinct.filter((selected) => digestSurname(selected) === digestSurname(report));
-    if (sameSurname.some((selected) => !configuredSiblingPair(selected, report, entityAliases))) continue;
+    if (distinct.some((selected) => digestPlayerConflict(selected, report, entityAliases))) continue;
     if (revisionId) seenRevisionIds.add(revisionId);
     distinct.push(report);
   }

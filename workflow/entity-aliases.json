@@ -2,7 +2,8 @@
   "clubs": [
     { "canonical": "Bayer Leverkusen", "aliases": ["Bayer 04 Leverkusen"] },
     { "canonical": "Barcelona", "aliases": ["FC Barcelona", "Barca", "Barça"] },
-    { "canonical": "Napoli", "aliases": ["SSC Napoli"] },
+    { "canonical": "Napoli", "aliases": ["SSC Napoli", "sscnapoli"] },
+    { "canonical": "Tottenham Hotspur", "aliases": ["Tottenham"] },
     { "canonical": "Marseille", "aliases": ["Olympique de Marseille"] },
     { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München"] },
     { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
@@ -13,10 +14,20 @@
     { "canonical": "Randal Kolo Muani", "aliases": ["Kolo Muani", "Randal Kolo-Muani"] },
     { "canonical": "Kerim Alajbegović", "aliases": ["Kerim Alajbegovic"] },
     { "canonical": "Rodri Hernández", "aliases": ["Rodri", "Rodri Hernandez"] },
-    { "canonical": "Maghnes Akliouche", "aliases": ["Aklouche"] }
+    { "canonical": "Maghnes Akliouche", "aliases": ["Aklouche"] },
+    { "canonical": "Cristian Romero", "aliases": ["Cuti Romero"] }
+  ],
+  "enrichment_player_aliases": [
+    { "reported": "Lukaku", "canonical": "Romelu Lukaku", "current_clubs": ["Napoli"] }
   ],
   "sibling_groups": [
     ["Kylian Mbappé", "Ethan Mbappé"],
     ["Jurriën Timber", "Quinten Timber"]
+  ],
+  "common_surnames": [
+    "Romero", "Martinez", "Fernandes", "Fernandez", "Silva", "Santos", "Garcia",
+    "Rodriguez", "Gonzalez", "Hernandez", "Sanchez", "Lopez", "Perez", "Gomez",
+    "Diaz", "Torres", "Ramos", "Ruiz", "Moreno", "Jimenez", "Costa", "Pereira",
+    "Mendes", "Sarr", "Diallo", "Traore", "Camara", "Kone", "Dembele", "Smith"
   ]
 }
