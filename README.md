@@ -214,9 +214,16 @@ Only senior men's football is in scope. Known women's-football players are liste
 
 ```bash
 node workflow/build-workflows.mjs
+node workflow/build-workflows.mjs --check
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n import:workflow --input=/workflows/football-transfer-monitor.json
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n publish:workflow --id=football-transfer-monitor
+# Restart n8n only if the publish command requests it.
+docker compose -f deploy/n8n/compose.yaml restart n8n
 ```
+
+`PLAYER_ENRICHMENT_MODE=off` is optional and harmless for the generator commands because the generator does not read it; verification examples use the prefix as a safety convention. The setting matters for Compose/runtime commands, and production `deploy/n8n/.env` remains `active`.
 
 The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
 
