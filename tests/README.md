@@ -17,7 +17,7 @@ Build the enrichment image and run the complete fixture-backed Python suite with
 ```bash
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
 docker run --rm --network none --read-only --tmpfs /tmp \
-  --entrypoint python transfers-n8n-sofascore-enrichment:local \
+  --entrypoint python n8n-ftm-sofascore-enrichment:local \
   -m unittest discover -s tests -v
 ```
 
@@ -26,7 +26,7 @@ These tests use the checked-in fixture transport. Readiness and fixture tests ve
 After building the scraper image, run its dependency-free service tests without real X credentials:
 
 ```bash
-docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python transfers-n8n-twscrape:local -m unittest discover -s /tests -v
+docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python n8n-ftm-twscrape:local -m unittest discover -s /tests -v
 ```
 
 Run the isolated PostgreSQL migration, repeat/concurrency, rollback-compatibility, and SQL constraint suite:

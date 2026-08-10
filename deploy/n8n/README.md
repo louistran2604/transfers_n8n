@@ -1,6 +1,15 @@
 # n8n deployment
 
-The n8n and external-runner images are pinned to matching n8n `2.31.6` manifests. The service joins `transfers_net` to reach PostgreSQL at `transfers-postgres:5432`, Qwen at `llama:8080`, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
+The Compose project is `n8n-ftm`. Its Docker resources use the same prefix:
+
+| Service | Image | Container | Persistent volume |
+| --- | --- | --- | --- |
+| n8n | `n8n-ftm:local` | `n8n-ftm` | `n8n-ftm-data` |
+| External runner | `n8n-ftm-runner:local` | `n8n-ftm-runner` | None |
+| twscrape | `n8n-ftm-twscrape:local` | `n8n-ftm-twscrape` | `n8n-ftm-twscrape-accounts` |
+| Sofascore enrichment | `n8n-ftm-sofascore-enrichment:local` | `n8n-ftm-sofascore-enrichment` | `n8n-ftm-sofascore-cache` |
+
+The n8n and external-runner images use matching pinned n8n `2.31.6` manifests. The n8n service joins the shared `transfers_net` network to reach PostgreSQL at `transfers-postgres:5432`, Qwen at `llama:8080`, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. Compose service names remain stable for internal DNS. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
 
 ```bash
 cd ~/projects/transfers_n8n/deploy/n8n
@@ -62,7 +71,7 @@ docker compose exec -T twscrape python -c "import urllib.request; print(urllib.r
 
 If the account expires, update only the ignored cookie variables and recreate `twscrape` with `docker compose --profile twscrape up -d --force-recreate twscrape`. Keep its SQLite volume; it preserves account state and is refreshed when the cookie values change.
 
-The named `sofascore_cache` volume preserves the raw provider cache when the service is recreated or upgraded:
+The named `n8n-ftm-sofascore-cache` volume preserves the raw provider cache when the service is recreated or upgraded. The other persistent volumes are `n8n-ftm-data` for n8n state and `n8n-ftm-twscrape-accounts` for collector account state:
 
 ```bash
 PLAYER_ENRICHMENT_MODE=off docker compose build sofascore-enrichment
@@ -73,12 +82,12 @@ To reset only that raw cache, first keep the mode off and stop the service. Conf
 
 ```bash
 PLAYER_ENRICHMENT_MODE=off docker compose stop sofascore-enrichment
-docker volume inspect bill_sofascore_cache
-docker volume rm bill_sofascore_cache
+docker volume inspect n8n-ftm-sofascore-cache
+docker volume rm n8n-ftm-sofascore-cache
 PLAYER_ENRICHMENT_MODE=off docker compose up -d sofascore-enrichment
 ```
 
-This reset leaves normalized PostgreSQL snapshots intact. Do not use `docker compose down --volumes`; it would also delete n8n and collector data. Roll back the deployment by setting `PLAYER_ENRICHMENT_MODE=off`, recreating n8n, stopping `sofascore-enrichment`, and restoring the prior n8n/service images or workflow files. Retain `sofascore_cache` until deletion is explicitly approved.
+This reset leaves normalized PostgreSQL snapshots intact. Do not use `docker compose down --volumes`; it would also delete n8n and collector data. Roll back the deployment by setting `PLAYER_ENRICHMENT_MODE=off`, recreating n8n, stopping `sofascore-enrichment`, and restoring the prior n8n/service images or workflow files. Retain `n8n-ftm-sofascore-cache` until deletion is explicitly approved.
 
 Use `docker compose down` to stop n8n while preserving named volumes.
 

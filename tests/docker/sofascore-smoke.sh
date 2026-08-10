@@ -2,7 +2,7 @@
 set -eu
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-image=transfers-n8n-sofascore-enrichment:local
+image=n8n-ftm-sofascore-enrichment:local
 run_id="m7-sofascore-smoke-$$"
 container="transfers-$run_id"
 restart_container="transfers-$run_id-restart"

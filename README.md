@@ -348,7 +348,7 @@ If `twscrape` reports `account_unavailable`, obtain fresh `auth_token` and `ct0`
 docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --force-recreate twscrape
 ```
 
-Do not delete the `twscrape_accounts` volume during normal recovery.
+Do not delete the `n8n-ftm-twscrape-accounts` volume during normal recovery.
 
 To use RapidAPI, set `X_COLLECTOR=rapidapi`, add `RAPIDAPI_KEY`, and recreate n8n:
 
@@ -432,7 +432,7 @@ After building the scraper image, run its tests without a live X account:
 
 ```bash
 docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" \
-  --entrypoint python transfers-n8n-twscrape:local \
+  --entrypoint python n8n-ftm-twscrape:local \
   -m unittest discover -s /tests -v
 ```
 

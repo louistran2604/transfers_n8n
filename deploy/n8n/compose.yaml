@@ -1,9 +1,10 @@
-name: bill
+name: n8n-ftm
 
 services:
   n8n:
     build: .
-    container_name: n8n_bill
+    image: n8n-ftm:local
+    container_name: n8n-ftm
     restart: unless-stopped
     ports:
       - "5678:5678"
@@ -29,7 +30,7 @@ services:
       - DISCORD_TRANSFERS_WEBHOOK_URL=${DISCORD_TRANSFERS_WEBHOOK_URL:?DISCORD_TRANSFERS_WEBHOOK_URL is required}
       - DISCORD_ERRORS_WEBHOOK_URL=${DISCORD_ERRORS_WEBHOOK_URL:?DISCORD_ERRORS_WEBHOOK_URL is required}
     volumes:
-      - bill_n8n_data:/home/node/.n8n
+      - n8n-ftm-data:/home/node/.n8n
       - ../../workflow:/workflows:ro
     networks:
       - default
@@ -37,7 +38,8 @@ services:
 
   n8n-runner:
     build: ./runners
-    container_name: n8n_bill_runner
+    image: n8n-ftm-runner:local
+    container_name: n8n-ftm-runner
     restart: unless-stopped
     environment:
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:?N8N_RUNNERS_AUTH_TOKEN is required}
@@ -49,7 +51,8 @@ services:
 
   twscrape:
     build: ./twscrape
-    image: transfers-n8n-twscrape:local
+    image: n8n-ftm-twscrape:local
+    container_name: n8n-ftm-twscrape
     profiles: ["twscrape"]
     restart: unless-stopped
     environment:
@@ -58,7 +61,7 @@ services:
       - TWS_TELEMETRY=0
       - TWS_LOG_LEVEL=WARNING
     volumes:
-      - twscrape_accounts:/data
+      - n8n-ftm-twscrape-accounts:/data
     networks:
       - transfers_net
     healthcheck:
@@ -70,13 +73,14 @@ services:
 
   sofascore-enrichment:
     build: ./sofascore
-    image: transfers-n8n-sofascore-enrichment:local
+    image: n8n-ftm-sofascore-enrichment:local
+    container_name: n8n-ftm-sofascore-enrichment
     profiles: ["enrichment"]
     restart: unless-stopped
     environment:
       - SOCCERDATA_DIR=/data/soccerdata
     volumes:
-      - sofascore_cache:/data/soccerdata
+      - n8n-ftm-sofascore-cache:/data/soccerdata
     networks:
       - transfers_net
     healthcheck:
@@ -90,11 +94,14 @@ services:
     stop_grace_period: 15s
 
 volumes:
-  bill_n8n_data:
+  n8n-ftm-data:
+    name: n8n-ftm-data
     driver: local
-  twscrape_accounts:
+  n8n-ftm-twscrape-accounts:
+    name: n8n-ftm-twscrape-accounts
     driver: local
-  sofascore_cache:
+  n8n-ftm-sofascore-cache:
+    name: n8n-ftm-sofascore-cache
     driver: local
 
 networks:
