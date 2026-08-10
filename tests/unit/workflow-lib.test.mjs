@@ -495,6 +495,56 @@ test('enrichment transports curated club variants and suppresses rumor destinati
   }
 });
 
+test('Rodrigo Mora source and generated requests carry canonical Porto aliases in loader order', async () => {
+  const context = {
+    transfer_report_id: '1410240',
+    reported_player_name: 'Rodrigo Mora',
+    current_club_name: 'FC Porto',
+    destination_club_name: 'Other',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+  };
+  const player = buildEnrichmentRequest([context], {
+    mode: 'active', requestId: 'rodrigo-source', entityAliases,
+  }).request.players[0];
+  assert.equal(player.current_club_name, 'Porto');
+  assert.deepEqual(player.current_club_aliases, ['Porto', 'FC Porto']);
+
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const generated = await runRequest({ all: () => [{ json: context }] }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  const generatedPlayer = generated[0].json.request.players[0];
+  assert.equal(generatedPlayer.current_club_name, 'Porto');
+  assert.deepEqual(generatedPlayer.current_club_aliases, ['Porto', 'FC Porto']);
+});
+
+test('unrelated duplicate remains unresolved and excluded by the ambiguity cooldown', () => {
+  const player = buildEnrichmentRequest([{
+    transfer_report_id: '1410241',
+    reported_player_name: 'John Smith',
+    current_club_name: 'Unrelated FC',
+    destination_club_name: 'Other',
+    classification: 'rumor',
+    move_type: 'permanent',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+    latest_attempt_status: 'ambiguous',
+    latest_attempt_started_at: '2026-07-30T11:00:00Z',
+  }], {
+    mode: 'active', requestId: 'unrelated-duplicate', now: Date.parse('2026-07-30T12:00:00Z'), entityAliases,
+  });
+  assert.equal(player.request, null);
+  assert.equal(player.refreshRequired, false);
+});
+
 test('former club alone creates a bounded enrichment identity request', () => {
   const player = buildEnrichmentRequest([{
     transfer_report_id: '24',
@@ -592,7 +642,7 @@ test('enrichment response normalization converts contract failures into one sani
       items: [{
         item_key: 'provider:826643',
         status: 'fresh',
-        resolver_version: 'identity-v4',
+        resolver_version: 'identity-v5',
         provider_calls: 2,
         identity: {
           provider: 'sofascore',
@@ -600,7 +650,7 @@ test('enrichment response normalization converts contract failures into one sani
           stable_source_identifier: 'sofascore:player:826643',
           score: 80,
           margin: 80,
-          resolver_version: 'identity-v4',
+          resolver_version: 'identity-v5',
         },
         profile: {
           canonical_name: 'Kylian Mbappé',
@@ -637,7 +687,7 @@ test('enrichment response normalization preserves valid search candidates with o
       items: [{
         item_key: request.players[0].item_key,
         status: 'ambiguous',
-        resolver_version: 'identity-v4',
+        resolver_version: 'identity-v5',
         identity: null,
         profile: null,
         statistics: null,
@@ -660,11 +710,11 @@ test('enrichment response rejects identity on unresolved statuses and invalid sc
   const request = { request_id: 'identity-contract', players: [player] };
   const identity = {
     provider: 'sofascore', provider_player_id: '9', stable_source_identifier: 'sofascore:player:9',
-    score: 80, margin: 80, resolver_version: 'identity-v4',
+    score: 80, margin: 80, resolver_version: 'identity-v5',
   };
   const response = (status, candidateIdentity) => ({ statusCode: 200, body: {
     request_id: request.request_id,
-    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v4', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
+    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v5', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
   } });
   assert.equal(normalizeEnrichmentResponse(request, response('unresolved', identity)).items[0].status, 'schema_failure');
   for (const invalid of [
@@ -688,7 +738,7 @@ test('enrichment response normalization bounds search candidates to five entries
   }));
   const normalized = normalizeEnrichmentResponse(request, {
     statusCode: 200,
-    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v4', identity: null, profile: null, statistics: null, candidates }] },
+    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v5', identity: null, profile: null, statistics: null, candidates }] },
   });
   assert.deepEqual(normalized.items[0].candidates, candidates.slice(0, 5));
 });
@@ -705,7 +755,7 @@ test('enrichment response normalization omits malformed search candidates', () =
       items: [{
         item_key: 'provider:2',
         status: 'unresolved',
-        resolver_version: 'identity-v4',
+        resolver_version: 'identity-v5',
         identity: null,
         profile: null,
         statistics: null,
@@ -739,7 +789,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
     items: [{
       item_key: 'provider:3',
       status: 'unresolved',
-      resolver_version: 'identity-v4',
+      resolver_version: 'identity-v5',
       identity: null,
       profile: null,
       statistics: null,
@@ -769,7 +819,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
   ]);
   const invalidIdentity = {
     provider: 'sofascore', provider_player_id: '3', stable_source_identifier: 'sofascore:player:3',
-    score: 70, margin: 80, resolver_version: 'identity-v4',
+    score: 70, margin: 80, resolver_version: 'identity-v5',
   };
   const invalidOutput = await runNormalize({ statusCode: 200, body: {
     ...body, items: [{ ...body.items[0], identity: invalidIdentity }],
@@ -1767,7 +1817,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /false AS is_current_request/);
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
-  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v4'/);
+  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v5'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);

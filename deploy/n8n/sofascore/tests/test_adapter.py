@@ -72,7 +72,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
-        self.assertEqual("identity-v4", result["resolver_version"])
+        self.assertEqual("identity-v5", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",
@@ -351,6 +351,78 @@ class AdapterNormalizationTests(unittest.TestCase):
             [call["endpoint"] for call in self.transport.calls],
         )
         self.assertEqual(3, result["provider_calls"])
+
+    def test_curated_porto_request_resolves_rodrigo_mora_and_continues_to_profile(self):
+        self.transport.register("search/all?q=Rodrigo%20Mora", {
+            "results": [
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 1410240,
+                        "name": "Rodrigo Mora",
+                        "team": {"id": 3000, "name": "FC Porto", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 40772,
+                        "name": "Rodrigo Mora",
+                        "team": {"id": 4000, "name": "Alas Argentinas", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+            ]
+        })
+        self.transport.register("player/1410240", {
+            "player": {
+                "id": 1410240,
+                "name": "Rodrigo Mora",
+                "team": {
+                    "id": 3000,
+                    "name": "FC Porto",
+                    "primaryUniqueTournament": {"id": 17, "name": "Primeira Liga"},
+                },
+                "country": {"name": "Portugal"},
+            }
+        })
+        self.transport.register("player/1410240/unique-tournament/17/season/76986/statistics/overall", {
+            "statistics": {
+                "appearances": 1,
+                "matchesStarted": 1,
+                "minutesPlayed": 90,
+                "goals": 1,
+                "expectedGoals": 0.5,
+                "assists": 0,
+                "expectedAssists": 0.1,
+                "rating": 7.5,
+                "cleanSheet": 0,
+                "saves": 0,
+            }
+        })
+
+        result = self.adapter.enrich({
+            "item_key": "name:rodrigo-mora|club:porto",
+            "reported_name": "Rodrigo Mora",
+            "current_club_name": "Porto",
+            "current_club_aliases": ["Porto", "FC Porto"],
+            "aliases": [],
+            "team_mapping": {"provider_team_id": "3000", "provider_unique_tournament_id": "17"},
+            "season_mapping": {"provider_season_id": "76986", "label": "2025/26", "state": "active"},
+        })
+
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("1410240", result["identity"]["provider_player_id"])
+        self.assertEqual(80, result["identity"]["score"])
+        self.assertEqual(30, result["identity"]["margin"])
+        self.assertEqual("FC Porto", result["profile"]["current_club"]["name"])
+        self.assertEqual(
+            [
+                "search/all?q=Rodrigo%20Mora",
+                "player/1410240",
+                "player/1410240/unique-tournament/17/season/76986/statistics/overall",
+            ],
+            [call["endpoint"] for call in self.transport.calls],
+        )
 
     def test_empty_identity_map_bootstraps_profile_statistics_with_bounded_cache_calls(self):
         item = {

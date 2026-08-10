@@ -124,6 +124,58 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual("unresolved", unknown["status"])
 
+    def test_porto_curated_variant_resolves_but_generic_porto_stays_ambiguous(self):
+        payload = {
+            "results": [
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 1410240,
+                        "name": "Rodrigo Mora",
+                        "team": {"id": 3000, "name": "FC Porto", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 40772,
+                        "name": "Rodrigo Mora",
+                        "team": {"id": 4000, "name": "Alas Argentinas", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+            ]
+        }
+        generic = resolve_search("Rodrigo Mora", payload, reported_club_name="Porto")
+        self.assertEqual("ambiguous", generic["status"])
+        self.assertNotIn("identity", generic)
+
+        curated = resolve_search(
+            "Rodrigo Mora",
+            payload,
+            reported_club_name="Porto",
+            reported_club_names=["Porto", "FC Porto"],
+        )
+        self.assertEqual("resolved", curated["status"])
+        self.assertEqual("1410240", curated["identity"]["provider_player_id"])
+        self.assertEqual(80, curated["identity"]["score"])
+        self.assertEqual(30, curated["identity"]["margin"])
+
+    def test_al_hilal_punctuation_normalization_is_generic(self):
+        payload = {
+            "results": [{
+                "type": "player",
+                "entity": {
+                    "id": 1,
+                    "name": "Test Player",
+                    "team": {"id": 2, "name": "Al-Hilal", "sport": {"slug": "football"}, "gender": "M"},
+                },
+            }]
+        }
+        result = resolve_search("Test Player", payload, reported_club_name="Al Hilal")
+        self.assertEqual("resolved", result["status"])
+        self.assertEqual("1", result["identity"]["provider_player_id"])
+        self.assertEqual(80, result["identity"]["score"])
+
     def test_duplicate_exact_names_are_ambiguous_and_bounded(self):
         result = resolve_search("John Smith", search_payload("john_smith.json"))
         self.assertEqual("ambiguous", result["status"])

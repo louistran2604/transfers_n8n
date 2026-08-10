@@ -48,7 +48,7 @@ function enrichmentItem(item, mode) {
     return {
       item_key: item.item_key,
       status: 'provider_failure',
-      resolver_version: 'identity-v4',
+      resolver_version: 'identity-v5',
       identity: null,
       profile: null,
       statistics: null,
@@ -59,7 +59,7 @@ function enrichmentItem(item, mode) {
     return {
       item_key: item.item_key,
       status: 'ambiguous',
-      resolver_version: 'identity-v4',
+      resolver_version: 'identity-v5',
       identity: null,
       profile: null,
       statistics: null,
@@ -74,7 +74,7 @@ function enrichmentItem(item, mode) {
   return {
     item_key: item.item_key,
     status: 'fresh',
-    resolver_version: 'identity-v4',
+    resolver_version: 'identity-v5',
     provider_calls: 2,
     identity: {
       provider: 'sofascore',
@@ -82,7 +82,7 @@ function enrichmentItem(item, mode) {
       stable_source_identifier: `sofascore:player:${sparse ? '845067' : '826643'}`,
       score: 100,
       margin: 100,
-      resolver_version: 'identity-v4',
+      resolver_version: 'identity-v5',
     },
     profile: {
       canonical_name: sparse ? 'Nguyễn Quang Hải' : 'Kylian Mbappé',

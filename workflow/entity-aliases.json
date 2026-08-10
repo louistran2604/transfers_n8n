@@ -8,7 +8,8 @@
     { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München"] },
     { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
     { "canonical": "Manchester United", "aliases": ["Man Utd", "Man United", "MUFC"] },
-    { "canonical": "RB Leipzig", "aliases": ["Leipzig", "RasenBallsport Leipzig"] }
+    { "canonical": "RB Leipzig", "aliases": ["Leipzig", "RasenBallsport Leipzig"] },
+    { "canonical": "Porto", "aliases": ["FC Porto"] }
   ],
   "players": [
     { "canonical": "Randal Kolo Muani", "aliases": ["Kolo Muani", "Randal Kolo-Muani"] },
