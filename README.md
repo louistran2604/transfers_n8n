@@ -1,56 +1,62 @@
 # Football Transfer Monitor
 
-An n8n workflow that collects 20 recent X posts from 78 configured transfer sources every six hours, extracts structured reports with local Qwen, stores them in PostgreSQL, and sends one restart-safe Discord digest. X collection is explicitly selectable between a persistent `twscrape` service and the retained RapidAPI collector. Fixture-tested player enrichment uses `soccerdata==1.9.1` with Sofascore; first-time setup remains fail-safe with enrichment off, while the current production deployment runs in `active` mode.
+An n8n pipeline that collects football-transfer posts from X, extracts structured reports with a local Qwen model, stores revisions in PostgreSQL, and sends a restart-safe Discord digest.
 
-The live schedule is `00:00`, `06:00`, `12:00`, and `18:00` GMT+7.
+The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run checks the latest 20 posts from 78 configured sources. X collection can use the private `twscrape` service or the retained RapidAPI collector.
 
-## What the project does
+## Start here
+
+| Goal | Go to |
+| --- | --- |
+| Install the project for the first time | [Quick start](#quick-start) |
+| Change sources, aliases, or filter lists | [Editable registries and filters](#editable-registries-and-filters) |
+| Rebuild and publish a workflow | [Regenerate, import, and publish](#regenerate-import-and-publish) |
+| Understand player statistics | [Player enrichment](#player-enrichment) |
+| Check services or diagnose a failure | [Operations](#operations) and [Troubleshooting](#troubleshooting) |
+| Run tests before committing | [Verification](#verification) |
+
+### At a glance
 
 ```text
-Schedule or manual trigger
+Scheduled or manual trigger
   → recover interrupted deliveries
   → register the workflow run
-  → upsert the 78 configured X sources
-  → request the latest 20 posts for each source
-  → ignore pure retweets and persist raw posts
+  → collect recent posts from configured X sources
+  → reject pure retweets and out-of-window posts
   → extract and validate transfer reports with local Qwen
   → merge matching reports and create material revisions
-  → optionally resolve and persist fail-open player enrichment
-  → reserve one digest in PostgreSQL
-  → send one confirmed Discord webhook request
+  → optionally resolve and persist player enrichment
+  → reserve one Discord digest in PostgreSQL
+  → send the frozen webhook payload once
   → finalize the delivery and workflow run
 ```
 
-The repository includes:
+The repository provides:
 
-- Generated n8n main and error workflows with no embedded credential values.
-- A strict Qwen prompt and JSON Schema plus a generated four-tier source registry.
-- Idempotent PostgreSQL writes, material revisions, retry state, and digest reservation.
-- Pinned n8n, task-runner, PostgreSQL, llama.cpp, private `twscrape`, and private optional Sofascore enrichment Docker services.
-- Dependency-free unit tests, transaction-rolled-back SQL tests, and an isolated mock E2E stack.
-
-X account and post IDs remain strings. Direct and quoted posts are processed, pure retweets are ignored, and every raw post/source link is retained even when matching reports are merged.
-
-Each run captures one rolling six-hour collection window. Posts older than the window start or newer than the run start are rejected before persistence and Qwen extraction, and only reports updated inside that same window are eligible for a new digest.
+- Generated main and error n8n workflows with no embedded credential values.
+- A strict Qwen prompt, JSON Schema, source registry, and editable filtering rules.
+- Idempotent PostgreSQL persistence, material revisions, retry state, and digest reservation.
+- Pinned n8n, task-runner, PostgreSQL, llama.cpp, `twscrape`, and optional Sofascore enrichment services.
+- Unit, SQL, and isolated mock end-to-end tests.
 
 ## Requirements
 
 - Ubuntu or another Linux host with Docker Engine and Docker Compose.
 - NVIDIA Container Toolkit and a supported NVIDIA GPU for local Qwen.
 - Node.js 20 or newer for workflow generation and unit tests.
-- `curl`, `jq`, `sha256sum`, and `nvidia-smi` for model acceptance tests.
-- A dedicated X account's `auth_token` and `ct0` cookies for live `twscrape` collection, or a RapidAPI key for live RapidAPI collection.
-- Discord credentials when performing live delivery.
+- `curl`, `jq`, `sha256sum`, and `nvidia-smi` for acceptance checks.
+- A dedicated X account's `auth_token` and `ct0` cookies for `twscrape`, or a RapidAPI key.
+- Discord webhook credentials for live delivery.
 
-The supplied Qwen quantization and settings target a 16 GB GPU. Check [the Qwen deployment guide](deploy/qwen3.6-27b/README.md) before changing the model, context size, or GPU options.
+The supplied Qwen quantization and settings target a 16 GB GPU. Read the [Qwen deployment guide](deploy/qwen3.6-27b/README.md) before changing the model, context size, or GPU settings.
 
-## First-time setup
+## Quick start
 
-Run all commands from the repository root unless a step changes directory.
+Run commands from the repository root unless a step explicitly changes directory.
 
-### 1. Configure local secrets
+### 1. Configure secrets
 
-This repository intentionally has no `.env.example` files. Existing real-value `.env` files are ignored by Git. If either file is missing, create it locally with your own values:
+The repository intentionally has no `.env.example` files. Real `.env` files are ignored by Git. Create the following files locally if they do not exist.
 
 `deploy/support/.env`:
 
@@ -72,17 +78,11 @@ DISCORD_TRANSFERS_WEBHOOK_URL=<transfer-digest-webhook>
 DISCORD_ERRORS_WEBHOOK_URL=<error-alert-webhook>
 ```
 
-Never paste real values into workflow JSON, documentation, screenshots, logs, command output, or commits.
+Never paste real values into workflow JSON, documentation, screenshots, logs, terminal output, or commits.
 
-### 1a. Configure the dedicated X cookies
-
-1. Sign in to `x.com` with the dedicated collection account, open browser developer tools, then open **Application** or **Storage** → **Cookies** → `https://x.com`.
-2. Copy only the `auth_token` and `ct0` cookie values into the ignored `deploy/n8n/.env` variables above. Do not paste them into a terminal command or this repository.
-3. Keep `X_COLLECTOR=twscrape`. The service copies the values into its internal Docker volume at startup; no workflow JSON or public port receives them.
+For `twscrape`, sign in to `x.com` with a dedicated collection account. In browser developer tools, open **Application** or **Storage** → **Cookies** → `https://x.com`, then copy only `auth_token` and `ct0` into the ignored environment file. The service stores them in its private Docker volume and exposes no host port.
 
 ### 2. Start PostgreSQL
-
-Create the shared network once, start PostgreSQL, and apply all migrations:
 
 ```bash
 docker network inspect transfers_net >/dev/null 2>&1 || docker network create transfers_net
@@ -91,7 +91,7 @@ docker compose -f deploy/support/compose.yaml --profile maintenance run --rm tra
 docker compose -f deploy/support/compose.yaml ps
 ```
 
-PostgreSQL is not exposed to the host. Containers on `transfers_net` reach it at `transfers-postgres:5432`.
+PostgreSQL is not exposed to the host. Containers on `transfers_net` connect to `transfers-postgres:5432`.
 
 ### 3. Download and start Qwen
 
@@ -103,9 +103,7 @@ docker compose up -d
 cd ../..
 ```
 
-The llama.cpp container stays running, but the model and KV cache unload after 30 idle seconds. This releases VRAM. The next `/v1/chat/completions` request reloads the model automatically, so the first extraction after an idle period takes longer.
-
-Host and container endpoints:
+Endpoints and model name:
 
 ```text
 Host health/API: http://127.0.0.1:8081
@@ -113,7 +111,9 @@ n8n chat endpoint: http://llama:8080/v1/chat/completions
 Model alias: qwen3.6-27b
 ```
 
-### 4. Build and start n8n
+The llama.cpp container remains running, but the model and KV cache unload after 30 idle seconds to release VRAM. The next request reloads the model, so the first extraction after an idle period takes longer.
+
+### 4. Build and start n8n and the X collector
 
 ```bash
 cd deploy/n8n
@@ -125,24 +125,11 @@ docker compose exec -T twscrape python -c "import urllib.request; print(urllib.r
 cd ../..
 ```
 
-Open n8n at `http://localhost:5678`. The service and external task runner use matching pinned n8n `2.31.6` images.
+Open n8n at `http://localhost:5678`. The n8n service and external task runner use matching pinned `2.31.6` images.
 
-The scraper has no host port. Its health check runs inside Docker and reports only service status and the active-account count.
+The scraper health response reports service status and active-account count. Its API remains private to Docker.
 
-Build and dark-deploy the optional enrichment service while the mode remains off:
-
-```bash
-PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
-PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml up -d sofascore-enrichment
-docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
-  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
-```
-
-The enrichment service joins only `transfers_net`, publishes no host port, receives no database or application credentials, and is not an n8n startup dependency.
-
-### 5. Generate and import workflows
-
-The generator reads all 78 accounts directly from `docs/journalist_list.md`, validates every X ID as a decimal string, and embeds the source registry, prompt, and schema:
+### 5. Generate and import the workflows
 
 ```bash
 node workflow/build-workflows.mjs
@@ -152,9 +139,9 @@ docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n import:workflow --input=/workflows/football-transfer-monitor.json
 ```
 
-Import the error workflow first. Re-import after changing the generator because the JSON files are generated artifacts.
+Import the error workflow first. The generator reads all 78 accounts from `docs/journalist_list.md`, validates their X IDs as decimal strings, and embeds the source registry, prompt, schema, aliases, and filters into the generated workflows.
 
-### 6. Create and map the PostgreSQL credential
+### 6. Configure the PostgreSQL credential
 
 In n8n, create a Postgres credential named exactly `Transfers PostgreSQL`:
 
@@ -168,54 +155,54 @@ SSL: Disable
 SSH tunnel: Off
 ```
 
-If n8n reports `Host not found`, confirm both containers are attached to `transfers_net`:
+Open both imported workflows, select `Transfers PostgreSQL` on every Postgres node, and save. Save the error workflow before selecting it in the main workflow's **Error Workflow** setting.
+
+If n8n reports `Host not found`, confirm that n8n and PostgreSQL share the Docker network:
 
 ```bash
 docker network inspect transfers_net
 ```
 
-Open both imported workflows, select `Transfers PostgreSQL` on every Postgres node, and save. Save the error workflow before selecting it in the main workflow’s **Error Workflow** setting.
+### 7. Test, then activate
 
-### 7. Test before activation
+1. Run **Manual sample run** first. It replaces only live X collection with deterministic sample responses; PostgreSQL, Qwen, merging, digest creation, and Discord remain real.
+2. Run **Manual run** only after the selected live collector is configured.
+3. Confirm collection, Qwen validation, report persistence, digest reservation, and Discord finalization succeed.
+4. Activate the main workflow to enable its four daily scheduled runs.
 
-Use **Manual sample run** first. It bypasses only the live collector, inserts deterministic sample X responses, and then uses the real PostgreSQL, Qwen, merge, digest, and Discord path.
+The sample path writes persistent test rows and sends to `DISCORD_TRANSFERS_WEBHOOK_URL`. Use a test database and webhook if sample data must not mix with production.
 
-The sample path sends to `DISCORD_TRANSFERS_WEBHOOK_URL`. Its rows are persistent test data, so use a test webhook/database when you do not want sample reports mixed with live data.
+Workflow activation and player enrichment are separate. New installations should begin with `PLAYER_ENRICHMENT_MODE=off`; use the reviewed rollout procedure before enabling enrichment.
 
-After the sample path succeeds:
+## Configuration
 
-1. Run **Manual run** only after the selected collector is configured.
-2. Confirm the selected collection node returns posts or structured per-source errors without aborting the run.
-3. Confirm Qwen validation, report persistence, digest reservation, and Discord finalization are green.
-4. Activate the main workflow to enable the four scheduled daily runs.
+### Main environment settings
 
-Workflow activation enables the scheduled transfer monitor. Player enrichment is controlled separately by `PLAYER_ENRICHMENT_MODE`; keep first-time and unreviewed deployments at `off`, then use the rollout procedure below when enabling the already approved `active` production path.
+| Setting | Values | Purpose |
+| --- | --- | --- |
+| `X_COLLECTOR` | `twscrape` or `rapidapi` | Selects the live X collector; no default is assumed. |
+| `PLAYER_ENRICHMENT_MODE` | `off`, `shadow`, or `active` | Controls Sofascore fetching, persistence, and Discord rendering. |
+| `DISCORD_TRANSFERS_WEBHOOK_URL` | Secret URL | Receives transfer digests. |
+| `DISCORD_ERRORS_WEBHOOK_URL` | Secret URL | Receives workflow error alerts. |
 
-## Workflow behavior
+An unset or invalid `X_COLLECTOR` stops collection before posts are persisted. A missing or invalid enrichment mode behaves as `off`.
 
-### Sources and reliability
+### Editable registries and filters
 
-The registry uses four fixed tiers:
+| File | What to edit |
+| --- | --- |
+| [`docs/journalist_list.md`](docs/journalist_list.md) | The 78 configured X sources. |
+| [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club aliases, player aliases, enrichment-only aliases, sibling groups, and common surnames. |
+| [`workflow/womens-football-blacklist.txt`](workflow/womens-football-blacklist.txt) | Senior women's football exclusions, one name or spelling variant per line. |
+| [`workflow/qwen-response-schema.json`](workflow/qwen-response-schema.json) | Strict extraction response contract. |
 
-| Priority | Sources | Reliability |
-| --- | --- | ---: |
-| 1 | Official Real Madrid and Manchester United accounts | 1.00 |
-| 2 | David Ornstein and Fabrizio Romano | 0.95 |
-| 3 | Other organizations | 0.80 |
-| 4 | Other individual journalists | 0.70 |
+For common surnames, add the normalized surname to `common_surnames`. Qwen is then instructed to preserve a stated given name, while the JavaScript filter uses the first name to distinguish unrelated players. It must not invent a missing given name or reorder surname-first names.
 
-Journalist name, source URL, platform, post timestamp, priority, and reliability come from the X response and registry. Qwen cannot supply or overwrite them.
+After changing a registry or filter, regenerate and validate the workflows. Do not edit generated workflow JSON manually.
 
-### Extraction contract
+### Regenerate, import, and publish
 
-Qwen must return `{ transfer_related, reports[] }` matching [the strict schema](workflow/qwen-response-schema.json). Every report property is required; unknown nullable facts use `null`. Classifications and move types are locked enums, dates use ISO `YYYY-MM-DD`, currencies use ISO three-letter codes, and monetary values use base units.
-
-Only senior men's football is in scope. Filter configuration lives in:
-
-- [workflow/entity-aliases.json](workflow/entity-aliases.json): `clubs`, `players`, `enrichment_player_aliases`, `sibling_groups`, and `common_surnames`.
-- [workflow/womens-football-blacklist.txt](workflow/womens-football-blacklist.txt): the authoritative exclusion list, with one name or spelling variant per line.
-
-After editing either file, run from the repository root:
+Use this procedure after changing a source, prompt, schema, alias, filter, or workflow generator:
 
 ```bash
 node workflow/build-workflows.mjs
@@ -224,15 +211,38 @@ docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n import:workflow --input=/workflows/football-transfer-monitor.json
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n publish:workflow --id=football-transfer-monitor --versionId=<new-version-id>
-# Restart n8n only if the publish command requests it.
+# Run this only if the publish command requests a restart:
 docker compose -f deploy/n8n/compose.yaml restart n8n
 ```
 
-The `PLAYER_ENRICHMENT_MODE` prefix is unnecessary for the two Node commands because the generator does not read it. Import deactivates the workflow and replaces its draft; identify the imported draft's new `versionId`, publish that version, and restart n8n if the CLI requests it. Production `deploy/n8n/.env` remains `active`.
+Import temporarily deactivates the workflow and creates a new draft version. Export or inspect the imported workflow to obtain its new `versionId`, publish that exact version, then confirm activation in the n8n logs.
 
-The generator appends the blacklist to the Qwen prompt. Do not edit the generated workflow JSON manually.
+`PLAYER_ENRICHMENT_MODE=off` is not needed for the two Node commands: the generator and unit tests do not read that variable. Use the prefix only when intentionally overriding Compose configuration or starting services in fail-safe mode. It does not permanently change `deploy/n8n/.env`.
 
-The generated Qwen prompt asks the model to preserve stated given names for common surnames, without inventing a missing name or reordering surname-first names. The JavaScript digest filter remains authoritative.
+## How the workflow behaves
+
+### Collection window and source trust
+
+Each run uses one rolling six-hour window. Posts older than the window start or newer than the run start are rejected before persistence and extraction. Only reports updated within that same window can enter a new digest.
+
+Direct and quoted posts are processed; pure retweets are ignored. X account IDs and post IDs remain strings. Every raw post and source link is retained when matching reports are merged.
+
+The generated source registry has four tiers:
+
+| Priority | Sources | Reliability |
+| --- | --- | ---: |
+| 1 | Official Real Madrid and Manchester United accounts | 1.00 |
+| 2 | David Ornstein and Fabrizio Romano | 0.95 |
+| 3 | Other organizations | 0.80 |
+| 4 | Other individual journalists | 0.70 |
+
+Journalist name, source URL, platform, post timestamp, priority, and reliability come from the X response and registry. Qwen cannot overwrite them.
+
+### Extraction, merging, and revisions
+
+Qwen returns `{ transfer_related, reports[] }` matching the [strict schema](workflow/qwen-response-schema.json). Every report property is required. Unknown facts use `null`, classifications and move types use fixed enums, dates use `YYYY-MM-DD`, currencies use ISO three-letter codes, and monetary values use base units.
+
+Only senior men's football is in scope. The generator appends the women's-football blacklist and alias/filter guidance to the Qwen prompt. JavaScript validation and digest filtering remain authoritative.
 
 Classification precedence during merging is:
 
@@ -245,63 +255,65 @@ contract renewal
 → rumor
 ```
 
-Reports are grouped by canonical player/current-club/destination direction. The best source wins, missing values can be filled from lower-tier sources, and conflicting values remain in `normalized_data.conflicts`. A revision is created only when the material snapshot changes.
+Reports are grouped by canonical player, current club, and destination direction. The best source wins; missing values may be filled from lower-tier sources; conflicts remain in `normalized_data.conflicts`. A new revision is created only when the material transfer snapshot changes.
 
 ### Player enrichment
 
-`PLAYER_ENRICHMENT_MODE` has three values:
+Player enrichment uses the private Sofascore service through `soccerdata==1.9.1`.
 
-| Mode | Provider work | PostgreSQL enrichment | Discord |
+| Mode | Provider work | PostgreSQL enrichment | Discord output |
 | --- | --- | --- | --- |
 | `off` | None | None | Transfer-only |
-| `shadow` | Resolve/fetch | Persist | Transfer-only |
-| `active` | Resolve/fetch | Persist | Append eligible enrichment |
+| `shadow` | Resolve and fetch | Persist | Transfer-only |
+| `active` | Resolve and fetch | Persist | Append eligible enrichment |
 
-A missing or invalid value behaves as `off`. Context, service, validation, and enrichment-persistence failures rejoin digest candidate loading. If core PostgreSQL is healthy, even complete enrichment failure still sends one transfer-only digest.
+The current production deployment uses `active`; new installations remain fail-safe at `off`. Context, service, validation, and enrichment-persistence failures rejoin digest candidate loading. If core PostgreSQL is healthy, complete enrichment failure still produces a transfer-only digest.
 
-Identity resolution uses a known provider ID when available. Otherwise, it requires an exact or configured player alias plus an independent club discriminator. The resolver considers both the reported current club and destination club, and treats only safe trailing organization suffixes such as `AFC`, `CF`, `CP`, `FC`, and `SC` as equivalent. It never falls back to player name alone; low scores and close duplicate-name candidates remain unresolved or ambiguous.
+Identity resolution first uses a known provider ID when available. Otherwise, it requires an exact name or configured player alias plus an independent club discriminator. It considers the reported current and destination clubs, curated club aliases, and only safe trailing organization suffixes such as `AFC`, `CF`, `CP`, `FC`, and `SC`. It never resolves by player name alone; weak or closely matched duplicate candidates remain unresolved or ambiguous.
 
-The enrichment SQL first selects up to 25 historical retries, after excluding current requests, ordered deterministically by resolver-version mismatch and oldest attempt. The JavaScript request builder then keeps current reports before those historical candidates and applies the existing digest/source/classification/confidence ordering within each set before enforcing the 25-player request cap. Historical retries only piggyback on runs that reach the enrichment query.
+The SQL selects up to 25 historical retries after excluding current requests, ordered by resolver-version mismatch and oldest attempt. The request builder keeps current reports before historical candidates, applies digest/source/classification/confidence ordering within each set, and enforces the 25-player cap. Historical retries only piggyback on workflow runs that reach the enrichment query.
 
-Eligible enrichment can include:
+Eligible data can include:
 
-- Profile: current club, nationality, age, primary position, and Sofascore market value.
-- Profile details: date of birth, height, and preferred foot.
-- Competition statistics: appearances, minutes, goals, assists, starts, minutes per appearance, expected goals, expected assists, and average rating.
-- Other statistics: yellow/red cards, goalkeeper clean sheets, and saves.
+- Profile: club, nationality, age, primary position, and Sofascore market value.
+- Details: date of birth, height, and preferred foot.
+- Competition statistics: appearances, minutes, goals, assists, starts, minutes per appearance, expected goals, expected assists, and rating.
+- Other statistics: cards, goalkeeper clean sheets, and saves.
 
-Enrichment does not enter the transfer material hash. Profile or statistics refreshes create no transfer revision and cannot resend a delivered revision. In `active`, failure-gated stale attached-player profiles and statistics may render only within 72 hours of provider retrieval; explicitly unattached profiles may render within 7 days. Stale content is labeled. Null, failed, unavailable, ambiguous, unresolved, or expired enrichment is omitted, leaving the original transfer-only story without an error or empty heading.
+Enrichment does not enter the material transfer hash, create a transfer revision, or resend an already delivered revision. Failure-gated stale attached-player data may render for up to 72 hours after provider retrieval; explicitly unattached profiles may render for up to seven days. Stale data is labeled. Null, unavailable, failed, ambiguous, unresolved, or expired data is omitted without an empty heading.
 
 ### Discord digest
 
-Each story includes every meaningful non-null extracted detail that fits:
+Each story includes meaningful non-null transfer facts that fit, such as:
 
-- Club direction, classification, and move type.
+- Club direction, classification, move type, confidence, and source.
 - Fee, add-ons, release clause, contract length, and contract expiry.
-- Loan end, purchase option/obligation, and sell-on percentage.
-- Medical status, agreement status, confidence, and linked source.
+- Loan end, purchase option or obligation, and sell-on percentage.
+- Medical and agreement status.
 
-Values such as `unknown` and `not_reported` are omitted. Before formatting, candidates are deduplicated by revision ID and canonical player/destination, so simultaneous links to different destinations remain separate stories. A material update appears as a new entry in the next digest, unless an `official_confirmed` story for that player/destination was sent in the previous seven days; `rejected_failed` always bypasses that cooldown. The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It admits the first 15 distinct stories, then up to three extra stories only when they are confirmed or reported by Romano/Ornstein. It never exceeds 18 stories and also enforces Discord’s 25-field, 1,024-character field, and 6,000-character aggregate embed limits.
+`unknown` and `not_reported` values are omitted. Candidates are deduplicated by revision ID and canonical player/destination, while simultaneous links to different destinations remain separate.
 
-When valid enrichment exists, it appears below the transfer facts under `**Player profile & statistics**` and before the linked source. Competition statistics use one compact dynamic line, for example:
+A material update can appear in a later digest. An `official_confirmed` story for the same player and destination is suppressed for seven days after delivery; `rejected_failed` bypasses that cooldown.
+
+Ranking order is confirmed transfers, Romano or Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, then other news. The digest admits 15 distinct stories and up to three extra confirmed or Romano/Ornstein stories. It also obeys Discord's 25-field, 1,024-character field, and 6,000-character embed limits.
+
+When enrichment exists, it appears under `**Player profile & statistics**` before the source. Competition statistics use one compact line:
 
 ```text
 Serie A 25/26 - all clubs: 28 app · 2,184 min · 12 G · 7 A · 24 starts · 78 min/app · 10.42 xG · 6.18 xA · 7.31 rating
 ```
 
-Primary and formerly advanced metrics share that line; there is no separate `Advanced:` label. Fresh statistics containing only card or goalkeeper values still retain a `Competition Season - all clubs` context line before `Other:`.
+There is no separate `Advanced:` line. Card-only or goalkeeper-only statistics retain a `Competition Season - all clubs` context line before `Other:`.
 
-The formatter budgets enrichment before admitting each story into the embed. It tries whole groups in this order: compact profile, merged competition statistics, profile details, then other statistics. An oversized group is skipped without stopping smaller later groups, source links remain last and untruncated, and no empty enrichment heading is emitted. Under the 6,000-character aggregate limit, fully budgeted enriched stories may reduce the number of stories included rather than silently stripping valid enrichment from already admitted stories.
+The formatter budgets enrichment before admitting each story. It tries complete groups in this order: profile, competition statistics, profile details, then other statistics. An oversized group is skipped without blocking smaller later groups. Source links remain last and untruncated. Fully enriched stories may reduce the total number of stories rather than losing valid enrichment after admission.
 
 ### Retry and delivery safety
 
-RapidAPI retries up to five times and Qwen retries up to three times. Retry timing honors `Retry-After` and rate-reset headers with bounded exponential backoff. The `twscrape` service uses one shared API instance, a persistent SQLite account database, two concurrent timeline tasks, a 30-second source timeout, and a five-minute batch timeout. A failed or rate-limited source returns a structured error while successful sources continue.
+RapidAPI retries up to five times and Qwen up to three times. Retry timing honors `Retry-After` and rate-reset headers with bounded exponential backoff. `twscrape` uses one shared API instance, a persistent SQLite account database, two concurrent timeline tasks, a 30-second source timeout, and a five-minute batch timeout. One failed source does not discard successful sources.
 
-A revision is reserved in PostgreSQL before the Discord request. The workflow sends one webhook request with `wait=true` and records the returned Discord message ID only after success. If n8n stops after sending but before recording the response, recovery changes `sending` to `unknown` and never automatically resends it. This prefers a possible missed digest over a duplicate message.
+PostgreSQL reserves a digest before Discord is called. The workflow sends one webhook request with `wait=true` and records the Discord message ID only after success. If n8n stops after sending but before recording the response, recovery changes the delivery from `sending` to `unknown` and never resends automatically. This favors a possible missed digest over a duplicate.
 
-Discord retries are allowed only after an explicit HTTP `429` or `5xx`. An interrupted request is not proof that Discord rejected it.
-
-A pending delivery keeps the exact Discord payload reserved on its first attempt. Retries reuse that frozen payload; later profile/statistics refreshes do not mutate it or add enrichment retroactively.
+Discord retries occur only after an explicit HTTP `429` or `5xx`. A pending delivery keeps the exact payload from its first attempt; later enrichment updates cannot change it.
 
 ## Operations
 
@@ -317,51 +329,49 @@ docker compose -f deploy/n8n/compose.yaml logs --tail=200 sofascore-enrichment
 docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
 ```
 
-Check PostgreSQL and Qwen directly:
+Direct health checks:
 
 ```bash
 docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
   sh -c 'pg_isready --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
 curl --fail http://127.0.0.1:8081/health
-docker compose -f deploy/n8n/compose.yaml exec -T twscrape python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
+docker compose -f deploy/n8n/compose.yaml exec -T twscrape \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
 nvidia-smi
 ```
 
-### X collector recovery and switching
+### Recover or switch the X collector
 
-If the scraper health check returns unavailable or source errors report `account_unavailable`, obtain fresh `auth_token` and `ct0` values from the dedicated account, update only ignored `deploy/n8n/.env`, then run:
+If `twscrape` reports `account_unavailable`, obtain fresh `auth_token` and `ct0` cookies, update only `deploy/n8n/.env`, then recreate the service:
 
 ```bash
 docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --force-recreate twscrape
 ```
 
-Do not delete the `twscrape_accounts` volume during normal recovery. The service updates the stored account only when the local cookie values change.
+Do not delete the `twscrape_accounts` volume during normal recovery.
 
-To use the retained RapidAPI path, set `X_COLLECTOR=rapidapi`, provide `RAPIDAPI_KEY` in the same ignored file, and recreate n8n:
+To use RapidAPI, set `X_COLLECTOR=rapidapi`, add `RAPIDAPI_KEY`, and recreate n8n:
 
 ```bash
 docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n n8n-runner
 ```
 
-Switch back by setting `X_COLLECTOR=twscrape`, then start the profile command from step 4. `X_COLLECTOR` has no default; an unset or invalid value stops collection before any posts are persisted.
+To switch back, set `X_COLLECTOR=twscrape` and start the `twscrape` profile again.
 
-### Safe stop and restart
+### Deploy or disable player enrichment
+
+Build and dark-deploy the private service while keeping first-time mode off:
 
 ```bash
-docker compose -f deploy/n8n/compose.yaml down
-docker compose -f deploy/qwen3.6-27b/compose.yaml down
-docker compose -f deploy/support/compose.yaml down
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
+PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml up -d sofascore-enrichment
+docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
 ```
 
-These commands preserve the n8n and PostgreSQL volumes and the downloaded GGUF model. Do not add `--volumes` unless permanent data deletion is intentional.
+The prefix explicitly starts this command in fail-safe mode even if the shell has another value. It does not edit the `.env` file. The service has no host port, receives no database or application credentials, and is not required for n8n startup.
 
-Start in dependency order: support, Qwen, then n8n. The workflow’s recovery step handles interrupted run/delivery state on its next execution.
-
-### Enrichment rollout and rollback
-
-The production rollout has completed its provider-policy, offline-suite, live-acceptance, shadow-run, identity/mapping, failure-delivery, and resource gates, and currently runs with `PLAYER_ENRICHMENT_MODE=active`. New installations should still start at `off`; do not infer approval for a different provider, environment, or resource profile.
-
-After setting `PLAYER_ENRICHMENT_MODE=active` in the ignored `deploy/n8n/.env`, deploy the reviewed service and generated main workflow with:
+For an approved active rollout, set `PLAYER_ENRICHMENT_MODE=active` in `deploy/n8n/.env`, deploy the reviewed service and generated workflow, then verify health and activation:
 
 ```bash
 docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
@@ -370,45 +380,60 @@ docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read().decode())"
 docker compose -f deploy/n8n/compose.yaml exec -T sofascore-enrichment \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
-docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
   n8n import:workflow --input=/workflows/football-transfer-monitor.json
 docker compose -f deploy/n8n/compose.yaml exec -T n8n \
-  n8n publish:workflow --id=football-transfer-monitor
+  n8n publish:workflow --id=football-transfer-monitor --versionId=<new-version-id>
 docker compose -f deploy/n8n/compose.yaml restart n8n
 curl --fail http://127.0.0.1:5678/healthz
 docker compose -f deploy/n8n/compose.yaml logs --tail=100 n8n
 ```
 
-The import command temporarily deactivates the workflow; publishing and restarting n8n make the new current version active. Confirm the logs contain `Activated workflow "Football Transfer Monitor"`, Compose reports `sofascore-enrichment` as healthy, and `/readyz` reports package, native library, fixture, cache, and worker readiness with a closed circuit. Resource limits must be changed only from measurements.
+Confirm the logs contain `Activated workflow "Football Transfer Monitor"`, Compose reports the enrichment service as healthy, and `/readyz` reports all readiness gates with a closed circuit.
 
 Rollback is application-first:
 
-1. Set `PLAYER_ENRICHMENT_MODE=off` in ignored `deploy/n8n/.env` and recreate n8n.
-2. Confirm the transfer-only reservation/send path in a test environment.
-3. Stop `sofascore-enrichment` if needed and restore recorded prior workflow/image artifacts.
-4. Retain additive migration 002, normalized snapshots, attempts, and raw cache for diagnosis.
+1. Set `PLAYER_ENRICHMENT_MODE=off` and recreate n8n.
+2. Confirm transfer-only reservation and delivery in a test environment.
+3. Stop the enrichment service if needed and restore recorded workflow/image artifacts.
+4. Retain additive migration 002, snapshots, attempts, and raw cache for diagnosis.
 5. Never release digest items or automatically resend an `unknown` delivery.
 
-Do not use `docker compose down --volumes` for rollback. Detailed cache, upgrade, manual override, and retention commands are in [the n8n deployment guide](deploy/n8n/README.md) and [database guide](database/README.md).
+Do not use `docker compose down --volumes` for rollback. More cache, override, upgrade, and retention procedures are in the [n8n deployment guide](deploy/n8n/README.md) and [database guide](database/README.md).
+
+### Stop and restart safely
+
+```bash
+docker compose -f deploy/n8n/compose.yaml down
+docker compose -f deploy/qwen3.6-27b/compose.yaml down
+docker compose -f deploy/support/compose.yaml down
+```
+
+These commands preserve Docker volumes and the downloaded model. Do not add `--volumes` unless permanent deletion is intentional.
+
+Start in dependency order: PostgreSQL, Qwen, then n8n. The next workflow run performs interrupted-state recovery.
 
 ## Verification
 
 Run fast checks from the repository root:
 
 ```bash
-PLAYER_ENRICHMENT_MODE=off node workflow/build-workflows.mjs --check
-PLAYER_ENRICHMENT_MODE=off node --test tests/unit/*.test.mjs
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
 docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
 ```
 
-After building the scraper image, run its unit tests without any X account:
+`PLAYER_ENRICHMENT_MODE=off` on the Compose validation command checks the fail-safe configuration without changing the active `.env` value. Node generation and tests do not require it.
+
+After building the scraper image, run its tests without a live X account:
 
 ```bash
-docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" --entrypoint python transfers-n8n-twscrape:local -m unittest discover -s /tests -v
+docker run --rm -v "$PWD/deploy/n8n/twscrape/tests:/tests:ro" \
+  --entrypoint python transfers-n8n-twscrape:local \
+  -m unittest discover -s /tests -v
 ```
 
 Run PostgreSQL safety tests:
@@ -420,13 +445,13 @@ docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
   sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --file /database/tests/002_workflow_safety.sql'
 ```
 
-The SQL tests run inside transactions and roll back their fixtures. Run the isolated mock E2E/import suite with:
+The SQL fixtures run inside transactions and roll back. Run the isolated mock import/end-to-end suite with:
 
 ```bash
 tests/e2e/run.sh
 ```
 
-The mock stack consumes no live X account, RapidAPI, Discord, or Qwen quota. It verifies the `twscrape` response adapter with a partial source failure while retaining RapidAPI retry coverage. Full test details are in [tests/README.md](tests/README.md).
+It consumes no live X, RapidAPI, Discord, or Qwen quota. Full coverage details are in [tests/README.md](tests/README.md).
 
 Before committing:
 
@@ -435,13 +460,13 @@ rg -n --glob '!*.json' '(RAPIDAPI_KEY|DISCORD_.*WEBHOOK_URL|POSTGRES_PASSWORD)='
 git status --short --ignored
 ```
 
-Inspect matches carefully: placeholder variable names in documentation are expected; real values are not.
+Placeholder names in documentation are expected. Real values are not.
 
 ## Troubleshooting
 
 ### Postgres query says parameters are missing
 
-Generated Postgres nodes use n8n’s **Query Parameters** option. It must contain `{{ $json.params }}` on parameterized nodes and must be absent on parameterless recovery queries. Regenerate and re-import the workflow instead of manually repairing every node.
+Generated Postgres nodes use n8n's **Query Parameters** option. Parameterized nodes require `{{ $json.params }}`; parameterless recovery queries must omit it. Regenerate and re-import instead of repairing generated nodes manually.
 
 ### Code or HTTP nodes report `access to env vars denied`
 
@@ -451,41 +476,101 @@ Confirm `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` exists in `deploy/n8n/compose.yaml`
 docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n
 ```
 
-### Qwen returns 400 while loading
+### Qwen returns HTTP 400 while loading
 
-The model unloads after 30 idle seconds. Its next request triggers a reload. Watch `docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama`; n8n’s retry path should continue after the server becomes ready.
+The model unloads after 30 idle seconds. Its next request starts a reload. Watch the llama logs while n8n retries:
+
+```bash
+docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
+```
 
 ### Digest reservation returns no delivery ID
 
-The run may have no eligible reports from its rolling six-hour window, the selected revisions may already belong to a digest, or a prior interrupted delivery may now be `unknown`. This is deliberate duplicate prevention. Inspect the relevant PostgreSQL rows before changing any status.
+The six-hour window may contain no eligible reports, selected revisions may already belong to a digest, or an interrupted delivery may now be `unknown`. This is duplicate prevention. Inspect the related PostgreSQL rows before changing state.
 
 ### Discord receives no message
 
-Confirm the **Digest reserved** true branch ran, the webhook environment variable is present inside n8n, and **Send Discord digest once** returned a Discord message object. A false branch with `{ success: true }` means there was no newly reservable digest to send.
+Confirm the **Digest reserved** true branch ran, the webhook exists inside n8n, and **Send Discord digest once** returned a Discord message object. A false branch with `{ success: true }` means no new digest was reservable.
+
+### Player enrichment is missing
+
+Confirm `PLAYER_ENRICHMENT_MODE=active`, the enrichment container is healthy and ready, and the request reached the provider. Missing provider data, unsupported competitions, identity ambiguity, cooldowns, and failures intentionally fall back to transfer-only output. Do not replay a frozen pending Discord payload to add later enrichment.
 
 ## Limitations
 
 - Both collectors request only the latest 20 posts per account; a long outage can permanently miss older posts.
-- Live manual tests can consume RapidAPI quota or dedicated X-account capacity and can send real Discord messages.
+- Live manual tests can consume API or dedicated X-account capacity and can send real Discord messages.
 - Local Qwen extraction quality depends on the model and quantization; strict validation rejects malformed output.
-- Sofascore data availability is not guaranteed; provider failures, unsupported competitions, missing seasons, ambiguous identities, and unresolved players intentionally produce transfer-only output.
-- `unknown` Discord deliveries require human review because automatic resend could duplicate a message.
-- The source registry is fixed at 78 accounts until the generator and documentation are deliberately updated.
+- Sofascore availability is not guaranteed; unsupported, missing, ambiguous, failed, and expired data produces transfer-only output.
+- `unknown` Discord deliveries require human review because an automatic resend could duplicate a message.
+- The source registry remains fixed at 78 accounts until the generator and documentation are deliberately updated together.
 
-## Repository layout
+## Repository map
+
+The project is split by responsibility. Files marked **generated** should be rebuilt from their source files rather than edited directly.
 
 ```text
-database/      schema, migrations, persistence documentation, and SQL tests
-deploy/n8n/    pinned n8n/task-runner image, Compose service, and private twscrape collector
-deploy/qwen3.6-27b/  pinned llama.cpp Qwen service and model scripts
-deploy/support/      PostgreSQL Compose service
-docs/          78-source registry and RapidAPI request/response examples
-tests/         dependency-free unit tests and isolated mock E2E stack
-workflow/      prompt, schema, reusable logic, generator, and generated workflows
-graphify-out/  generated repository knowledge graph and audit report
+transfers_n8n/
+├── README.md                         main setup, behavior, and operations guide
+├── database/
+│   ├── migrations/                   ordered PostgreSQL schema changes
+│   ├── tests/                        transaction-rolled-back SQL safety tests
+│   └── README.md                     persistence model and maintenance guide
+├── deploy/
+│   ├── n8n/
+│   │   ├── compose.yaml              n8n, runner, collector, and enrichment stack
+│   │   ├── twscrape/                 private X collector service and its tests
+│   │   ├── sofascore/                player-enrichment service and its tests
+│   │   └── README.md                 deployment, rollback, cache, and override guide
+│   ├── qwen3.6-27b/
+│   │   ├── compose.yaml              llama.cpp GPU service
+│   │   ├── scripts/                  model download and acceptance checks
+│   │   └── README.md                 model and GPU deployment guide
+│   └── support/
+│       └── compose.yaml              PostgreSQL service
+├── docs/
+│   ├── journalist_list.md            authoritative 78-source list
+│   └── ...                           collector examples and supporting notes
+├── workflow/
+│   ├── build-workflows.mjs           workflow generator; main build entry point
+│   ├── lib.mjs                       reusable validation, selection, and formatting logic
+│   ├── entity-aliases.json           club/player aliases and surname filter rules
+│   ├── womens-football-blacklist.txt senior women's football exclusions
+│   ├── qwen-response-schema.json     extraction response contract
+│   ├── football-transfer-monitor.json          generated main workflow
+│   ├── football-transfer-monitor-errors.json   generated error workflow
+│   └── README.md                     workflow contracts and generation details
+├── tests/
+│   ├── unit/                         dependency-free JavaScript tests
+│   ├── migrations/                   generated-query and migration regressions
+│   ├── e2e/                          isolated mock stack and import test
+│   └── README.md                     complete test guide
+└── graphify-out/                     generated knowledge graph and audit report
 ```
 
-More focused documentation:
+### How the files connect
+
+```text
+docs/journalist_list.md ───────────────┐
+workflow/entity-aliases.json ──────────┤
+workflow/womens-football-blacklist.txt ├─→ workflow/build-workflows.mjs
+workflow/qwen-response-schema.json ────┤          │
+workflow/lib.mjs ──────────────────────┘          ├─→ football-transfer-monitor.json
+                                                  └─→ football-transfer-monitor-errors.json
+
+database/migrations/ ─→ PostgreSQL schema used by the generated workflows
+deploy/n8n/          ─→ runs the generated workflows and private helper services
+tests/               ─→ checks source logic, generated SQL, imports, and delivery safety
+```
+
+In practice:
+
+1. Edit source lists, rules, schema, or reusable logic under `docs/` and `workflow/`.
+2. Run `node workflow/build-workflows.mjs` to refresh both generated JSON files.
+3. Run the checks in [Verification](#verification).
+4. Import and publish the generated workflow using [Regenerate, import, and publish](#regenerate-import-and-publish).
+
+Focused documentation:
 
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
