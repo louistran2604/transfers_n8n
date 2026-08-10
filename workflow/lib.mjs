@@ -1126,8 +1126,10 @@ function enrichmentGroups(enrichment, now) {
   const lowerPriorityStatistics = statisticsValid ? [
     integerStatistic(statistics.yellow_cards, 'yellow'),
     integerStatistic(statistics.red_cards, 'red'),
-    integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
-    integerStatistic(statistics.goalkeeper_saves, 'saves'),
+    ...(profile?.primary_position === 'Goalkeeper' ? [
+      integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
+      integerStatistic(statistics.goalkeeper_saves, 'saves'),
+    ] : []),
   ].filter(Boolean) : [];
   const statisticsValues = [...primaryStatistics, ...advancedStatistics];
   const statisticsContextLine = statisticsValid && (

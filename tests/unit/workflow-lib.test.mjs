@@ -1015,6 +1015,63 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   assert.ok(discordCharacterCount(embed) <= 6000);
 });
 
+test('goalkeeper statistics render only for goalkeeper profiles in library and generated digests', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const cases = [
+    { primaryPosition: 'Forward', showsGoalkeeperStatistics: false },
+    { primaryPosition: undefined, showsGoalkeeperStatistics: false },
+    { primaryPosition: 'Goalkeeper', showsGoalkeeperStatistics: true },
+  ];
+
+  for (const [index, { primaryPosition, showsGoalkeeperStatistics }] of cases.entries()) {
+    const profile = { ...richEnrichment().profile, primary_position: primaryPosition };
+    if (primaryPosition === undefined) delete profile.primary_position;
+    const enrichment = richEnrichment({
+      profile,
+      statistics: {
+        ...richEnrichment().statistics,
+        goalkeeper_clean_sheets: 11,
+        goalkeeper_saves: 87,
+      },
+    });
+    const postUrl = `https://x.com/David_Ornstein/status/${999000000000000500n + BigInt(index)}`;
+    const report = {
+      ...validReport({ player_name: `Position ${index}` }),
+      revision_id: `position-${index}`,
+      dedupe_key: `position-${index}|test-fc|destination-fc`,
+      preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+      sources: [{ post_url: postUrl }],
+      enrichment,
+    };
+    const libraryPayload = buildDiscordDigest([report]);
+    const output = await runDigest({ all: () => [{ json: {
+      row_type: 'candidate',
+      payload: {
+        revision_id: report.revision_id,
+        snapshot: report,
+        enrichment,
+        post_url: postUrl,
+        priority_rank: '2',
+        reliability_score: '0.95',
+        source_username: 'David_Ornstein',
+        source_name: 'David Ornstein',
+      },
+    } }] });
+    const generatedPayload = JSON.parse(output[0].json.params[0]).discord_payload;
+    const value = libraryPayload.embeds[0].fields[0].value;
+
+    if (showsGoalkeeperStatistics) {
+      assert.match(value, /11 clean sheets · 87 saves/);
+    } else {
+      assert.doesNotMatch(value, /clean sheets|saves/);
+    }
+    assert.deepEqual(generatedPayload, libraryPayload);
+  }
+});
+
 test('digest canonicalizes first and applies configured common-surname conflicts', () => {
   const report = (playerName, destinationClubName, confidence = 0.7) => ({
     ...validReport({ player_name: playerName, destination_club_name: destinationClubName, confidence }),
