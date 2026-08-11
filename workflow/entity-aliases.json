@@ -9,7 +9,8 @@
     { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
     { "canonical": "Manchester United", "aliases": ["Man Utd", "Man United", "MUFC"] },
     { "canonical": "RB Leipzig", "aliases": ["Leipzig", "RasenBallsport Leipzig"] },
-    { "canonical": "Porto", "aliases": ["FC Porto"] }
+    { "canonical": "Porto", "aliases": ["FC Porto"] },
+    { "canonical": "Union Saint-Gilloise", "aliases": ["Royale Union Saint-Gilloise"] }
   ],
   "players": [
     { "canonical": "Randal Kolo Muani", "aliases": ["Kolo Muani", "Randal Kolo-Muani"] },
@@ -19,7 +20,8 @@
     { "canonical": "Cristian Romero", "aliases": ["Cuti Romero"] }
   ],
   "enrichment_player_aliases": [
-    { "reported": "Lukaku", "canonical": "Romelu Lukaku", "current_clubs": ["Napoli"] }
+    { "reported": "Lukaku", "canonical": "Romelu Lukaku", "current_clubs": ["Napoli"] },
+    { "reported": "Udogie", "canonical": "Destiny Udogie", "current_clubs": ["Tottenham Hotspur"] }
   ],
   "sibling_groups": [
     ["Kylian Mbappé", "Ethan Mbappé"],

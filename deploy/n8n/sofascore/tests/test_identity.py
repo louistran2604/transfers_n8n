@@ -210,6 +210,52 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual("unresolved", fuzzy["status"])
 
+    def test_curated_name_and_club_aliases_resolve_without_fuzzy_expansion(self):
+        payload = {
+            "results": [{
+                "type": "player",
+                "entity": {
+                    "id": 1001,
+                    "name": "Destiny Udogie",
+                    "team": {
+                        "id": 2001,
+                        "name": "Royale Union Saint-Gilloise",
+                        "sport": {"slug": "football"},
+                        "gender": "M",
+                    },
+                },
+            }]
+        }
+        resolved = resolve_search(
+            "Destiny Udogie",
+            payload,
+            aliases=["Udogie"],
+            reported_club_name="Union Saint-Gilloise",
+            reported_club_names=[
+                "Union Saint-Gilloise",
+                "Royale Union Saint-Gilloise",
+            ],
+        )
+        self.assertEqual("resolved", resolved["status"])
+        self.assertEqual(80, resolved["identity"]["score"])
+        self.assertEqual(80, resolved["identity"]["margin"])
+
+        surname_only = resolve_search(
+            "Udogie",
+            payload,
+            reported_club_names=["Royale Union Saint-Gilloise"],
+        )
+        self.assertEqual("unresolved", surname_only["status"])
+        self.assertEqual([], surname_only["candidates"])
+
+        leading_word = resolve_search(
+            "Destiny",
+            payload,
+            reported_club_names=["Royale Union Saint-Gilloise"],
+        )
+        self.assertEqual("unresolved", leading_word["status"])
+        self.assertEqual([], leading_word["candidates"])
+
     def test_curated_romero_and_club_scoped_lukaku_requests_resolve_live_cache_shapes(self):
         def payload(identifier: int, player: str, club: str) -> dict:
             return {"results": [{"type": "player", "entity": {

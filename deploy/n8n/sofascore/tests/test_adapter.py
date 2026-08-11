@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from adapter import ADAPTER_SCHEMA, SchemaError, SofascoreAdapter
 from models import validate_batch
@@ -72,7 +73,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
-        self.assertEqual("identity-v5", result["resolver_version"])
+        self.assertEqual("identity-v6", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",
@@ -351,6 +352,39 @@ class AdapterNormalizationTests(unittest.TestCase):
             [call["endpoint"] for call in self.transport.calls],
         )
         self.assertEqual(3, result["provider_calls"])
+
+    def test_identity_resolution_receives_curated_player_and_club_aliases(self):
+        self.transport.register("search/all?q=Destiny%20Udogie", {"results": []})
+        self.transport.register("search/all?q=Udogie", {"results": []})
+        item = {
+            "item_key": "name:destiny-udogie|club:union-saint-gilloise",
+            "reported_name": "Destiny Udogie",
+            "aliases": ["Udogie"],
+            "current_club_name": "Union Saint-Gilloise",
+            "current_club_aliases": [
+                "Union Saint-Gilloise",
+                "Royale Union Saint-Gilloise",
+            ],
+        }
+
+        with patch(
+            "adapter.resolve_search",
+            return_value={"status": "unresolved", "candidates": []},
+        ) as resolver:
+            result = self.adapter.enrich(item)
+
+        self.assertEqual("unresolved", result["status"])
+        self.assertEqual(2, resolver.call_count)
+        for call in resolver.call_args_list:
+            self.assertEqual(["Udogie"], call.kwargs["aliases"])
+            self.assertEqual(
+                [
+                    "Union Saint-Gilloise",
+                    "Union Saint-Gilloise",
+                    "Royale Union Saint-Gilloise",
+                ],
+                call.kwargs["reported_club_names"],
+            )
 
     def test_curated_porto_request_resolves_rodrigo_mora_and_continues_to_profile(self):
         self.transport.register("search/all?q=Rodrigo%20Mora", {

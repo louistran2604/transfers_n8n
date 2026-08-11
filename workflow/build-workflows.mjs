@@ -247,7 +247,7 @@ historical_candidates AS (
         latest_attempt.status IN ('unresolved', 'ambiguous')
         AND (
           latest_attempt.started_at <= CURRENT_TIMESTAMP - interval '24 hours'
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v5'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v6'
         )
       )
       OR (
@@ -255,12 +255,12 @@ historical_candidates AS (
         AND latest_attempt.retryable
         AND (
           latest_attempt.next_retry_at <= CURRENT_TIMESTAMP
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v5'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v6'
         )
       )
     )
   ORDER BY
-    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v5') DESC,
+    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v6') DESC,
     latest_attempt.started_at,
     tr.id
   LIMIT 25
@@ -319,7 +319,7 @@ SELECT
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
   latest_attempt.resolver_version AS latest_attempt_resolver_version,
-  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v5' AS force_resolver_retry,
+  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v6' AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
@@ -1434,7 +1434,7 @@ const failure = (player, code) => ({
   report_ids: player.report_ids,
   request_context: player.request_context ?? {},
   status: 'schema_failure',
-  resolver_version: 'identity-v5',
+  resolver_version: 'identity-v6',
   retryable: true,
   provider_calls: 0,
   cache_hits: 0,

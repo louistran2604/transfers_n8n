@@ -365,7 +365,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
-    resolver_version: 'identity-v5',
+    resolver_version: 'identity-v6',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,
