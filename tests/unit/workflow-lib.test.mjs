@@ -1732,9 +1732,10 @@ test('generated twscrape adapter preserves string IDs, keeps quoted posts, filte
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const adapter = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
   const request = {
-    sources: [{
-      source_id: 'source-1', external_account_id: '922928582866980864', username: 'charlotteharpur', display_name: 'Charlotte Harpur', priority_rank: 4, reliability_score: 0.7, is_official: false,
-    }],
+    sources: [
+      { source_id: 'source-1', external_account_id: '922928582866980864', username: 'charlotteharpur', display_name: 'Charlotte Harpur', priority_rank: 4, reliability_score: 0.7, is_official: false },
+      { source_id: 'source-2', external_account_id: '330262748', username: 'unavailable', display_name: 'Unavailable', priority_rank: 5, reliability_score: 0.5, is_official: false },
+    ],
   };
   const response = {
     posts: [
@@ -1759,6 +1760,61 @@ test('generated twscrape adapter preserves string IDs, keeps quoted posts, filte
   assert.equal(typeof output[0].json.params[0], 'string');
   assert.equal(output[0].json.params[1], '900000000000000101');
   assert.match(output[1].json.params[3], /Quoted post:\nQuoted transfer report/);
+});
+
+test('generated twscrape adapter fails when every requested source errors', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const adapter = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
+  const request = {
+    sources: [
+      { source_id: 'source-1', external_account_id: '922928582866980864', username: 'charlotteharpur' },
+      { source_id: 'source-2', external_account_id: '330262748', username: 'unavailable' },
+    ],
+  };
+  const response = {
+    posts: [],
+    errors: [
+      { source_id: 'source-1', code: 'account_unavailable' },
+      { source_id: 'source-2', code: 'timeout' },
+    ],
+  };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runAdapter = new AsyncFunction('$input', '$', adapter.parameters.jsCode);
+  await assert.rejects(
+    () => runAdapter({ first: () => ({ json: { body: response } }) }, (name) => {
+      assert.equal(name, 'Build twscrape collect request');
+      return { first: () => ({ json: request }) };
+    }),
+    /twscrape collection failed for 2 source\(s\): account_unavailable, timeout/,
+  );
+});
+
+test('generated twscrape adapter keeps a legitimate empty collection as a no-op', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const adapter = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
+  const request = { sources: [{ source_id: 'source-1', external_account_id: '922928582866980864', username: 'charlotteharpur' }] };
+  const response = { posts: [], errors: [] };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runAdapter = new AsyncFunction('$input', '$', adapter.parameters.jsCode);
+  const output = await runAdapter({ first: () => ({ json: { body: response } }) }, (name) => {
+    if (name === 'Create run context') return { isExecuted: true, first: () => ({ json: { collection_cutoff_at: '2026-07-26T00:00:00.000Z', collection_started_at: '2026-07-26T06:00:00.000Z' } }) };
+    if (name === 'Create sample run context') return { isExecuted: false };
+    assert.equal(name, 'Build twscrape collect request');
+    return { first: () => ({ json: request }) };
+  });
+  assert.deepEqual(output, []);
+});
+
+test('generated error workflow preserves the n8n execution ID for failure linkage', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));
+  const prepareNode = workflow.nodes.find((node) => node.name === 'Prepare failure record');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runPrepare = new AsyncFunction('$json', prepareNode.parameters.jsCode);
+  const output = await runPrepare({ execution: { id: 'execution-42', error: { name: 'Error', message: 'collector unavailable' } } });
+  assert.deepEqual(output[0].json.params.slice(0, 5), [
+    'execution-42', 'workflow_error', 'execution-42|collector unavailable', 'Error', 'collector unavailable',
+  ]);
+  assert.equal(typeof output[0].json.params[5], 'string');
 });
 
 test('generated RapidAPI adapter applies the same rolling six-hour boundary', async () => {
@@ -1828,6 +1884,7 @@ test('generated pending delivery preserves the stored JSONB payload structurally
 
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const errorWorkflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));
   const sourceNode = workflow.nodes.find((node) => node.name === 'Load generated sources');
   const qwenNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
   const collectorNode = workflow.nodes.find((node) => node.name === 'Select X collector');
@@ -1850,6 +1907,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const runNode = workflow.nodes.find((node) => node.name === 'Register workflow run');
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
+  const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
   assert.match(qwenNode.parameters.jsCode, /football_transfer_extraction/);
   assert.match(qwenNode.parameters.jsCode, /explicitly stated current employer or registration holder/);
@@ -1867,6 +1925,12 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
   assert.equal(twscrapeNode.parameters.options.timeout, 310000);
   assert.match(twscrapeParserNode.parameters.jsCode, /Build twscrape collect request/);
+  assert.match(twscrapeParserNode.parameters.jsCode, /twscrape collection failed/);
+  assert.match(failureNode.parameters.query, /UPDATE workflow_runs/);
+  assert.match(failureNode.parameters.query, /external_execution_id = \$1/);
+  assert.match(failureNode.parameters.query, /status = 'failed'/);
+  assert.match(failureNode.parameters.query, /finished_at = COALESCE/);
+  assert.match(failureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
   assert.match(rapidApiBuilderNode.parameters.jsCode, /RAPIDAPI_KEY/);
   assert.match(rapidApiNode.parameters.url, /RAPIDAPI_BASE_URL/);
   assert.doesNotMatch(rapidApiParserNode.parameters.jsCode, /itemMatching/);

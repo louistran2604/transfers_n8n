@@ -188,7 +188,11 @@ async def configure_account(api: API, auth_token: str, ct0: str) -> None:
     if account is None:
         await api.pool.add_account_cookies(ACCOUNT_NAME, f"auth_token={auth_token}; ct0={ct0}")
         return
-    if account.cookies.get("auth_token") == auth_token and account.cookies.get("ct0") == ct0:
+    if (
+        account.cookies.get("auth_token") == auth_token
+        and account.cookies.get("ct0") == ct0
+        and account.active
+    ):
         return
     account.cookies = {**account.cookies, "auth_token": auth_token, "ct0": ct0}
     account.active = True

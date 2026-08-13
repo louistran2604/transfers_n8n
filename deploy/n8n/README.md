@@ -15,7 +15,7 @@ The n8n and external-runner images use matching pinned n8n `2.31.6` manifests. T
 cd ~/projects/transfers_n8n/deploy/n8n
 docker network create transfers_net
 docker compose --profile twscrape build twscrape
-docker compose --profile twscrape up -d
+docker compose --profile twscrape up -d --wait
 docker compose ps
 docker compose logs -f n8n
 ```
@@ -69,7 +69,7 @@ For `twscrape`, copy the two cookie values from browser storage for `https://x.c
 docker compose exec -T twscrape python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
 ```
 
-If the account expires, update only the ignored cookie variables and recreate `twscrape` with `docker compose --profile twscrape up -d --force-recreate twscrape`. Keep its SQLite volume; it preserves account state and is refreshed when the cookie values change.
+If the account expires, update only the ignored cookie variables and recreate `twscrape` with `docker compose --profile twscrape up -d --wait --build --force-recreate twscrape`. Keep its SQLite volume; it preserves account state, and startup reactivates a persisted account when needed.
 
 The named `n8n-ftm-sofascore-cache` volume preserves the raw provider cache when the service is recreated or upgraded. The other persistent volumes are `n8n-ftm-data` for n8n state and `n8n-ftm-twscrape-accounts` for collector account state:
 

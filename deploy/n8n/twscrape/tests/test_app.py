@@ -43,6 +43,18 @@ class FakeAPI:
         yield FakeTweet("900000000000000003", "RT @source: ignored", retweet=object())
 
 
+class FakeAccountPool:
+    def __init__(self, account):
+        self.account = account
+        self.saved = []
+
+    async def get_account(self, name):
+        return self.account
+
+    async def save(self, account):
+        self.saved.append(account)
+
+
 class TwscrapeServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_normalization_preserves_string_ids_handles_quotes_and_drops_retweets(self):
         direct = app.normalize_tweet(source(), FakeTweet("900000000000000001", "Direct transfer report"))
@@ -85,6 +97,23 @@ class TwscrapeServiceTests(unittest.IsolatedAsyncioTestCase):
             "retryable": True,
         }])
         self.assertEqual(api.limits, [(111, 20), (222, 20), (333, 20)])
+
+    async def test_startup_reactivates_persisted_account_with_same_cookies(self):
+        account = SimpleNamespace(
+            cookies={"auth_token": "token", "ct0": "ct0"},
+            active=False,
+            error_msg="X account unavailable",
+            headers={"authorization": "stale"},
+            locks={"timeline": "stale"},
+        )
+        pool = FakeAccountPool(account)
+        await app.configure_account(SimpleNamespace(pool=pool), "token", "ct0")
+
+        self.assertTrue(account.active)
+        self.assertIsNone(account.error_msg)
+        self.assertEqual(account.headers, {})
+        self.assertEqual(account.locks, {})
+        self.assertEqual(pool.saved, [account])
 
 
 if __name__ == "__main__":

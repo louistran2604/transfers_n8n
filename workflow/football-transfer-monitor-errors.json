@@ -24,7 +24,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const execution = $json.execution ?? {};\nconst error = $json.execution?.error ?? $json.error ?? {};\nconst fingerprint = String(execution.id ?? 'unknown') + '|' + String(error.message ?? 'Unknown workflow error');\nreturn [{ json: { params: [String(execution.id ?? ''), 'workflow_error', fingerprint, error.name ?? 'WorkflowError', error.message ?? 'Unknown workflow error', JSON.stringify($json)] } }];"
+        "jsCode": "const execution = $json.execution ?? {};\nconst error = $json.execution?.error ?? $json.error ?? {};\nconst executionId = String(execution.id ?? '');\nconst errorClass = String(error.name ?? 'WorkflowError');\nconst errorMessage = String(error.message ?? 'Unknown workflow error');\nconst fingerprint = (executionId || 'unknown') + '|' + errorMessage;\nreturn [{ json: { params: [executionId, 'workflow_error', fingerprint, errorClass, errorMessage, JSON.stringify($json)] } }];"
       }
     },
     {
@@ -38,7 +38,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "\nINSERT INTO failures (operation_name, error_fingerprint, error_class, error_message, details)\nVALUES ($2, $3, $4, $5, $6::jsonb)\nON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE\nSET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,\n    error_message = EXCLUDED.error_message, details = EXCLUDED.details\nRETURNING id::text AS failure_id;",
+        "query": "\nWITH run AS (\n  UPDATE workflow_runs\n  SET status = 'failed', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)\n  WHERE workflow_name = 'football-transfer-monitor'\n    AND external_execution_id = $1\n    AND status IN ('running', 'failed')\n  RETURNING id\n), failure AS (\n  INSERT INTO failures (workflow_run_id, operation_name, error_fingerprint, error_class, error_message, details)\n  SELECT (SELECT id FROM run), $2, $3, $4, $5, $6::jsonb\n  ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE\n  SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,\n      error_message = EXCLUDED.error_message, details = EXCLUDED.details\n  RETURNING id\n)\nSELECT failure.id::text AS failure_id, (SELECT id::text FROM run) AS workflow_run_id\nFROM failure;",
         "options": {
           "queryBatching": "transaction",
           "outputLargeFormatNumbers": "text",

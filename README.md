@@ -118,7 +118,7 @@ The llama.cpp container remains running, but the model and KV cache unload after
 ```bash
 cd deploy/n8n
 docker compose --profile twscrape build twscrape
-docker compose --profile twscrape up -d
+docker compose --profile twscrape up -d --wait
 docker compose ps
 docker compose logs --tail=100 n8n
 docker compose exec -T twscrape python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read().decode())"
@@ -345,7 +345,7 @@ nvidia-smi
 If `twscrape` reports `account_unavailable`, obtain fresh `auth_token` and `ct0` cookies, update only `deploy/n8n/.env`, then recreate the service:
 
 ```bash
-docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --force-recreate twscrape
+docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --wait --build --force-recreate twscrape
 ```
 
 Do not delete the `n8n-ftm-twscrape-accounts` volume during normal recovery.

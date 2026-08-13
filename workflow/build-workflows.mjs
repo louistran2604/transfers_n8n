@@ -1176,6 +1176,13 @@ const request = $('Build twscrape collect request').first().json;
 const sources = new Map((request.sources ?? []).map((source) => [String(source.source_id), source]));
 const response = $input.first()?.json?.body ?? $input.first()?.json ?? {};
 const posts = Array.isArray(response?.posts) ? response.posts : [];
+const errors = Array.isArray(response?.errors) ? response.errors : [];
+const sourceIds = [...sources.keys()];
+const failedSourceIds = new Set(errors.map((error) => String(error?.source_id ?? '')).filter(Boolean));
+if (!posts.length && sourceIds.length && sourceIds.every((sourceId) => failedSourceIds.has(sourceId))) {
+  const codes = [...new Set(errors.map((error) => String(error?.code ?? '')).filter(Boolean))].sort();
+  throw new Error('twscrape collection failed for ' + sourceIds.length + ' source(s)' + (codes.length ? ': ' + codes.join(', ') : ''));
+}
 const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
 const collectionCutoffAt = Date.parse(context.collection_cutoff_at);
 const collectionStartedAt = Date.parse(context.collection_started_at);
@@ -2032,15 +2039,29 @@ function errorWorkflow() {
     codeNode('Prepare failure record', [-220, 0], `
 const execution = $json.execution ?? {};
 const error = $json.execution?.error ?? $json.error ?? {};
-const fingerprint = String(execution.id ?? 'unknown') + '|' + String(error.message ?? 'Unknown workflow error');
-return [{ json: { params: [String(execution.id ?? ''), 'workflow_error', fingerprint, error.name ?? 'WorkflowError', error.message ?? 'Unknown workflow error', JSON.stringify($json)] } }];`),
+const executionId = String(execution.id ?? '');
+const errorClass = String(error.name ?? 'WorkflowError');
+const errorMessage = String(error.message ?? 'Unknown workflow error');
+const fingerprint = (executionId || 'unknown') + '|' + errorMessage;
+return [{ json: { params: [executionId, 'workflow_error', fingerprint, errorClass, errorMessage, JSON.stringify($json)] } }];`),
     postgresNode('Upsert workflow failure', [0, 0], `
-INSERT INTO failures (operation_name, error_fingerprint, error_class, error_message, details)
-VALUES ($2, $3, $4, $5, $6::jsonb)
-ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE
-SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,
-    error_message = EXCLUDED.error_message, details = EXCLUDED.details
-RETURNING id::text AS failure_id;`),
+WITH run AS (
+  UPDATE workflow_runs
+  SET status = 'failed', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+  WHERE workflow_name = 'football-transfer-monitor'
+    AND external_execution_id = $1
+    AND status IN ('running', 'failed')
+  RETURNING id
+), failure AS (
+  INSERT INTO failures (workflow_run_id, operation_name, error_fingerprint, error_class, error_message, details)
+  SELECT (SELECT id FROM run), $2, $3, $4, $5, $6::jsonb
+  ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE
+  SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,
+      error_message = EXCLUDED.error_message, details = EXCLUDED.details
+  RETURNING id
+)
+SELECT failure.id::text AS failure_id, (SELECT id::text FROM run) AS workflow_run_id
+FROM failure;`),
     httpNode('Send error webhook', [220, 0], {
       method: 'POST', url: '={{ $env.DISCORD_ERRORS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify({ content: "Football Transfer Monitor failed. Check n8n execution logs." }) }}',
