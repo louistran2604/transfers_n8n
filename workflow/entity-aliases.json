@@ -5,7 +5,7 @@
     { "canonical": "Napoli", "aliases": ["SSC Napoli", "sscnapoli"] },
     { "canonical": "Tottenham Hotspur", "aliases": ["Tottenham"] },
     { "canonical": "Marseille", "aliases": ["Olympique de Marseille"] },
-    { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München"] },
+    { "canonical": "Bayern Munich", "aliases": ["Bayern", "FC Bayern", "Bayern München", "FC Bayern München"] },
     { "canonical": "Paris Saint-Germain", "aliases": ["PSG", "Paris SG", "Paris Saint Germain"] },
     { "canonical": "Manchester United", "aliases": ["Man Utd", "Man United", "MUFC"] },
     { "canonical": "RB Leipzig", "aliases": ["Leipzig", "RasenBallsport Leipzig"] },
