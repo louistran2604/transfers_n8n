@@ -12,6 +12,7 @@
     { "canonical": "Porto", "aliases": ["FC Porto"] },
     { "canonical": "Sporting CP", "aliases": ["Sporting"] },
     { "canonical": "Brighton & Hove Albion", "aliases": ["Brighton"] },
+    { "canonical": "Al Hilal", "aliases": ["Al-Hilal"] },
     { "canonical": "Union Saint-Gilloise", "aliases": ["Royale Union Saint-Gilloise"] }
   ],
   "players": [
