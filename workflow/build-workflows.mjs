@@ -1890,7 +1890,7 @@ delete llamaSchema.properties.reports.items.properties.player_name.minLength;
 return $input.all().map((item) => ({ json: {
   raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), is_official: item.json.is_official },
-  body: { model: 'qwen3.6-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }
+  body: { model: 'qwen3.8-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }
 } }));`),
     httpNode('Extract with Qwen', [1200, -40], {
       method: 'POST', url: '={{ $env.QWEN_CHAT_COMPLETIONS_URL || "http://llama:8080/v1/chat/completions" }}', sendBody: true,

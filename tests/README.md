@@ -9,7 +9,7 @@ PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --qu
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml --profile enrichment config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 ```
 
 Build the enrichment image and run the complete fixture-backed Python suite with networking disabled:

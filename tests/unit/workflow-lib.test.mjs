@@ -267,7 +267,7 @@ test('enrichment grouping canonicalizes configured player aliases', () => {
     aliases: [],
     identity_overrides: [],
   });
-  for (const names of [['Rodri', 'Rodri Hernandez'], ['Aklouche', 'Maghnes Akliouche']]) {
+  for (const names of [['Rodri', 'Rodri Hernandez'], ['Akilouche', 'Maghnes Akliouche']]) {
     const grouped = buildEnrichmentRequest([
       context('10', names[0]),
       context('11', names[1]),
@@ -342,7 +342,7 @@ test('generated enrichment request canonicalizes configured player aliases', asy
     aliases: [],
     identity_overrides: [],
   } });
-  for (const names of [['Rodri', 'Rodri Hernandez'], ['Aklouche', 'Maghnes Akliouche']]) {
+  for (const names of [['Rodri', 'Rodri Hernandez'], ['Akilouche', 'Maghnes Akliouche']]) {
     const output = await runRequest({ all: () => [context('10', names[0]), context('11', names[1])] }, () => ({
       first: () => ({ json: { mode: 'shadow', workflow_run_id: '1' } }),
     }));
@@ -1113,7 +1113,7 @@ test('digest canonicalizes first and applies configured common-surname conflicts
     ['Rodri Hernández'],
   );
   assert.deepEqual(
-    selectDigestReports([report('Aklouche', 'Arsenal'), report('Maghnes Akliouche', 'Liverpool', 0.9)], { entityAliases }).map(({ player_name }) => player_name),
+    selectDigestReports([report('Akilouche', 'Arsenal'), report('Maghnes Akliouche', 'Liverpool', 0.9)], { entityAliases }).map(({ player_name }) => player_name),
     ['Maghnes Akliouche'],
   );
   assert.equal(selectDigestReports([report('Alex Smith', 'Arsenal'), report('Jamie Smith', 'Liverpool', 0.9)], { entityAliases }).length, 2);

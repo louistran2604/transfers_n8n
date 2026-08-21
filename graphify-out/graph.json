@@ -51,7 +51,7 @@
     {
       "label": "download-model.sh",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/download-model.sh",
       "source_location": "L1",
       "metadata": {
         "language": "bash",
@@ -60,12 +60,12 @@
       "_origin": "ast",
       "community": 15,
       "norm_label": "download-model.sh",
-      "id": "deploy_qwen3_6_27b_scripts_download_model"
+      "id": "deploy_qwen3_8_27b_scripts_download_model"
     },
     {
       "label": "download-model.sh script",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/download-model.sh",
       "source_location": "L1",
       "metadata": {
         "language": "bash",
@@ -74,12 +74,12 @@
       "_origin": "ast",
       "community": 15,
       "norm_label": "download-model.sh script",
-      "id": "deploy_qwen3_6_27b_scripts_download_model_sh__entry"
+      "id": "deploy_qwen3_8_27b_scripts_download_model_sh__entry"
     },
     {
       "label": "checksum()",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/download-model.sh",
       "source_location": "L15",
       "metadata": {
         "language": "bash",
@@ -88,12 +88,12 @@
       "_origin": "ast",
       "community": 15,
       "norm_label": "checksum()",
-      "id": "deploy_qwen3_6_27b_scripts_download_model_checksum"
+      "id": "deploy_qwen3_8_27b_scripts_download_model_checksum"
     },
     {
       "label": "test-server.sh",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L1",
       "metadata": {
         "language": "bash",
@@ -102,12 +102,12 @@
       "_origin": "ast",
       "community": 13,
       "norm_label": "test-server.sh",
-      "id": "deploy_qwen3_6_27b_scripts_test_server"
+      "id": "deploy_qwen3_8_27b_scripts_test_server"
     },
     {
       "label": "test-server.sh script",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L1",
       "metadata": {
         "language": "bash",
@@ -116,12 +116,12 @@
       "_origin": "ast",
       "community": 13,
       "norm_label": "test-server.sh script",
-      "id": "deploy_qwen3_6_27b_scripts_test_server_sh__entry"
+      "id": "deploy_qwen3_8_27b_scripts_test_server_sh__entry"
     },
     {
       "label": "wait_for_health()",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L14",
       "metadata": {
         "language": "bash",
@@ -130,12 +130,12 @@
       "_origin": "ast",
       "community": 13,
       "norm_label": "wait_for_health()",
-      "id": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health"
+      "id": "deploy_qwen3_8_27b_scripts_test_server_wait_for_health"
     },
     {
       "label": "check_gpu_offload()",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L40",
       "metadata": {
         "language": "bash",
@@ -144,7 +144,7 @@
       "_origin": "ast",
       "community": 13,
       "norm_label": "check_gpu_offload()",
-      "id": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload"
+      "id": "deploy_qwen3_8_27b_scripts_test_server_check_gpu_offload"
     },
     {
       "label": "run.sh",
@@ -1438,22 +1438,22 @@
       "id": "database_readme_deterministic_deduplication"
     },
     {
-      "label": "llama.cpp Qwen3.6-27B service",
+      "label": "llama.cpp Qwen3.8-27B service",
       "file_type": "document",
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
       "author": null,
       "contributor": null,
       "community": 7,
-      "norm_label": "llama.cpp qwen3.6-27b service",
-      "id": "deploy_qwen3_6_27b_readme_llama_cpp_qwen_service"
+      "norm_label": "llama.cpp qwen3.8-27b service",
+      "id": "deploy_qwen3_8_27b_readme_llama_cpp_qwen_service"
     },
     {
       "label": "Idle model and KV-cache unloading",
       "file_type": "rationale",
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
@@ -1461,12 +1461,12 @@
       "contributor": null,
       "community": 7,
       "norm_label": "idle model and kv-cache unloading",
-      "id": "deploy_qwen3_6_27b_readme_idle_model_unloading"
+      "id": "deploy_qwen3_8_27b_readme_idle_model_unloading"
     },
     {
       "label": "Local-only model API exposure",
       "file_type": "rationale",
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
@@ -1474,12 +1474,12 @@
       "contributor": null,
       "community": 7,
       "norm_label": "local-only model api exposure",
-      "id": "deploy_qwen3_6_27b_readme_local_only_model_api"
+      "id": "deploy_qwen3_8_27b_readme_local_only_model_api"
     },
     {
       "label": "llama service",
       "file_type": "code",
-      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_file": "deploy/qwen3.8-27b/compose.yaml",
       "source_location": null,
       "source_url": null,
       "captured_at": null,
@@ -1487,7 +1487,7 @@
       "contributor": null,
       "community": 7,
       "norm_label": "llama service",
-      "id": "deploy_qwen3_6_27b_compose_llama"
+      "id": "deploy_qwen3_8_27b_compose_llama"
     },
     {
       "label": "Supporting PostgreSQL service deployment",
@@ -3440,81 +3440,81 @@
     {
       "relation": "defines",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/download-model.sh",
       "source_location": "L15",
       "weight": 1.0,
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_download_model",
-      "target": "deploy_qwen3_6_27b_scripts_download_model_checksum"
+      "source": "deploy_qwen3_8_27b_scripts_download_model",
+      "target": "deploy_qwen3_8_27b_scripts_download_model_checksum"
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/download-model.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/download-model.sh",
       "source_location": "L1",
       "weight": 1.0,
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_download_model",
-      "target": "deploy_qwen3_6_27b_scripts_download_model_sh__entry"
+      "source": "deploy_qwen3_8_27b_scripts_download_model",
+      "target": "deploy_qwen3_8_27b_scripts_download_model_sh__entry"
     },
     {
       "relation": "defines",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L40",
       "weight": 1.0,
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_test_server",
-      "target": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload"
+      "source": "deploy_qwen3_8_27b_scripts_test_server",
+      "target": "deploy_qwen3_8_27b_scripts_test_server_check_gpu_offload"
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L1",
       "weight": 1.0,
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_test_server",
-      "target": "deploy_qwen3_6_27b_scripts_test_server_sh__entry"
+      "source": "deploy_qwen3_8_27b_scripts_test_server",
+      "target": "deploy_qwen3_8_27b_scripts_test_server_sh__entry"
     },
     {
       "relation": "defines",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L14",
       "weight": 1.0,
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_test_server",
-      "target": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health"
+      "source": "deploy_qwen3_8_27b_scripts_test_server",
+      "target": "deploy_qwen3_8_27b_scripts_test_server_wait_for_health"
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L100",
       "weight": 1.0,
       "context": "call",
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
-      "target": "deploy_qwen3_6_27b_scripts_test_server_check_gpu_offload"
+      "source": "deploy_qwen3_8_27b_scripts_test_server_sh__entry",
+      "target": "deploy_qwen3_8_27b_scripts_test_server_check_gpu_offload"
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "deploy/qwen3.6-27b/scripts/test-server.sh",
+      "source_file": "deploy/qwen3.8-27b/scripts/test-server.sh",
       "source_location": "L79",
       "weight": 1.0,
       "context": "call",
       "_origin": "ast",
       "confidence_score": 1.0,
-      "source": "deploy_qwen3_6_27b_scripts_test_server_sh__entry",
-      "target": "deploy_qwen3_6_27b_scripts_test_server_wait_for_health"
+      "source": "deploy_qwen3_8_27b_scripts_test_server_sh__entry",
+      "target": "deploy_qwen3_8_27b_scripts_test_server_wait_for_health"
     },
     {
       "relation": "defines",
@@ -5265,40 +5265,40 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "weight": 1.0,
-      "source": "deploy_qwen3_6_27b_readme_llama_cpp_qwen_service",
-      "target": "deploy_qwen3_6_27b_compose_llama"
+      "source": "deploy_qwen3_8_27b_readme_llama_cpp_qwen_service",
+      "target": "deploy_qwen3_8_27b_compose_llama"
     },
     {
       "relation": "rationale_for",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "weight": 1.0,
-      "source": "deploy_qwen3_6_27b_readme_idle_model_unloading",
-      "target": "deploy_qwen3_6_27b_compose_llama"
+      "source": "deploy_qwen3_8_27b_readme_idle_model_unloading",
+      "target": "deploy_qwen3_8_27b_compose_llama"
     },
     {
       "relation": "rationale_for",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "deploy/qwen3.6-27b/README.md",
+      "source_file": "deploy/qwen3.8-27b/README.md",
       "source_location": null,
       "weight": 1.0,
-      "source": "deploy_qwen3_6_27b_readme_local_only_model_api",
-      "target": "deploy_qwen3_6_27b_compose_llama"
+      "source": "deploy_qwen3_8_27b_readme_local_only_model_api",
+      "target": "deploy_qwen3_8_27b_compose_llama"
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": "deploy/qwen3.6-27b/compose.yaml",
+      "source_file": "deploy/qwen3.8-27b/compose.yaml",
       "source_location": null,
       "weight": 1.0,
-      "source": "deploy_qwen3_6_27b_compose_llama",
+      "source": "deploy_qwen3_8_27b_compose_llama",
       "target": "deploy_n8n_compose_transfers_net"
     },
     {

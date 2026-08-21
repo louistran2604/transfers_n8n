@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-MODEL_REPOSITORY="unsloth/Qwen3.6-27B-GGUF"
-MODEL_FILE="Qwen3.6-27B-UD-IQ3_XXS.gguf"
-EXPECTED_SHA256="5d591dd11918e196a7b7c9d2f02e4390e7264960eb354c72d65e81a9331978f5"
-MODEL_URL="https://huggingface.co/${MODEL_REPOSITORY}/resolve/main/${MODEL_FILE}"
+MODEL_REPOSITORY="unsloth/Qwen3.8-27B-GGUF"
+MODEL_REVISION="f975863083b62f54a5e6fac11671c750c2bbc59c"
+MODEL_FILE="Qwen3.8-27B-UD-Q3_K_XL.gguf"
+EXPECTED_SHA256="00cf92e666c6af6566996c38c89a44ccdb6449ea25ef0f112a452c853b2a71e2"
+MODEL_URL="https://huggingface.co/${MODEL_REPOSITORY}/resolve/${MODEL_REVISION}/${MODEL_FILE}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -51,4 +52,3 @@ fi
 
 mv "${PARTIAL_PATH}" "${MODEL_PATH}"
 printf 'Model downloaded and verified: %s\n' "${MODEL_PATH}"
-

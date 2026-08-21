@@ -48,7 +48,7 @@ The repository provides:
 - A dedicated X account's `auth_token` and `ct0` cookies for `twscrape`, or a RapidAPI key.
 - Discord webhook credentials for live delivery.
 
-The supplied Qwen quantization and settings target a 16 GB GPU. Read the [Qwen deployment guide](deploy/qwen3.6-27b/README.md) before changing the model, context size, or GPU settings.
+Production uses Qwen3.8-27B from Unsloth's UD-Q3_K_XL GGUF through llama.cpp, with reasoning disabled and an 8192-token context. The supplied quantization and settings target a 16 GB GPU. Read the [Qwen deployment guide](deploy/qwen3.8-27b/README.md) before changing the model, context size, or GPU settings.
 
 ## Quick start
 
@@ -96,7 +96,7 @@ PostgreSQL is not exposed to the host. Containers on `transfers_net` connect to 
 ### 3. Download and start Qwen
 
 ```bash
-cd deploy/qwen3.6-27b
+cd deploy/qwen3.8-27b
 ./scripts/download-model.sh
 docker compose up -d
 ./scripts/test-server.sh
@@ -108,7 +108,7 @@ Endpoints and model name:
 ```text
 Host health/API: http://127.0.0.1:8081
 n8n chat endpoint: http://llama:8080/v1/chat/completions
-Model alias: qwen3.6-27b
+Model alias: qwen3.8-27b
 ```
 
 The llama.cpp container remains running, but the model and KV cache unload after 30 idle seconds to release VRAM. The next request reloads the model, so the first extraction after an idle period takes longer.
@@ -321,12 +321,12 @@ Discord retries occur only after an explicit HTTP `429` or `5xx`. A pending deli
 
 ```bash
 docker compose -f deploy/support/compose.yaml ps
-docker compose -f deploy/qwen3.6-27b/compose.yaml ps
+docker compose -f deploy/qwen3.8-27b/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml ps
 docker compose -f deploy/n8n/compose.yaml logs -f n8n
 docker compose -f deploy/n8n/compose.yaml --profile twscrape logs -f twscrape
 docker compose -f deploy/n8n/compose.yaml logs --tail=200 sofascore-enrichment
-docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
+docker compose -f deploy/qwen3.8-27b/compose.yaml logs -f llama
 ```
 
 Direct health checks:
@@ -405,7 +405,7 @@ Do not use `docker compose down --volumes` for rollback. More cache, override, u
 
 ```bash
 docker compose -f deploy/n8n/compose.yaml down
-docker compose -f deploy/qwen3.6-27b/compose.yaml down
+docker compose -f deploy/qwen3.8-27b/compose.yaml down
 docker compose -f deploy/support/compose.yaml down
 ```
 
@@ -423,7 +423,7 @@ node --test tests/unit/*.test.mjs
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 ```
 
 `PLAYER_ENRICHMENT_MODE=off` on the Compose validation command checks the fail-safe configuration without changing the active `.env` value. Node generation and tests do not require it.
@@ -481,7 +481,7 @@ docker compose -f deploy/n8n/compose.yaml up -d --force-recreate n8n
 The model unloads after 30 idle seconds. Its next request starts a reload. Watch the llama logs while n8n retries:
 
 ```bash
-docker compose -f deploy/qwen3.6-27b/compose.yaml logs -f llama
+docker compose -f deploy/qwen3.8-27b/compose.yaml logs -f llama
 ```
 
 ### Digest reservation returns no delivery ID
@@ -522,7 +522,7 @@ transfers_n8n/
 │   │   ├── twscrape/                 private X collector service and its tests
 │   │   ├── sofascore/                player-enrichment service and its tests
 │   │   └── README.md                 deployment, rollback, cache, and override guide
-│   ├── qwen3.6-27b/
+│   ├── qwen3.8-27b/
 │   │   ├── compose.yaml              llama.cpp GPU service
 │   │   ├── scripts/                  model download and acceptance checks
 │   │   └── README.md                 model and GPU deployment guide
@@ -575,5 +575,5 @@ Focused documentation:
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
 - [n8n deployment](deploy/n8n/README.md)
-- [Qwen deployment and GPU checks](deploy/qwen3.6-27b/README.md)
+- [Qwen deployment and GPU checks](deploy/qwen3.8-27b/README.md)
 - [Automated tests](tests/README.md)

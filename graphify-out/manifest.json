@@ -19,12 +19,12 @@
     "ast_hash": "cb802d555c7af0fe0daef9b8bd7bc321",
     "semantic_hash": "cb802d555c7af0fe0daef9b8bd7bc321"
   },
-  "deploy/qwen3.6-27b/scripts/download-model.sh": {
+  "deploy/qwen3.8-27b/scripts/download-model.sh": {
     "mtime": 1785038096.0029852,
     "ast_hash": "769582acf694b4cd39893460f45e0d07",
     "semantic_hash": "769582acf694b4cd39893460f45e0d07"
   },
-  "deploy/qwen3.6-27b/scripts/test-server.sh": {
+  "deploy/qwen3.8-27b/scripts/test-server.sh": {
     "mtime": 1785038915.0358346,
     "ast_hash": "2055a9ab09a16f52699ea9203d385ecb",
     "semantic_hash": "2055a9ab09a16f52699ea9203d385ecb"
@@ -104,12 +104,12 @@
     "ast_hash": "5cf9691f975fd174596e3dac634a8d53",
     "semantic_hash": "5cf9691f975fd174596e3dac634a8d53"
   },
-  "deploy/qwen3.6-27b/README.md": {
+  "deploy/qwen3.8-27b/README.md": {
     "mtime": 1785075652.8560238,
     "ast_hash": "ffc070c8d996c2362d8a9efb5832ec99",
     "semantic_hash": "ffc070c8d996c2362d8a9efb5832ec99"
   },
-  "deploy/qwen3.6-27b/compose.yaml": {
+  "deploy/qwen3.8-27b/compose.yaml": {
     "mtime": 1785075652.7710211,
     "ast_hash": "80ecbb7bb60f5b57f84f6d1e7f7fbece",
     "semantic_hash": "80ecbb7bb60f5b57f84f6d1e7f7fbece"

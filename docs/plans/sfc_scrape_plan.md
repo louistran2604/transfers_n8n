@@ -1572,7 +1572,7 @@ Verification:
 ```bash
 docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
 docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
   --entrypoint python sofascore-enrichment -m unittest \
@@ -1692,7 +1692,7 @@ node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
 docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 ./tests/e2e/run.sh
 git diff --check
 ```
@@ -1744,7 +1744,7 @@ node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
 docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
 docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
   --entrypoint python sofascore-enrichment \
@@ -1939,7 +1939,7 @@ node workflow/build-workflows.mjs --check
 node --test tests/unit/*.test.mjs
 docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.6-27b/compose.yaml config --quiet
+docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml build sofascore-enrichment
 docker compose -f deploy/n8n/compose.yaml run --rm --no-deps \
   --entrypoint python sofascore-enrichment \
