@@ -192,7 +192,7 @@ An unset or invalid `X_COLLECTOR` stops collection before posts are persisted. A
 | File | What to edit |
 | --- | --- |
 | [`docs/journalist_list.md`](docs/journalist_list.md) | The 78 configured X sources. |
-| [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club aliases, player aliases, enrichment-only aliases, sibling groups, and common surnames. |
+| [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club aliases, player aliases (entries with `current_clubs` scope surname-only enrichment matching), sibling groups, and common surnames. |
 | [`workflow/womens-football-blacklist.txt`](workflow/womens-football-blacklist.txt) | Senior women's football exclusions, one name or spelling variant per line. |
 | [`workflow/qwen-response-schema.json`](workflow/qwen-response-schema.json) | Strict extraction response contract. |
 

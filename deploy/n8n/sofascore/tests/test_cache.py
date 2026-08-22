@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from adapter import SchemaError, SofascoreAdapter
@@ -9,6 +10,7 @@ from tests.fixture_transport import FixtureTransport
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+NOW = datetime(2026, 7, 30, 5, 44, tzinfo=timezone.utc)
 
 
 class CacheTests(unittest.TestCase):
@@ -21,6 +23,7 @@ class CacheTests(unittest.TestCase):
             self.cache_dir,
             min_interval_seconds=0,
             jitter_seconds=0,
+            now=lambda: NOW,
         )
 
     def tearDown(self):
@@ -64,6 +67,7 @@ class CacheTests(unittest.TestCase):
             self.cache_dir,
             min_interval_seconds=0,
             jitter_seconds=0,
+            now=lambda: NOW,
         )
         actual, status = restarted.fetch_json("player/826643", "profile", 24)
         self.assertEqual(expected, actual)

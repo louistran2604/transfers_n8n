@@ -7,7 +7,7 @@ from typing import Any
 from models import DECIMAL_ID
 
 
-RESOLVER_VERSION = "identity-v6"
+RESOLVER_VERSION = "identity-v7"
 NON_DISCRIMINATING_CLUB_KEYS = {
     "",
     "free agent",
@@ -222,6 +222,8 @@ def resolve_search(
     provider_team_id: str | None = None,
     reported_club_name: str | None = None,
     reported_club_names: list[str] | None = None,
+    destination_club_names: list[str] | None = None,
+    destination_weight: int = 30,
     rejected_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     exact = unicode_exact_key(reported_name)
@@ -253,13 +255,18 @@ def resolve_search(
             for club_name in [reported_club_name, *(reported_club_names or [])]
             if isinstance(club_name, str)
         ]
-        team_discriminator_matches = (
-            str(team.get("id", "")) == provider_team_id
-            if provider_team_id
-            else any(_reported_club_matches(club_name, team) for club_name in club_names)
-        )
-        if team_discriminator_matches:
-            score += 30
+        if provider_team_id:
+            discriminator_score = 30 if str(team.get("id", "")) == provider_team_id else 0
+        elif any(_reported_club_matches(club_name, team) for club_name in club_names):
+            discriminator_score = 30
+        elif destination_weight > 0 and any(
+            _reported_club_matches(club_name, team)
+            for club_name in destination_club_names or []
+        ):
+            discriminator_score = destination_weight
+        else:
+            discriminator_score = 0
+        score += discriminator_score
         candidates.append(
             {
                 "provider_player_id": str(entity["id"]),

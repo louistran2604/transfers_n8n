@@ -352,30 +352,46 @@ class SofascoreAdapter:
             if not manual_resolved:
                 identity = known_identity(player_id)
         else:
-            reported_club_names = [
+            current_club_names = [
                 club_name
                 for club_name in [
                     item.get("current_club_name"),
                     *(item.get("current_club_aliases") or []),
+                ]
+                if isinstance(club_name, str) and is_discriminating_club_name(club_name)
+            ]
+            destination_club_names = [
+                club_name
+                for club_name in [
                     item.get("destination_club_name"),
                     *(item.get("destination_club_aliases") or []),
                 ]
-                if isinstance(club_name, str)
+                if isinstance(club_name, str) and is_discriminating_club_name(club_name)
             ]
+            completed_move = (
+                item.get("classification") in {"official_confirmed", "loan"}
+                or item.get("move_type") == "loan"
+            )
+            destination_weight = (
+                30
+                if completed_move or not current_club_names
+                else 20
+            )
             search, _ = self.fetch_json(
                 f"search/all?q={quote(item['reported_name'], safe='')}",
                 f"search-{hashlib.sha256(item['reported_name'].encode()).hexdigest()}",
                 self.profile_max_age_hours,
             )
             search_payloads = [search]
-            resolution = resolve_search(
-                item["reported_name"],
-                search,
-                aliases=item.get("aliases"),
-                provider_team_id=(item.get("team_mapping") or {}).get("provider_team_id"),
-                reported_club_names=reported_club_names,
-                rejected_player_ids=rejected_player_ids,
-            )
+            resolve_options = {
+                "aliases": item.get("aliases"),
+                "provider_team_id": (item.get("team_mapping") or {}).get("provider_team_id"),
+                "reported_club_names": current_club_names,
+                "destination_club_names": destination_club_names,
+                "destination_weight": destination_weight,
+                "rejected_player_ids": rejected_player_ids,
+            }
+            resolution = resolve_search(item["reported_name"], search, **resolve_options)
             if resolution["status"] != "resolved" and item.get("aliases"):
                 alias = item["aliases"][0]
                 alias_search, _ = self.fetch_json(
@@ -385,18 +401,22 @@ class SofascoreAdapter:
                 )
                 search_payloads.append(alias_search)
                 resolution = resolve_search(
-                    item["reported_name"],
-                    alias_search,
-                    aliases=item.get("aliases"),
-                    provider_team_id=(item.get("team_mapping") or {}).get(
-                        "provider_team_id"
-                    ),
-                    reported_club_names=reported_club_names,
-                    rejected_player_ids=rejected_player_ids,
+                    item["reported_name"], alias_search, **resolve_options
                 )
-            former_club = item.get("former_club_name")
-            has_current_club = is_discriminating_club_name(item.get("current_club_name"))
-            if resolution["status"] != "resolved" and not has_current_club and isinstance(former_club, str):
+            former_names = [
+                club_name
+                for club_name in [
+                    item.get("former_club_name"),
+                    *(item.get("former_club_aliases") or []),
+                ]
+                if isinstance(club_name, str) and is_discriminating_club_name(club_name)
+            ]
+            fallback_club_names = [
+                *current_club_names,
+                *destination_club_names,
+                *former_names,
+            ]
+            if resolution["status"] != "resolved" and fallback_club_names:
                 candidates_by_id = {}
                 for search_payload in search_payloads:
                     for candidate in exact_name_candidates(
@@ -413,14 +433,6 @@ class SofascoreAdapter:
                 if len(exact_candidates) > 3:
                     resolution = {"status": "ambiguous", "candidates": exact_candidates[:5]}
                 else:
-                    former_names = [
-                        name
-                        for name in [
-                            former_club,
-                            *(item.get("former_club_aliases") or []),
-                        ]
-                        if isinstance(name, str)
-                    ]
                     history_matches = []
                     for candidate in exact_candidates:
                         candidate_id = candidate["provider_player_id"]
@@ -430,7 +442,9 @@ class SofascoreAdapter:
                             24,
                         )
                         try:
-                            matched = transfer_history_matches_club(history, former_names)
+                            matched = transfer_history_matches_club(
+                                history, fallback_club_names
+                            )
                         except ValueError as error:
                             self._invalidate_cache(f"transfer-history-{candidate_id}")
                             raise SchemaError(str(error)) from error

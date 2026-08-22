@@ -73,7 +73,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
-        self.assertEqual("identity-v6", result["resolver_version"])
+        self.assertEqual("identity-v7", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",
@@ -491,6 +491,10 @@ class AdapterNormalizationTests(unittest.TestCase):
         self.assertEqual("hit", cached["provenance"]["statistics_cache"])
 
     def test_empty_identity_map_accepts_the_reported_destination_club(self):
+        self.transport.register("player/826643/transfer-history", {"transferHistory": [{
+            "transferFrom": {"id": 1, "name": "Former Club"},
+            "transferTo": {"id": 2, "name": "Real Madrid"},
+        }]})
         item = {
             "item_key": "name:kylian-mbappe|club:real-madrid",
             "reported_name": "Kylian Mbappé",
@@ -582,7 +586,7 @@ class AdapterNormalizationTests(unittest.TestCase):
         self.assertEqual("unresolved", corrected["status"])
         self.assertEqual(2, sum(call["endpoint"] == "player/1/transfer-history" for call in self.transport.calls))
 
-    def test_explicit_current_club_blocks_former_club_recovery(self):
+    def test_mismatched_current_club_recovers_through_transfer_history(self):
         history_endpoint = "player/826643/transfer-history"
         self.transport.register(history_endpoint, {"transferHistory": [{
             "transferFrom": {"id": 1, "name": "Paris Saint-Germain"},
@@ -593,8 +597,10 @@ class AdapterNormalizationTests(unittest.TestCase):
             "current_club_name": "Wrong FC", "former_club_name": "Paris Saint-Germain",
             "former_club_aliases": ["PSG"], "aliases": [],
         })
-        self.assertEqual("unresolved", result["status"])
-        self.assertFalse(any(call["endpoint"] == history_endpoint for call in self.transport.calls))
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("826643", result["identity"]["provider_player_id"])
+        self.assertEqual(80, result["identity"]["score"])
+        self.assertTrue(any(call["endpoint"] == history_endpoint for call in self.transport.calls))
 
     def test_former_club_history_fetch_failure_is_not_a_non_match(self):
         self.transport.register("search/all?q=Failed%20Smith", {"results": [{

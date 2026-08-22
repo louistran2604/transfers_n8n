@@ -90,6 +90,75 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual("resolved", resolved["status"])
         self.assertEqual("826643", resolved["identity"]["provider_player_id"])
 
+    def test_speculative_destination_needs_history_confirmation_but_completed_moves_resolve(self):
+        payload = {
+            "results": [{
+                "type": "player",
+                "entity": {
+                    "id": 826643,
+                    "name": "Kylian Mbappé",
+                    "team": {
+                        "id": 2829,
+                        "name": "Real Madrid",
+                        "sport": {"slug": "football"},
+                        "gender": "M",
+                    },
+                },
+            }],
+        }
+        stale_current = resolve_search(
+            "Kylian Mbappé",
+            payload,
+            reported_club_names=["Paris Saint-Germain"],
+            destination_club_names=["Real Madrid"],
+            destination_weight=20,
+        )
+        self.assertEqual("unresolved", stale_current["status"])
+        self.assertEqual(70, stale_current["candidates"][0]["score"])
+
+        completed = resolve_search(
+            "Kylian Mbappé",
+            payload,
+            reported_club_names=["Paris Saint-Germain"],
+            destination_club_names=["Real Madrid"],
+            destination_weight=30,
+        )
+        self.assertEqual("resolved", completed["status"])
+        self.assertEqual(80, completed["identity"]["score"])
+
+    def test_destination_evidence_cannot_outvote_current_club_matches(self):
+        payload = {
+            "results": [
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 1,
+                        "name": "Kylian Mbappé",
+                        "team": {"id": 1, "name": "Real Madrid", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 2,
+                        "name": "Kylian Mbappé",
+                        "team": {"id": 2, "name": "Other FC", "sport": {"slug": "football"}, "gender": "M"},
+                    },
+                },
+            ],
+        }
+        for destination_weight in (20, 30):
+            with self.subTest(destination_weight=destination_weight):
+                result = resolve_search(
+                    "Kylian Mbappé",
+                    payload,
+                    reported_club_names=["Real Madrid"],
+                    destination_club_names=["Other FC"],
+                    destination_weight=destination_weight,
+                )
+                self.assertEqual("ambiguous", result["status"])
+                self.assertIsNone(result.get("identity"))
+
     def test_only_curated_club_variants_bridge_provider_names(self):
         cases = [
             ("Barcelona", "FC Barcelona"),

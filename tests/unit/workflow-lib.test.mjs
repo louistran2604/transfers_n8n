@@ -205,23 +205,30 @@ test('entity aliases canonicalize player and club variants without merging sibli
       { canonical: 'Club B', aliases: ['Shared Club'] },
     ],
     players: [],
-    enrichment_player_aliases: [],
     sibling_groups: [],
     common_surnames: [],
   }), /Conflicting club alias/);
   assert.throws(() => parseEntityAliases({
-    clubs: [{ canonical: 'Napoli', aliases: [] }], players: [], sibling_groups: [], common_surnames: [],
-    enrichment_player_aliases: [{ reported: 'Lukaku', canonical: 'Romelu Lukaku', current_clubs: ['Roma'] }],
-  }), /Unknown enrichment player alias club/);
+    clubs: [{ canonical: 'Napoli', aliases: [] }],
+    players: [{ canonical: 'Romelu Lukaku', aliases: ['Lukaku'], current_clubs: ['Roma'] }],
+    sibling_groups: [],
+    common_surnames: [],
+  }), /Unknown player alias club/);
   assert.throws(() => parseEntityAliases({
-    clubs: [{ canonical: 'Napoli', aliases: ['SSC Napoli'] }], players: [], sibling_groups: [], common_surnames: [],
-    enrichment_player_aliases: [
-      { reported: 'Lukaku', canonical: 'Romelu Lukaku', current_clubs: ['Napoli'] },
-      { reported: 'Lukaku', canonical: 'Other Lukaku', current_clubs: ['SSC Napoli'] },
+    clubs: [{ canonical: 'Napoli', aliases: ['SSC Napoli'] }],
+    players: [
+      { canonical: 'Romelu Lukaku', aliases: ['Lukaku'], current_clubs: ['Napoli'] },
+      { canonical: 'Other Lukaku', aliases: ['Lukaku'], current_clubs: ['SSC Napoli'] },
     ],
-  }), /Duplicate enrichment player alias scope/);
+    sibling_groups: [],
+    common_surnames: [],
+  }), /Conflicting player alias scope/);
   assert.throws(() => parseEntityAliases({
-    clubs: [], players: [], enrichment_player_aliases: [], sibling_groups: [], common_surnames: ['Rodríguez'],
+    clubs: [], players: [], sibling_groups: [], common_surnames: [],
+    enrichment_player_aliases: [{ reported: 'Lukaku', canonical: 'Romelu Lukaku', current_clubs: ['Napoli'] }],
+  }), /has been merged into players/);
+  assert.throws(() => parseEntityAliases({
+    clubs: [], players: [], sibling_groups: [], common_surnames: ['Rodríguez'],
   }), /Invalid common surname/);
 });
 
@@ -468,7 +475,7 @@ test('canonical club aliases produce an order-independent enrichment payload', a
   }
 });
 
-test('enrichment transports curated club variants and suppresses rumor destinations', () => {
+test('enrichment transports curated club variants and every named destination', () => {
   const base = {
     transfer_report_id: '20',
     reported_player_name: 'Test Player',
@@ -483,12 +490,13 @@ test('enrichment transports curated club variants and suppresses rumor destinati
   const rumor = buildEnrichmentRequest([base], { mode: 'active', requestId: 'rumor-clubs', entityAliases }).request.players[0];
   assert.equal(rumor.current_club_name, 'Napoli');
   assert.deepEqual(rumor.current_club_aliases, ['Napoli', 'SSC Napoli', 'sscnapoli']);
-  assert.equal(rumor.destination_club_name, null);
-  assert.deepEqual(rumor.destination_club_aliases, []);
+  assert.equal(rumor.destination_club_name, 'Marseille');
+  assert.deepEqual(rumor.destination_club_aliases, ['Marseille', 'Olympique de Marseille']);
 
   for (const overrides of [
     { classification: 'official_confirmed' },
     { classification: 'rumor', move_type: 'loan' },
+    { classification: 'rejected_failed' },
   ]) {
     const eligible = buildEnrichmentRequest([{ ...base, ...overrides }], { mode: 'active', requestId: 'eligible-clubs', entityAliases }).request.players[0];
     assert.equal(eligible.destination_club_name, 'Marseille');
@@ -589,11 +597,12 @@ test('former club alone creates a bounded enrichment identity request', () => {
     aliases: [],
     identity_overrides: [],
   }], { mode: 'active', requestId: 'former', entityAliases }).request.players[0];
-  assert.equal(player.item_key, 'name:endrick|club:palmeiras');
+  assert.equal(player.item_key, 'name:endrick|club:chelsea');
   assert.equal(player.current_club_name, null);
   assert.equal(player.former_club_name, 'Palmeiras');
   assert.deepEqual(player.former_club_aliases, []);
-  assert.equal(player.destination_club_name, null);
+  assert.equal(player.destination_club_name, 'Chelsea');
+  assert.deepEqual(player.destination_club_aliases, ['Chelsea']);
 });
 
 test('generated enrichment request transports former club and curated variants', async () => {
@@ -673,7 +682,7 @@ test('enrichment response normalization converts contract failures into one sani
       items: [{
         item_key: 'provider:826643',
         status: 'fresh',
-        resolver_version: 'identity-v6',
+        resolver_version: 'identity-v7',
         provider_calls: 2,
         identity: {
           provider: 'sofascore',
@@ -681,7 +690,7 @@ test('enrichment response normalization converts contract failures into one sani
           stable_source_identifier: 'sofascore:player:826643',
           score: 80,
           margin: 80,
-          resolver_version: 'identity-v6',
+          resolver_version: 'identity-v7',
         },
         profile: {
           canonical_name: 'Kylian Mbappé',
@@ -718,7 +727,7 @@ test('enrichment response normalization preserves valid search candidates with o
       items: [{
         item_key: request.players[0].item_key,
         status: 'ambiguous',
-        resolver_version: 'identity-v6',
+        resolver_version: 'identity-v7',
         identity: null,
         profile: null,
         statistics: null,
@@ -741,11 +750,11 @@ test('enrichment response rejects identity on unresolved statuses and invalid sc
   const request = { request_id: 'identity-contract', players: [player] };
   const identity = {
     provider: 'sofascore', provider_player_id: '9', stable_source_identifier: 'sofascore:player:9',
-    score: 80, margin: 80, resolver_version: 'identity-v6',
+    score: 80, margin: 80, resolver_version: 'identity-v7',
   };
   const response = (status, candidateIdentity) => ({ statusCode: 200, body: {
     request_id: request.request_id,
-    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v6', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
+    items: [{ item_key: player.item_key, status, resolver_version: 'identity-v7', identity: candidateIdentity, profile: null, statistics: null, candidates: [] }],
   } });
   assert.equal(normalizeEnrichmentResponse(request, response('unresolved', identity)).items[0].status, 'schema_failure');
   for (const invalid of [
@@ -769,7 +778,7 @@ test('enrichment response normalization bounds search candidates to five entries
   }));
   const normalized = normalizeEnrichmentResponse(request, {
     statusCode: 200,
-    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v6', identity: null, profile: null, statistics: null, candidates }] },
+    body: { request_id: request.request_id, items: [{ item_key: 'provider:1', status: 'unresolved', resolver_version: 'identity-v7', identity: null, profile: null, statistics: null, candidates }] },
   });
   assert.deepEqual(normalized.items[0].candidates, candidates.slice(0, 5));
 });
@@ -786,7 +795,7 @@ test('enrichment response normalization omits malformed search candidates', () =
       items: [{
         item_key: 'provider:2',
         status: 'unresolved',
-        resolver_version: 'identity-v6',
+        resolver_version: 'identity-v7',
         identity: null,
         profile: null,
         statistics: null,
@@ -820,7 +829,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
     items: [{
       item_key: 'provider:3',
       status: 'unresolved',
-      resolver_version: 'identity-v6',
+      resolver_version: 'identity-v7',
       identity: null,
       profile: null,
       statistics: null,
@@ -850,7 +859,7 @@ test('generated enrichment normalization uses the same bounded candidate contrac
   ]);
   const invalidIdentity = {
     provider: 'sofascore', provider_player_id: '3', stable_source_identifier: 'sofascore:player:3',
-    score: 70, margin: 80, resolver_version: 'identity-v6',
+    score: 70, margin: 80, resolver_version: 'identity-v7',
   };
   const invalidOutput = await runNormalize({ statusCode: 200, body: {
     ...body, items: [{ ...body.items[0], identity: invalidIdentity }],
@@ -1969,7 +1978,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /false AS is_current_request/);
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
-  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v6'/);
+  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v7'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);
@@ -2009,6 +2018,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
   assert.match(requestNode.parameters.jsCode, /current_club_name: typeof canonicalCurrentClub === 'string'/);
   assert.match(requestNode.parameters.jsCode, /destination_club_name: destinationEligible && typeof canonicalDestinationClub === 'string'/);
+  assert.match(requestNode.parameters.jsCode, /const destinationClubKey = namedContext\(canonicalDestinationClub\);/);
+  assert.doesNotMatch(requestNode.parameters.jsCode, /\['official_confirmed', 'loan'\]\.includes\(context\.classification\)/);
   assert.equal(runNode.parameters.options.queryReplacement, '={{ $json.params }}');
   assert.equal(recoveryNode.parameters.options.queryReplacement, undefined);
   assert.equal(

@@ -113,20 +113,37 @@ export function parseEntityAliases(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Entity aliases must be an object');
   const clubs = aliasMap(value.clubs, 'club');
   const canonicalClubs = new Set(value.clubs.map((entry) => entry.canonical));
-  if (!Array.isArray(value.enrichment_player_aliases)) throw new Error('Enrichment player aliases must be an array');
+  if ('enrichment_player_aliases' in value) throw new Error('enrichment_player_aliases has been merged into players: move each entry into players with its reported forms under aliases and its club scope under current_clubs');
+  if (!Array.isArray(value.players)) throw new Error('Player aliases must be an array');
+  const players = {};
   const enrichmentPlayerAliases = {};
-  for (const entry of value.enrichment_player_aliases) {
-    if (!entry || typeof entry !== 'object' || typeof entry.reported !== 'string' || !entry.reported.trim()
-      || typeof entry.canonical !== 'string' || !entry.canonical.trim() || !Array.isArray(entry.current_clubs)
-      || entry.current_clubs.length === 0 || !entry.current_clubs.every((club) => typeof club === 'string' && club.trim())) {
-      throw new Error('Invalid enrichment player alias entry');
+  for (const entry of value.players) {
+    if (!entry || typeof entry !== 'object' || typeof entry.canonical !== 'string' || !entry.canonical.trim() || !Array.isArray(entry.aliases) || !entry.aliases.every((alias) => typeof alias === 'string' && alias.trim())) {
+      throw new Error('Invalid player alias entry');
     }
+    const names = [entry.canonical, ...entry.aliases];
+    if (!Array.isArray(entry.current_clubs)) {
+      for (const name of names) {
+        const key = normalizeText(name);
+        if (players[key] && players[key] !== entry.canonical) throw new Error(`Conflicting player alias: ${name}`);
+        players[key] = entry.canonical;
+      }
+      continue;
+    }
+    if (entry.current_clubs.length === 0 || !entry.current_clubs.every((club) => typeof club === 'string' && club.trim())) {
+      throw new Error('Invalid player alias entry');
+    }
+    const canonical = entry.canonical.trim();
     for (const club of entry.current_clubs) {
       const canonicalClub = clubs[normalizeText(club)];
-      if (!canonicalClub || !canonicalClubs.has(canonicalClub)) throw new Error(`Unknown enrichment player alias club: ${club}`);
-      const key = `${normalizeText(entry.reported)}|${normalizeText(canonicalClub)}`;
-      if (enrichmentPlayerAliases[key]) throw new Error(`Duplicate enrichment player alias scope: ${entry.reported} / ${canonicalClub}`);
-      enrichmentPlayerAliases[key] = entry.canonical.trim();
+      if (!canonicalClub || !canonicalClubs.has(canonicalClub)) throw new Error(`Unknown player alias club: ${club}`);
+      for (const name of names) {
+        const key = `${normalizeText(name)}|${normalizeText(canonicalClub)}`;
+        if (enrichmentPlayerAliases[key] && enrichmentPlayerAliases[key] !== canonical) {
+          throw new Error(`Conflicting player alias scope: ${name} / ${canonicalClub}`);
+        }
+        enrichmentPlayerAliases[key] = canonical;
+      }
     }
   }
   if (!Array.isArray(value.sibling_groups) || !value.sibling_groups.every((group) => Array.isArray(group) && group.length >= 2 && group.every((name) => typeof name === 'string' && name.trim()))) {
@@ -145,7 +162,7 @@ export function parseEntityAliases(value) {
   return Object.freeze({
     clubs,
     club_variants: aliasVariants(value.clubs, 'club'),
-    players: aliasMap(value.players, 'player'),
+    players: Object.freeze(players),
     enrichment_player_aliases: Object.freeze(enrichmentPlayerAliases),
     sibling_groups: Object.freeze(value.sibling_groups.map((group) => Object.freeze([...group]))),
     common_surnames: Object.freeze(commonSurnames),
@@ -243,10 +260,7 @@ export function buildEnrichmentRequest(contexts, {
       ? entityAliases.clubs[normalizeText(context.former_club_name)] ?? context.former_club_name.trim()
       : context.former_club_name;
     const currentClubKey = enrichmentNamedContext(canonicalCurrentClub);
-    const destinationClubKey = ['official_confirmed', 'loan'].includes(context.classification)
-      || context.move_type === 'loan'
-      ? enrichmentNamedContext(canonicalDestinationClub)
-      : null;
+    const destinationClubKey = enrichmentNamedContext(canonicalDestinationClub);
     const destinationEligible = destinationClubKey !== null;
     const formerClubKey = enrichmentNamedContext(canonicalFormerClub);
     const clubKey = currentClubKey ?? destinationClubKey ?? formerClubKey;
@@ -365,7 +379,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
-    resolver_version: 'identity-v6',
+    resolver_version: 'identity-v7',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,

@@ -14,7 +14,7 @@ const hash = (character) => character.repeat(64);
 const identity = (id, name) => ({
   provider: 'sofascore', provider_player_id: id,
   stable_source_identifier: `sofascore:player:${id}`,
-  canonical_name: name, score: 80, margin: 80, resolver_version: 'identity-v6',
+  canonical_name: name, score: 80, margin: 80, resolver_version: 'identity-v7',
 });
 const profile = (id, name, teamId, teamName) => ({
   canonical_name: name,
@@ -30,7 +30,7 @@ const statistics = (id, competitionId, seasonId) => ({
   raw_cache_key: `statistics-${id}-${competitionId}-${seasonId}`, raw_payload: {},
 });
 const item = ({ key, reportId, playerId, name, teamId, teamName, competitionId, seasonId }) => ({
-  item_key: key, report_ids: [String(reportId)], status: 'fresh', resolver_version: 'identity-v6',
+  item_key: key, report_ids: [String(reportId)], status: 'fresh', resolver_version: 'identity-v7',
   retryable: false, provider_calls: 2, cache_hits: 0,
   request_context: { reported_name_key: name.toLowerCase() },
   identity: identity(playerId, name), profile: profile(playerId, name, teamId, teamName),
@@ -41,13 +41,13 @@ const literal = (value) => `$payload$${value}$payload$::jsonb`;
 
 const aliasPayload = payload('generated-alias', [
   {
-    item_key: 'bruno-a', report_ids: ['900575'], status: 'partial', resolver_version: 'identity-v6',
+    item_key: 'bruno-a', report_ids: ['900575'], status: 'partial', resolver_version: 'identity-v7',
     retryable: false, provider_calls: 1, cache_hits: 0,
     request_context: { reported_name_key: 'bruno guimarães' }, identity: identity('866469', 'Bruno Guimarães'),
     profile: profile('866469', 'Bruno Guimarães', '9702', 'Alias Team'), statistics: null, candidates: [], warning_codes: [], error: null,
   },
   {
-    item_key: 'bruno-b', report_ids: ['900585'], status: 'partial', resolver_version: 'identity-v6',
+    item_key: 'bruno-b', report_ids: ['900585'], status: 'partial', resolver_version: 'identity-v7',
     retryable: false, provider_calls: 1, cache_hits: 0,
     request_context: { reported_name_key: 'bruno guimarães' }, identity: identity('866469', 'Bruno Guimarães'),
     profile: profile('866469', 'Bruno Guimarães', '9702', 'Alias Team'), statistics: null, candidates: [], warning_codes: [], error: null,
@@ -92,7 +92,7 @@ INSERT INTO players (identity_key, display_name, normalized_name) VALUES
 INSERT INTO player_provider_ids (
   player_id, provider_player_id, canonical_name, mapping_source,
   resolver_version, verified_at, last_seen_at
-) SELECT id, provider_id, display_name, 'automatic', 'identity-v6', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+) SELECT id, provider_id, display_name, 'automatic', 'identity-v7', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM players JOIN (VALUES
   ('alias-unique', '9101'), ('alias-ambiguous-a', '9102'),
   ('alias-ambiguous-b', '9103'), ('alias-report-specific', '9104')
@@ -122,7 +122,7 @@ INSERT INTO transfer_report_revisions (transfer_report_id, revision_number, cont
   (900610, 1, '${hash('4')}', '{"is_huge_rumor":false,"is_digest_worthy":true}');
 INSERT INTO transfer_report_player_resolutions (
   transfer_report_id, player_provider_id, resolution_source, resolver_version, verified_at
-) SELECT 900610, provider.id, 'automatic', 'identity-v6', CURRENT_TIMESTAMP
+) SELECT 900610, provider.id, 'automatic', 'identity-v7', CURRENT_TIMESTAMP
 FROM player_provider_ids provider WHERE provider.provider_player_id = '9104';
 INSERT INTO transfer_reports (
   id, dedupe_key, reported_player_name, current_club_name, destination_club_name,
@@ -153,11 +153,11 @@ INSERT INTO player_enrichment_attempts (
   ('fixture-old-version', 'fixture-old-version', 'old-version', 900077, 900605,
    'unresolved', true, CURRENT_TIMESTAMP + interval '24 hours', '{}', '{"resolver_version":"identity-v5"}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour'),
   ('fixture-current-version', 'fixture-current-version', 'current-version', 900077, 900606,
-   'unresolved', true, CURRENT_TIMESTAMP + interval '24 hours', '{}', '{"resolver_version":"identity-v6"}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour'),
+   'unresolved', true, CURRENT_TIMESTAMP + interval '24 hours', '{}', '{"resolver_version":"identity-v7"}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour'),
   ('fixture-due-transient', 'fixture-due-transient', 'due-transient', 900077, 900614,
    'provider_failure', true, CURRENT_TIMESTAMP - interval '1 minute', '{}', '{"resolver_version":"identity-v5"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes'),
   ('fixture-future-transient', 'fixture-future-transient', 'future-transient', 900077, 900615,
-   'deferred', true, CURRENT_TIMESTAMP + interval '5 minutes', '{}', '{"resolver_version":"identity-v6"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes');
+   'deferred', true, CURRENT_TIMESTAMP + interval '5 minutes', '{}', '{"resolver_version":"identity-v7"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes');
 
 PREPARE generated_context(jsonb, text) AS
 ${contextNode.parameters.query};
@@ -187,7 +187,7 @@ UPDATE player_enrichment_attempts
 SET next_retry_at = CURRENT_TIMESTAMP + interval '5 minutes'
 WHERE transfer_report_id = 900614;
 UPDATE player_enrichment_attempts
-SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v6"')
+SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v7"')
 WHERE transfer_report_id = 900614;
 EXECUTE generated_context('[]'::jsonb, '900077') \\gset old_unresolved_
 \\if :old_unresolved_force_resolver_retry
@@ -201,7 +201,7 @@ SELECT CASE WHEN :'old_unresolved_transfer_report_id' = '900605'
   \\quit 1
 \\endif
 UPDATE player_enrichment_attempts
-SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v6"')
+SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v7"')
 WHERE transfer_report_id = 900605;
 PREPARE generated_context_count(jsonb, text) AS
 SELECT count(*) AS historical_count,
@@ -231,7 +231,7 @@ SELECT CASE WHEN :'future_transient_transfer_report_id' = '900614'
   \\quit 1
 \\endif
 UPDATE player_enrichment_attempts
-SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v6"')
+SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v7"')
 WHERE transfer_report_id = 900614;
 EXECUTE generated_context_count('[]'::jsonb, '900077') \\gset future_version_
 SELECT :future_version_historical_count = 0
@@ -324,7 +324,7 @@ BEGIN
   IF (SELECT alias.evidence->>'transfer_report_id' FROM player_aliases alias JOIN player_provider_ids provider ON provider.player_id = alias.player_id WHERE provider.provider_player_id = '866469' AND alias.unicode_key = 'bruno guimarães') <> '900575' THEN RAISE EXCEPTION 'alias did not retain smallest report'; END IF;
   IF (SELECT count(DISTINCT evidence->>'item_key') FROM transfer_report_player_resolutions WHERE transfer_report_id IN (900575, 900585)) <> 2 THEN RAISE EXCEPTION 'per-report resolution evidence lost'; END IF;
   IF (SELECT count(*) FROM player_enrichment_attempts WHERE batch_request_key = 'generated-alias' AND retryable) <> 0 THEN RAISE EXCEPTION 'resolved alias fixture must not retry'; END IF;
-  IF (SELECT count(*) FROM player_enrichment_attempts WHERE batch_request_key = 'generated-alias' AND evidence->>'resolver_version' = 'identity-v6') <> 2 THEN RAISE EXCEPTION 'attempt resolver version missing'; END IF;
+  IF (SELECT count(*) FROM player_enrichment_attempts WHERE batch_request_key = 'generated-alias' AND evidence->>'resolver_version' = 'identity-v7') <> 2 THEN RAISE EXCEPTION 'attempt resolver version missing'; END IF;
 END
 $check$;
 
