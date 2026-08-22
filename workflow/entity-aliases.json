@@ -22,6 +22,7 @@
     { "canonical": "Rodri Hernández", "aliases": ["Rodri", "Rodri Hernandez"] },
     { "canonical": "Maghnes Akliouche", "aliases": ["Akilouche"] },
     { "canonical": "Emiliano Martinez", "aliases": ["Dibu Martinez"] },
+    { "canonical": "Julián Alvarez", "aliases": ["Julián Álvarez"] },
     { "canonical": "Cristian Romero", "aliases": ["Cuti Romero"] }
   ],
   "enrichment_player_aliases": [
@@ -29,6 +30,7 @@
     { "reported": "Udogie", "canonical": "Destiny Udogie", "current_clubs": ["Tottenham Hotspur"] },
     { "reported": "Joao Palhinha", "canonical": "João Palhinha", "current_clubs": ["FC Bayern München"] },
     { "reported": "Badiashile", "canonical": "Benoît Badiashile", "current_clubs": ["Chelsea", "Napoli"] },
+    { "reported": "Mykhaylo Mudryk", "canonical": "Mykhailo Mudryk", "current_clubs": ["Chelsea"] },
     { "reported": "Luis Suárez", "canonical": "Luis Javier Suárez", "current_clubs": ["Sporting CP"] }
   ],
   "sibling_groups": [
