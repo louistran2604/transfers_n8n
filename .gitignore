@@ -4,6 +4,7 @@
 *.gguf
 models/
 node_modules/
+graphify-out/cache/
 postgres-data/
 test-results/
 *.log

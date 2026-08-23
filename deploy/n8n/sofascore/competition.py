@@ -107,7 +107,3 @@ def select_reporting_season(
         "label": str(row.get("year") or row.get("name")),
         "state": state,
     }
-
-
-def movement_scope() -> str:
-    return "selected_domestic_league_all_clubs"

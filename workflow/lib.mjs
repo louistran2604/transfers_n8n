@@ -864,15 +864,11 @@ export function materialSnapshot(report) {
   return snapshot;
 }
 
-export function hashSnapshot(snapshot) {
-  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-}
-
 export function materialRevision(existingHash, report) {
   const snapshot = materialSnapshot(report);
   const materialSnapshotForHash = { ...snapshot };
   delete materialSnapshotForHash.is_digest_worthy;
-  const content_sha256 = hashSnapshot(materialSnapshotForHash);
+  const content_sha256 = createHash('sha256').update(JSON.stringify(materialSnapshotForHash)).digest('hex');
   return { changed: content_sha256 !== existingHash, content_sha256, snapshot };
 }
 

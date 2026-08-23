@@ -5,7 +5,7 @@ The Compose project is `n8n-ftm`. Its Docker resources use the same prefix:
 | Service | Image | Container | Persistent volume |
 | --- | --- | --- | --- |
 | n8n | `n8n-ftm:local` | `n8n-ftm` | `n8n-ftm-data` |
-| External runner | `n8n-ftm-runner:local` | `n8n-ftm-runner` | None |
+| External runner | `n8nio/runners:2.31.6` | `n8n-ftm-runner` | None |
 | twscrape | `n8n-ftm-twscrape:local` | `n8n-ftm-twscrape` | `n8n-ftm-twscrape-accounts` |
 | Sofascore enrichment | `n8n-ftm-sofascore-enrichment:local` | `n8n-ftm-sofascore-enrichment` | `n8n-ftm-sofascore-cache` |
 

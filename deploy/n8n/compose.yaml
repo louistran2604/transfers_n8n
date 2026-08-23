@@ -37,8 +37,7 @@ services:
       - transfers_net
 
   n8n-runner:
-    build: ./runners
-    image: n8n-ftm-runner:local
+    image: n8nio/runners:2.31.6@sha256:fd1c233abcbcc45a5a376132b2d48457e9eaab3c48d642eb276a314d2e4e67ed
     container_name: n8n-ftm-runner
     restart: unless-stopped
     environment:

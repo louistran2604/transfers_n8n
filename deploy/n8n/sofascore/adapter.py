@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from competition import movement_scope, select_reporting_season, validated_competition
+from competition import select_reporting_season, validated_competition
 from identity import (
     RESOLVER_VERSION,
     exact_name_candidates,
@@ -291,7 +291,7 @@ class SofascoreAdapter:
             "season": season.get("label") or None,
             "provider_season_id": season["provider_season_id"],
             "season_state": season.get("state") or None,
-            "scope": movement_scope(),
+            "scope": "selected_domestic_league_all_clubs",
             "appearances": appearances,
             "starts": starts,
             "minutes_played": minutes,
