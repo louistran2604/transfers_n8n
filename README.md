@@ -195,13 +195,86 @@ The full suite includes isolated PostgreSQL migrations, fixture-backed Python se
 
 ## Operations
 
+### Check service health and logs
+
+Run these from the repository root. The optional services only appear when their Compose profile is enabled.
+
 ```bash
-docker compose -f deploy/support/compose.yaml ps
-docker compose -f deploy/qwen3.8-27b/compose.yaml ps
-docker compose -f deploy/n8n/compose.yaml ps
-docker compose -f deploy/n8n/compose.yaml logs -f n8n
-docker compose -f deploy/qwen3.8-27b/compose.yaml logs -f llama
+docker compose -f deploy/support/compose.yaml ps transfers-postgres
+docker compose -f deploy/n8n/compose.yaml ps n8n n8n-runner
+docker compose -f deploy/n8n/compose.yaml --profile twscrape ps twscrape
+docker compose -f deploy/n8n/compose.yaml --profile enrichment ps sofascore-enrichment
+curl --fail http://127.0.0.1:5678/healthz
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'pg_isready --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
+docker compose -f deploy/n8n/compose.yaml --profile enrichment exec -T sofascore-enrichment \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
 ```
+
+Use separate terminals when following logs:
+
+```bash
+docker compose -f deploy/n8n/compose.yaml logs --since=15m --follow n8n
+docker compose -f deploy/n8n/compose.yaml --profile enrichment logs --since=15m --follow sofascore-enrichment
+docker compose -f deploy/qwen3.8-27b/compose.yaml logs --since=15m --follow llama
+```
+
+Open `http://localhost:5678/executions` for node-level n8n execution details. The queries below show the application state recorded by the workflow.
+
+### Inspect recent runs and failures
+
+```bash
+# Recent application runs. A non-succeeded status needs investigation.
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "
+SELECT id, workflow_name, external_execution_id, status, started_at, finished_at
+FROM workflow_runs
+ORDER BY started_at DESC
+LIMIT 20;
+"'
+
+# Unresolved workflow failures, newest first.
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "
+SELECT failure.id, failure.operation_name, failure.error_class,
+       failure.error_message, failure.occurrences, failure.last_seen_at,
+       run.workflow_name, run.external_execution_id
+FROM failures AS failure
+LEFT JOIN workflow_runs AS run ON run.id = failure.workflow_run_id
+WHERE failure.resolved_at IS NULL
+ORDER BY failure.last_seen_at DESC
+LIMIT 50;
+"'
+```
+
+### Check player-enrichment outcomes
+
+```bash
+# Count every recorded enrichment outcome.
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "
+SELECT status, count(*) AS attempts
+FROM player_enrichment_attempts
+GROUP BY status
+ORDER BY attempts DESC, status;
+"'
+
+# Inspect the latest enrichment outcomes and errors by reported player.
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "
+SELECT attempt.started_at, attempt.status, attempt.retryable,
+       attempt.next_retry_at, attempt.error_code, attempt.error_message,
+       report.reported_player_name, report.current_club_name,
+       report.destination_club_name
+FROM player_enrichment_attempts AS attempt
+LEFT JOIN transfer_reports AS report
+  ON report.id = attempt.transfer_report_id
+ORDER BY attempt.started_at DESC
+LIMIT 50;
+"'
+```
+
+Treat `provider_failure`, `rate_limited`, `timeout`, and `schema_failure` as enrichment service failures. `unresolved`, `ambiguous`, `deferred`, `unsupported_competition`, `missing_season`, `club_conflict`, and `unattached` are recorded outcomes; check `retryable` and `next_retry_at` to see whether another attempt is scheduled. With `PLAYER_ENRICHMENT_MODE=off`, zero enrichment attempts and provider calls are expected.
 
 Stop services without deleting data:
 
@@ -223,15 +296,45 @@ Do not add `--volumes` unless permanent deletion is intentional. Start again in 
 
 ## Repository layout
 
-```text
-database/             PostgreSQL migrations, safety tests, and data-model guide
-deploy/n8n/           n8n, external runner, twscrape, and Sofascore services
-deploy/qwen3.8-27b/   pinned llama.cpp GPU deployment and model scripts
-deploy/support/       PostgreSQL Compose project
-docs/                 authoritative X source registry
-tests/                unit, migration, container, and mock end-to-end tests
-workflow/             generator, reusable logic, extraction inputs, and generated JSON
+Refresh this snapshot from the repository root with `tree`. It omits Git data, local agent/runtime metadata, ignored environment files, caches, and generated graph output:
+
+```bash
+tree -a -L 4 \
+  -I '.git|.codex|.opencode|.agents|graphify-out|node_modules|__pycache__|*.pyc|.env'
 ```
+
+```text
+.
+├── database/                         # PostgreSQL schema, migrations, and SQL safety tests
+│   ├── migrations/                   # Ordered additive schema changes
+│   └── tests/                        # Transaction-rolled-back database regressions
+├── deploy/                           # Container definitions for each runtime component
+│   ├── n8n/                          # n8n, external runner, X collector, and enrichment
+│   │   ├── runners/                  # Runner support files (currently empty)
+│   │   ├── sofascore/                # Private player-enrichment service
+│   │   │   └── tests/                # Enrichment unit, fixture, and live-acceptance tests
+│   │   │       └── fixtures/         # Offline provider response fixtures
+│   │   └── twscrape/                 # Private X collection service and tests
+│   │       └── tests/                # Collector service tests
+│   ├── qwen3.8-27b/                  # Pinned llama.cpp/Qwen GPU deployment
+│   │   ├── models/                   # Downloaded GGUF model files
+│   │   ├── scripts/                  # Model download, extraction, and server checks
+│   │   └── tests/                    # Extraction fixtures
+│   └── support/                      # PostgreSQL Compose project
+├── docs/                             # Human-maintained source documentation
+│   └── plans/                        # Planning artifacts (currently empty)
+├── services/                         # Additional service placeholders
+│   └── transfermarkt-scraper/        # Reserved Transfermarkt scraper service
+├── tests/                            # Cross-component test harnesses
+│   ├── docker/                       # Container smoke tests
+│   ├── e2e/                          # Isolated mock n8n end-to-end tests
+│   │   └── mock/                     # Mock HTTP dependencies
+│   ├── migrations/                   # Migration and generated-query checks
+│   └── unit/                         # Dependency-free JavaScript tests
+└── workflow/                         # Generator inputs, reusable logic, and n8n JSON
+```
+
+Key root files: `README.md` is the operator guide, `AGENTS.md` is the repository work contract, and `LICENSE` is the project license. Generated workflow JSON belongs under `workflow/`; edit its source files and regenerate it instead of editing the JSON directly.
 
 Detailed guides:
 
