@@ -156,11 +156,27 @@ node workflow/build-workflows.mjs --check
 
 After a source, rule, prompt, schema, or generator change:
 
-1. Regenerate both JSON files.
-2. Run the checks below.
-3. Import the error workflow, then the main workflow.
-4. Reassign the PostgreSQL credential if n8n requests it.
-5. Publish or activate the reviewed workflow in n8n.
+```bash
+# Regenerate and validate both generated workflows.
+node workflow/build-workflows.mjs
+node workflow/build-workflows.mjs --check
+node --test tests/unit/*.test.mjs
+
+# Import the error workflow first, then the main workflow.
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n import:workflow --input=/workflows/football-transfer-monitor-errors.json
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n import:workflow --input=/workflows/football-transfer-monitor.json
+
+# Publish the imported drafts and reload n8n triggers.
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n publish:workflow --id=football-transfer-monitor-errors
+docker compose -f deploy/n8n/compose.yaml exec -T n8n \
+  n8n publish:workflow --id=football-transfer-monitor
+docker compose -f deploy/n8n/compose.yaml restart n8n
+```
+
+Reassign the PostgreSQL credential if n8n requests it before publishing.
 
 ## Verification
 
