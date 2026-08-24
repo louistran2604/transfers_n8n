@@ -20,6 +20,7 @@
     { "canonical": "Juventus", "aliases": ["Juve", "Juventus FC"] },
     { "canonical": "AFC Bournemouth", "aliases": ["Bournemouth", "AFCB"] },
     { "canonical": "Como", "aliases": ["Como 1907"] },
+    { "canonical": "Manchester City", "aliases": ["Man City"] },
     { "canonical": "Fiorentina", "aliases": ["ACF Fiorentina", "AC Fiorentina"] }
   ],
   "players": [
