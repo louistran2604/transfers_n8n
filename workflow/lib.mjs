@@ -265,6 +265,9 @@ export function buildEnrichmentRequest(contexts, {
     const formerClubKey = enrichmentNamedContext(canonicalFormerClub);
     const clubKey = currentClubKey ?? destinationClubKey ?? formerClubKey;
     const reportedNameKey = enrichmentUnicodeKey(canonicalReportedName);
+    const nameTokens = reportedNameKey.split(' ').filter(Boolean);
+    const allowSurnameOnlyMatch = nameTokens.length === 1
+      && !entityAliases.common_surnames.includes(normalizeText(nameTokens[0]));
     if (!knownProviderId && (!reportedNameKey || !clubKey)) continue;
     const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
     const latestStatus = String(context.latest_attempt_status ?? '');
@@ -280,7 +283,7 @@ export function buildEnrichmentRequest(contexts, {
       && latestStartedAt > now - 24 * 60 * 60 * 1000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? `${groupedItemKey}|report:${reportId}` : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
   const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
   const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
@@ -288,7 +291,7 @@ export function buildEnrichmentRequest(contexts, {
   const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
   const groups = new Map();
   for (const prepared of preparedContexts.toSorted(enrichmentContextComparator)) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, overrides, latestStatus, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, overrides, latestStatus, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
@@ -322,6 +325,7 @@ export function buildEnrichmentRequest(contexts, {
     groups.set(itemKey, {
       item_key: itemKey,
       reported_name: canonicalReportedName,
+      allow_surname_only_match: allowSurnameOnlyMatch,
       known_provider_player_id: knownProviderId || null,
       current_club_name: typeof canonicalCurrentClub === 'string'
         ? canonicalCurrentClub
@@ -379,7 +383,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
-    resolver_version: 'identity-v7',
+    resolver_version: 'identity-v8',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,

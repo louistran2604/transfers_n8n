@@ -247,7 +247,7 @@ historical_candidates AS (
         latest_attempt.status IN ('unresolved', 'ambiguous')
         AND (
           latest_attempt.started_at <= CURRENT_TIMESTAMP - interval '24 hours'
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v7'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8'
         )
       )
       OR (
@@ -255,12 +255,12 @@ historical_candidates AS (
         AND latest_attempt.retryable
         AND (
           latest_attempt.next_retry_at <= CURRENT_TIMESTAMP
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v7'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8'
         )
       )
     )
   ORDER BY
-    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v7') DESC,
+    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8') DESC,
     latest_attempt.started_at,
     tr.id
   LIMIT 25
@@ -319,7 +319,7 @@ SELECT
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
   latest_attempt.resolver_version AS latest_attempt_resolver_version,
-  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v7' AS force_resolver_retry,
+  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8' AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
@@ -1342,6 +1342,9 @@ if (mode !== 'off') {
     const destinationEligible = destinationClubKey !== null;
     const clubKey = currentClubKey ?? destinationClubKey ?? formerClubKey;
     const reportedNameKey = unicodeKey(canonicalReportedName);
+    const nameTokens = reportedNameKey.split(' ').filter(Boolean);
+    const allowSurnameOnlyMatch = nameTokens.length === 1
+      && !entityAliases.common_surnames.includes(normalizeAlias(nameTokens[0]));
     if (!providerId && (!reportedNameKey || !clubKey)) continue;
     const groupedItemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
     const forceResolverRetry = context.force_resolver_retry === true;
@@ -1353,7 +1356,7 @@ if (mode !== 'off') {
       && latestStarted > now - 86400000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? groupedItemKey + '|report:' + reportId : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
 }
 const enrichmentPriority = ({ context }) => {
@@ -1383,7 +1386,7 @@ const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) =
 const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
 const groups = new Map();
 for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
@@ -1400,6 +1403,7 @@ for (const prepared of preparedContexts) {
     groups.set(itemKey, {
       item_key: itemKey,
       reported_name: canonicalReportedName,
+      allow_surname_only_match: allowSurnameOnlyMatch,
       known_provider_player_id: providerId || null,
       current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
       current_club_aliases: entityAliases.club_variants[normalizeAlias(canonicalCurrentClub)] ?? [],
@@ -1440,7 +1444,7 @@ const failure = (player, code) => ({
   report_ids: player.report_ids,
   request_context: player.request_context ?? {},
   status: 'schema_failure',
-  resolver_version: 'identity-v7',
+  resolver_version: 'identity-v8',
   retryable: true,
   provider_calls: 0,
   cache_hits: 0,

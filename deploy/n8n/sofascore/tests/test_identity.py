@@ -325,6 +325,61 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual("unresolved", leading_word["status"])
         self.assertEqual([], leading_word["candidates"])
 
+    def test_non_common_surname_can_use_a_matching_club_discriminator(self):
+        payload = {
+            "results": [
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 1140599,
+                        "name": "Jamie Gittens",
+                        "team": {
+                            "id": 38,
+                            "name": "Chelsea",
+                            "sport": {"slug": "football"},
+                            "gender": "M",
+                        },
+                    },
+                },
+                {
+                    "type": "player",
+                    "entity": {
+                        "id": 1140600,
+                        "name": "Jamal Gittens",
+                        "team": {
+                            "id": 39,
+                            "name": "Other FC",
+                            "sport": {"slug": "football"},
+                            "gender": "M",
+                        },
+                    },
+                },
+            ],
+        }
+        without_opt_in = resolve_search("Gittens", payload, reported_club_name="Chelsea")
+        self.assertEqual("unresolved", without_opt_in["status"])
+        self.assertEqual([], without_opt_in["candidates"])
+
+        resolved = resolve_search(
+            "Gittens",
+            payload,
+            reported_club_name="Chelsea",
+            allow_surname_only_match=True,
+        )
+        self.assertEqual("resolved", resolved["status"])
+        self.assertEqual("1140599", resolved["identity"]["provider_player_id"])
+        self.assertEqual(80, resolved["identity"]["score"])
+        self.assertEqual(30, resolved["identity"]["margin"])
+
+        mismatched = resolve_search(
+            "Gittens",
+            payload,
+            reported_club_name="Roma",
+            allow_surname_only_match=True,
+        )
+        self.assertEqual("ambiguous", mismatched["status"])
+        self.assertNotIn("identity", mismatched)
+
     def test_curated_romero_and_club_scoped_lukaku_requests_resolve_live_cache_shapes(self):
         def payload(identifier: int, player: str, club: str) -> dict:
             return {"results": [{"type": "player", "entity": {

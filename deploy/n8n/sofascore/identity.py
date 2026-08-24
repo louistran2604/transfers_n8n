@@ -7,7 +7,7 @@ from typing import Any
 from models import DECIMAL_ID
 
 
-RESOLVER_VERSION = "identity-v7"
+RESOLVER_VERSION = "identity-v8"
 NON_DISCRIMINATING_CLUB_KEYS = {
     "",
     "free agent",
@@ -224,6 +224,7 @@ def resolve_search(
     reported_club_names: list[str] | None = None,
     destination_club_names: list[str] | None = None,
     destination_weight: int = 30,
+    allow_surname_only_match: bool = False,
     rejected_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     exact = unicode_exact_key(reported_name)
@@ -247,6 +248,12 @@ def resolve_search(
             score = 50
         elif candidate_exact in alias_keys:
             score = 45
+        elif (
+            allow_surname_only_match
+            and len(folded.split()) == 1
+            and candidate_folded.split()[-1:] == [folded]
+        ):
+            score = 50
         else:
             continue
         team = entity.get("team") or {}

@@ -358,6 +358,38 @@ test('generated enrichment request canonicalizes configured player aliases', asy
   }
 });
 
+test('surname-only enrichment opt-in is limited to non-common surnames', async () => {
+  const context = (reportedPlayerName) => ({
+    transfer_report_id: '10',
+    reported_player_name: reportedPlayerName,
+    current_club_name: 'Chelsea',
+    destination_club_name: 'Roma',
+    classification: 'advanced_negotiations',
+    move_type: 'loan',
+    provider_player_id: null,
+    aliases: [],
+    identity_overrides: [],
+  });
+  const gittens = buildEnrichmentRequest([context('Gittens')], {
+    mode: 'active', requestId: 'surname', entityAliases,
+  }).request.players[0];
+  assert.equal(gittens.allow_surname_only_match, true);
+
+  const smith = buildEnrichmentRequest([context('Smith')], {
+    mode: 'active', requestId: 'common-surname', entityAliases,
+  }).request.players[0];
+  assert.equal(smith.allow_surname_only_match, false);
+
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$', requestNode.parameters.jsCode);
+  const output = await runRequest({ all: () => [{ json: context('Gittens') }] }, () => ({
+    first: () => ({ json: { mode: 'active', workflow_run_id: '1' } }),
+  }));
+  assert.equal(output[0].json.request.players[0].allow_surname_only_match, true);
+});
+
 test('generated scoped enrichment alias rewrites only the matching current club', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const requestNode = workflow.nodes.find((node) => node.name === 'Build soccerdata enrichment request');
@@ -713,6 +745,46 @@ test('enrichment response normalization converts contract failures into one sani
   const failed = normalizeEnrichmentResponse(request, { statusCode: 200, body: 'not-json' });
   assert.deepEqual(failed.items[0].error, { code: 'enrichment_response_not_json' });
   assert.equal(failed.items[0].identity, null);
+});
+
+test('profile-only statistics failures remain renderable partial enrichment', () => {
+  const request = {
+    request_id: 'sofascore:partial',
+    players: [{ item_key: 'provider:826643', reported_name: 'Kylian Mbappé', report_ids: ['10'], request_context: {} }],
+  };
+  const normalized = normalizeEnrichmentResponse(request, {
+    statusCode: 200,
+    body: {
+      request_id: request.request_id,
+      items: [{
+        item_key: 'provider:826643',
+        status: 'partial',
+        resolver_version: 'identity-v8',
+        retryable: true,
+        identity: {
+          provider: 'sofascore',
+          provider_player_id: '826643',
+          stable_source_identifier: 'sofascore:player:826643',
+          score: 80,
+          margin: 80,
+          resolver_version: 'identity-v8',
+        },
+        profile: {
+          canonical_name: 'Kylian Mbappé',
+          current_club: { provider_team_id: '2829', name: 'Real Madrid' },
+          retrieved_at: '2026-07-30T00:00:00Z',
+        },
+        statistics: null,
+        warnings: [{ code: 'statistics_unavailable', retryable: true }],
+        provenance: { raw_payloads: { profile: {} } },
+      }],
+    },
+  });
+  assert.equal(normalized.items[0].status, 'partial');
+  assert.equal(normalized.items[0].profile.canonical_name, 'Kylian Mbappé');
+  assert.equal(normalized.items[0].statistics, null);
+  assert.equal(normalized.items[0].retryable, true);
+  assert.deepEqual(normalized.items[0].warning_codes, ['statistics_unavailable']);
 });
 
 test('enrichment response normalization preserves valid search candidates with only safe fields', () => {
@@ -1978,7 +2050,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /false AS is_current_request/);
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
-  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v7'/);
+  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v8'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);

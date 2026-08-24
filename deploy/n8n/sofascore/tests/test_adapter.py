@@ -73,7 +73,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             set(result["identity"]),
         )
         self.assertEqual("sofascore:player:826643", result["identity"]["stable_source_identifier"])
-        self.assertEqual("identity-v7", result["resolver_version"])
+        self.assertEqual("identity-v8", result["resolver_version"])
         self.assertEqual(
             {
                 "canonical_name",
@@ -652,20 +652,46 @@ class AdapterNormalizationTests(unittest.TestCase):
                 mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")
             )
 
+    def test_statistics_connection_failure_keeps_profile_as_retryable_partial(self):
+        statistics_endpoint = (
+            "player/826643/unique-tournament/8/season/77559/statistics/overall"
+        )
+        self.transport.register(statistics_endpoint, ConnectionError("404 Not Found"))
+
+        result = self.adapter.enrich(
+            mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")
+        )
+
+        self.assertEqual("partial", result["status"])
+        self.assertEqual("826643", result["identity"]["provider_player_id"])
+        self.assertIsNotNone(result["profile"])
+        self.assertIsNone(result["statistics"])
+        self.assertEqual(
+            [{"code": "statistics_unavailable", "retryable": True}],
+            result["warnings"],
+        )
+
     def test_validator_deduplicates_identical_items_and_rejects_conflicts(self):
         item = mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")
+        item["allow_surname_only_match"] = True
         request_id, deadline_ms, players = validate_batch(
             {"request_id": "run:1", "players": [item, copy.deepcopy(item)]}
         )
         self.assertEqual("run:1", request_id)
         self.assertEqual(75_000, deadline_ms)
         self.assertEqual([item["item_key"]], [player["item_key"] for player in players])
+        self.assertTrue(players[0]["allow_surname_only_match"])
         self.assertEqual([], players[0]["report_ids"])
 
         conflict = copy.deepcopy(item)
         conflict["reported_name"] = "Different"
         with self.assertRaisesRegex(ValueError, "duplicate item_key"):
             validate_batch({"request_id": "run:1", "players": [item, conflict]})
+
+        invalid = copy.deepcopy(item)
+        invalid["allow_surname_only_match"] = "true"
+        with self.assertRaisesRegex(ValueError, "allow_surname_only_match"):
+            validate_batch({"request_id": "run:1", "players": [invalid]})
 
 
 if __name__ == "__main__":

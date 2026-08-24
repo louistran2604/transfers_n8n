@@ -389,6 +389,7 @@ class SofascoreAdapter:
                 "reported_club_names": current_club_names,
                 "destination_club_names": destination_club_names,
                 "destination_weight": destination_weight,
+                "allow_surname_only_match": item.get("allow_surname_only_match", False),
                 "rejected_player_ids": rejected_player_ids,
             }
             resolution = resolve_search(item["reported_name"], search, **resolve_options)
@@ -565,11 +566,21 @@ class SofascoreAdapter:
 
         tournament_id = competition["provider_unique_tournament_id"]
         season_id = season["provider_season_id"]
-        statistics_payload, statistics_cache = self.fetch_json(
-            f"player/{player_id}/unique-tournament/{tournament_id}/season/{season_id}/statistics/overall",
-            f"statistics-{player_id}-{tournament_id}-{season_id}",
-            self.stats_max_age_hours,
-        )
+        try:
+            statistics_payload, statistics_cache = self.fetch_json(
+                f"player/{player_id}/unique-tournament/{tournament_id}/season/{season_id}/statistics/overall",
+                f"statistics-{player_id}-{tournament_id}-{season_id}",
+                self.stats_max_age_hours,
+            )
+        except ConnectionError:
+            return self._partial(
+                item_key,
+                identity,
+                profile,
+                calls_before,
+                "statistics_unavailable",
+                profile_payload,
+            )
         statistics = self._normalize_statistics(statistics_payload, competition, season)
         return {
             "item_key": item_key,
@@ -601,7 +612,9 @@ class SofascoreAdapter:
     ) -> dict[str, Any]:
         return {
             "item_key": item_key,
-            "status": "partial" if code in {"unattached", "missing_season"} else code,
+            "status": "partial"
+            if code in {"unattached", "missing_season", "statistics_unavailable"}
+            else code,
             "provider_calls": self.provider_calls - calls_before,
             "identity": identity,
             "profile": profile,
@@ -610,5 +623,8 @@ class SofascoreAdapter:
                 "adapter_schema": ADAPTER_SCHEMA,
                 "raw_payloads": {"profile": profile_payload},
             },
-            "warnings": [{"code": code, "retryable": code == "missing_season"}],
+            "warnings": [{
+                "code": code,
+                "retryable": code in {"missing_season", "statistics_unavailable"},
+            }],
         }

@@ -47,6 +47,10 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
         value.get("known_provider_player_id"),
         f"players[{index}].known_provider_player_id",
     )
+    allow_surname_only_match = value.get("allow_surname_only_match", False)
+    if not isinstance(allow_surname_only_match, bool):
+        raise ValueError(f"players[{index}].allow_surname_only_match must be a boolean")
+    normalized["allow_surname_only_match"] = allow_surname_only_match
     report_ids = value.get("report_ids", [])
     if not isinstance(report_ids, list) or any(
         not isinstance(item, str) or not item for item in report_ids
