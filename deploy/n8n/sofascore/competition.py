@@ -83,24 +83,36 @@ def select_reporting_season(
     now_timestamp = int(now.timestamp())
     start_timestamp = metadata.get("startDateTimestamp")
     end_timestamp = metadata.get("endDateTimestamp")
-    current_year = datetime.fromtimestamp(start_timestamp, timezone.utc).year if isinstance(start_timestamp, int) else None
-    selected_index = 0
     if (
-        current_year == parsed[0][0]
-        and isinstance(start_timestamp, int)
-        and start_timestamp > now_timestamp
+        isinstance(start_timestamp, bool)
+        or not isinstance(start_timestamp, int)
+        or (
+            end_timestamp is not None
+            and (
+                isinstance(end_timestamp, bool)
+                or not isinstance(end_timestamp, int)
+            )
+        )
     ):
-        selected_index = 1
-    elif (
-        current_year == parsed[0][0]
-        and isinstance(start_timestamp, int)
-        and start_timestamp <= now_timestamp
-        and (not isinstance(end_timestamp, int) or now_timestamp <= end_timestamp)
-    ):
-        selected_index = 1
-    if selected_index >= len(parsed):
         return None
-    row = parsed[selected_index][1]
+    try:
+        current_year = datetime.fromtimestamp(start_timestamp, timezone.utc).year
+        if end_timestamp is not None:
+            datetime.fromtimestamp(end_timestamp, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+    if start_timestamp > now_timestamp or (
+        start_timestamp <= now_timestamp
+        and (end_timestamp is None or now_timestamp <= end_timestamp)
+    ):
+        row = next((row for year, row in parsed if year < current_year), None)
+    elif end_timestamp is not None and end_timestamp < now_timestamp:
+        row = next((row for year, row in parsed if year <= current_year), None)
+    else:
+        return None
+    if row is None:
+        return None
     return {
         "provider_season_id": str(row["id"]),
         "label": str(row.get("year") or row.get("name")),
