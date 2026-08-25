@@ -85,7 +85,6 @@ def select_reporting_season(
     end_timestamp = metadata.get("endDateTimestamp")
     current_year = datetime.fromtimestamp(start_timestamp, timezone.utc).year if isinstance(start_timestamp, int) else None
     selected_index = 0
-    state = "latest_completed"
     if (
         current_year == parsed[0][0]
         and isinstance(start_timestamp, int)
@@ -98,12 +97,12 @@ def select_reporting_season(
         and start_timestamp <= now_timestamp
         and (not isinstance(end_timestamp, int) or now_timestamp <= end_timestamp)
     ):
-        state = "active"
+        selected_index = 1
     if selected_index >= len(parsed):
         return None
     row = parsed[selected_index][1]
     return {
         "provider_season_id": str(row["id"]),
         "label": str(row.get("year") or row.get("name")),
-        "state": state,
+        "state": "latest_completed",
     }

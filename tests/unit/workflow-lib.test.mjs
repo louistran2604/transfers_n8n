@@ -79,6 +79,7 @@ const richEnrichment = (overrides = {}) => ({
   statistics: {
     competition_name: 'LaLiga',
     season_label: '2025/26',
+    season_state: 'latest_completed',
     scope: 'selected_domestic_league_all_clubs',
     appearances: 31,
     starts: 29,
@@ -1321,6 +1322,18 @@ test('generated digest renders the same rich enrichment labels within Discord li
   assert.ok(discordCharacterCount(embed) <= 6000);
 });
 
+test('digest omits active-season statistics', () => {
+  const report = {
+    ...validReport({ player_name: 'Active Season' }),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: 'https://x.com/source/status/999000000000000008' }],
+    enrichment: richEnrichment({ statistics: { ...richEnrichment().statistics, season_state: 'active' } }),
+  };
+  const value = buildDiscordDigest([report]).embeds[0].fields[0].value;
+  assert.doesNotMatch(value, /LaLiga 2025\/26/);
+  assert.match(value, /Profile: Real Madrid/);
+});
+
 test('fresh lower-only statistics keep competition context in library and generated digests', async () => {
   const enrichment = richEnrichment({
     profile: null,
@@ -2040,6 +2053,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /'current_club_name'/);
   assert.match(candidatesNode.parameters.query, /'goals'/);
   assert.match(candidatesNode.parameters.query, /'statistics'/);
+  assert.match(candidatesNode.parameters.query, /current\.season_state = 'latest_completed'/);
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
   assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
@@ -2051,6 +2065,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
   assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v8'/);
+  assert.match(contextNode.parameters.query, /season\.season_state = 'latest_completed'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);

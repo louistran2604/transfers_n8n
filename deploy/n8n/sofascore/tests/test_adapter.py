@@ -441,7 +441,7 @@ class AdapterNormalizationTests(unittest.TestCase):
             "current_club_aliases": ["Porto", "FC Porto"],
             "aliases": [],
             "team_mapping": {"provider_team_id": "3000", "provider_unique_tournament_id": "17"},
-            "season_mapping": {"provider_season_id": "76986", "label": "2025/26", "state": "active"},
+            "season_mapping": {"provider_season_id": "76986", "label": "2025/26", "state": "latest_completed"},
         })
 
         self.assertEqual("fresh", result["status"])
@@ -454,6 +454,29 @@ class AdapterNormalizationTests(unittest.TestCase):
                 "search/all?q=Rodrigo%20Mora",
                 "player/1410240",
                 "player/1410240/unique-tournament/17/season/76986/statistics/overall",
+            ],
+            [call["endpoint"] for call in self.transport.calls],
+        )
+
+    def test_active_season_mapping_refreshes_to_latest_completed(self):
+        result = self.adapter.enrich({
+            "item_key": "provider:826643",
+            "reported_name": "Kylian Mbappé",
+            "known_provider_player_id": "826643",
+            "team_mapping": {"provider_team_id": "2829", "provider_unique_tournament_id": "8"},
+            "season_mapping": {"provider_season_id": "97268", "label": "26/27", "state": "active"},
+            "aliases": [],
+        })
+
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("77559", result["statistics"]["provider_season_id"])
+        self.assertEqual("latest_completed", result["statistics"]["season_state"])
+        self.assertEqual(
+            [
+                "player/826643",
+                "unique-tournament/8/seasons",
+                "unique-tournament/8",
+                "player/826643/unique-tournament/8/season/77559/statistics/overall",
             ],
             [call["endpoint"] for call in self.transport.calls],
         )

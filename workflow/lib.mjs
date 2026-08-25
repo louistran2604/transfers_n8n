@@ -1101,7 +1101,14 @@ function enrichmentGroups(enrichment, now) {
   const competition = namedEnrichmentValue(statistics?.competition_name);
   const season = namedEnrichmentValue(statistics?.season_label);
   const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
-  const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
+  const statisticsValid = Boolean(
+    statistics
+    && statistics.season_state === 'latest_completed'
+    && statisticsStale !== null
+    && competition
+    && season
+    && scope
+  );
   const primaryStatistics = statisticsValid ? [
     integerStatistic(statistics.appearances, 'app'),
     integerStatistic(statistics.minutes_played, 'min'),

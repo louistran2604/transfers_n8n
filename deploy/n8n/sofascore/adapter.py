@@ -536,7 +536,7 @@ class SofascoreAdapter:
                 )
 
         season = item.get("season_mapping")
-        if season:
+        if season and season.get("state") == "latest_completed":
             season = dict(season)
         else:
             tournament_id = competition["provider_unique_tournament_id"]

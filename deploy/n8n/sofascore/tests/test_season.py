@@ -48,7 +48,7 @@ class SeasonTests(unittest.TestCase):
         self.assertEqual("25/26", selected["label"])
         self.assertEqual("latest_completed", selected["state"])
 
-    def test_started_not_ended_season_is_active(self):
+    def test_started_not_ended_season_uses_latest_completed(self):
         seasons, metadata = season_data()
         metadata = copy.deepcopy(metadata)
         metadata["uniqueTournament"]["startDateTimestamp"] = int(
@@ -58,8 +58,8 @@ class SeasonTests(unittest.TestCase):
             datetime(2027, 5, 30, tzinfo=timezone.utc).timestamp()
         )
         selected = select_reporting_season(seasons, metadata, now=NOW)
-        self.assertEqual("97268", selected["provider_season_id"])
-        self.assertEqual("active", selected["state"])
+        self.assertEqual("77559", selected["provider_season_id"])
+        self.assertEqual("latest_completed", selected["state"])
 
     def test_reversed_duplicate_unparseable_and_missing_seasons_fail_closed(self):
         seasons, metadata = season_data()

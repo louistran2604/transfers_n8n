@@ -294,7 +294,10 @@ SELECT
   current.current_provider_team_id::text AS profile_current_provider_team_id,
   current.profile_fresh_until,
   current.statistics_snapshot_id::text,
-  current.statistics_fresh_until,
+  CASE WHEN current.season_state = 'latest_completed'
+       THEN current.statistics_fresh_until
+       ELSE NULL
+  END AS statistics_fresh_until,
   COALESCE(aliases.rows, '[]'::jsonb) AS aliases,
   COALESCE(overrides.rows, '[]'::jsonb) AS identity_overrides,
   CASE WHEN current.provider_team_id IS NOT NULL
@@ -382,6 +385,7 @@ LEFT JOIN provider_competitions competition
 LEFT JOIN provider_seasons season
   ON season.provider_competition_id = competition.id
  AND season.is_selected
+ AND season.season_state = 'latest_completed'
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(alias.alias ORDER BY alias.id) AS rows
   FROM player_aliases alias
@@ -937,13 +941,16 @@ fresh_candidates AS (
       'stale', current.profile_fresh_until <= CURRENT_TIMESTAMP
     )) ELSE NULL END,
     'statistics', CASE WHEN
-      current.statistics_fresh_until > CURRENT_TIMESTAMP
-      OR (
-        current.statistics_retrieved_at >= CURRENT_TIMESTAMP - interval '72 hours'
-        AND latest_attempt.status IN (
-          'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'deferred'
+      current.season_state = 'latest_completed'
+      AND (
+        current.statistics_fresh_until > CURRENT_TIMESTAMP
+        OR (
+          current.statistics_retrieved_at >= CURRENT_TIMESTAMP - interval '72 hours'
+          AND latest_attempt.status IN (
+            'provider_failure', 'rate_limited', 'timeout', 'schema_failure', 'deferred'
+          )
+          AND latest_attempt.started_at >= current.statistics_fresh_until
         )
-        AND latest_attempt.started_at >= current.statistics_fresh_until
       )
     THEN jsonb_strip_nulls(jsonb_build_object(
       'snapshot_id', current.statistics_snapshot_id::text,
@@ -1615,7 +1622,7 @@ const enrichmentGroups = (enrichment, now) => {
   const competition = namedEnrichmentValue(statistics?.competition_name);
   const season = namedEnrichmentValue(statistics?.season_label);
   const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
-  const statisticsValid = Boolean(statistics && statisticsStale !== null && competition && season && scope);
+  const statisticsValid = Boolean(statistics && statistics.season_state === 'latest_completed' && statisticsStale !== null && competition && season && scope);
   const primaryStatistics = statisticsValid ? [
     integerStatistic(statistics.appearances, 'app'),
     integerStatistic(statistics.minutes_played, 'min'),
