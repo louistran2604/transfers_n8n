@@ -157,17 +157,28 @@ test('source metadata rejects missing, malformed, and inconsistent explicit valu
 
 test('generated source upserts persist explicit reliability and independence metadata', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const insertClause = `INSERT INTO source_accounts (
+  platform, external_account_id, username, display_name, account_type,
+  is_official, priority_rank, reliability_score, seed_reliability,
+  publisher_group_key, source_kind, is_aggregator
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`;
+  const updateClause = `seed_reliability = EXCLUDED.seed_reliability,
+    publisher_group_key = EXCLUDED.publisher_group_key,
+    source_kind = EXCLUDED.source_kind,
+    is_aggregator = EXCLUDED.is_aggregator`;
+  const returningClause = `RETURNING id::text AS source_account_id, platform, external_account_id, username,
+  display_name, account_type, is_official, priority_rank, reliability_score,
+  seed_reliability, publisher_group_key, source_kind, is_aggregator;`;
   for (const name of ['Upsert source accounts', 'Upsert sample source account']) {
     const query = workflow.nodes.find((node) => node.name === name).parameters.query;
-    for (const field of ['seed_reliability', 'publisher_group_key', 'source_kind', 'is_aggregator']) {
-      assert.match(query, new RegExp(`\\b${field}\\b`));
-    }
+    assert.ok(query.includes(insertClause));
+    assert.ok(query.includes(updateClause));
+    assert.ok(query.includes(returningClause));
   }
+  const expectedParams = ['x', '242077026', 'AdamCrafton_', 'Adam Crafton', 'individual', false, 4, 0.7, 0.7, 'reporter:adamcrafton', 'journalist', false];
   for (const name of ['Load generated sources', 'Load sample source']) {
-    const jsCode = workflow.nodes.find((node) => node.name === name).parameters.jsCode;
-    for (const field of ['seed_reliability', 'publisher_group_key', 'source_kind', 'is_aggregator']) {
-      assert.match(jsCode, new RegExp(`\\bsource\\.${field}\\b`));
-    }
+    const output = Function(workflow.nodes.find((node) => node.name === name).parameters.jsCode)();
+    assert.deepEqual(output[0].json.params, expectedParams);
   }
 });
 

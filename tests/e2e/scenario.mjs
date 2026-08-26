@@ -60,7 +60,7 @@ const transferOnlyReport = {
   player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid', destination_club_name: 'Liverpool',
   classification: 'rumor', move_type: 'permanent', confidence: 0.8,
   fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
-  preferred_source: { ...sourceMetadata({ username: 'David_Ornstein', display_name: 'David Ornstein', external_account_id: '1', account_type: 'individual' }), display_name: 'David Ornstein' },
+  preferred_source: { ...sourceMetadata({ username: 'David_Ornstein', display_name: 'David Ornstein', external_account_id: '1', account_type: 'individual', source_kind: 'journalist', publisher_group_key: 'reporter:david-ornstein', is_aggregator: false, seed_reliability: 0.95 }), display_name: 'David Ornstein' },
   sources: [{ post_url: 'https://x.com/David_Ornstein/status/999000000000000301' }],
 };
 const shadowValue = buildDiscordDigest([transferOnlyReport]).embeds[0].fields[0].value;
@@ -213,7 +213,7 @@ const reports = Array.from({ length: 20 }, (_, index) => ({
   player_name: `Mock Player ${index}`, current_club_name: 'Mock FC', destination_club_name: 'Test United',
   classification: index > 14 ? 'official_confirmed' : 'rumor', move_type: 'permanent', confidence: 0.8,
   fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
-  preferred_source: { ...sourceMetadata({ username: index > 14 ? 'someone' : 'David_Ornstein', display_name: 'Mock Source', external_account_id: String(900000000000000000n + BigInt(index)), account_type: 'individual' }), display_name: 'Mock Source' },
+  preferred_source: { ...sourceMetadata({ username: index > 14 ? 'someone' : 'David_Ornstein', display_name: 'Mock Source', external_account_id: String(900000000000000000n + BigInt(index)), account_type: 'individual', source_kind: 'journalist', publisher_group_key: index > 14 ? 'reporter:someone' : 'reporter:david-ornstein', is_aggregator: false, seed_reliability: index > 14 ? 0.7 : 0.95 }), display_name: 'Mock Source' },
   sources: [{ post_url: `https://x.com/mock/status/${900000000000000000n + BigInt(index)}` }],
 }));
 reports.push(...reports.slice(0, 3));
