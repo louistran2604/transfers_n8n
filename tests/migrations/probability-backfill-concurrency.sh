@@ -4,17 +4,25 @@ set -eu
 container=$1
 temporary=$(mktemp -d)
 
-cleanup() {
+cleanup_database() {
   docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
-    --command "DELETE FROM probability_backfill_replays WHERE raw_post_id IN (
+    --command "DELETE FROM probability_backfill_claim_attempts WHERE raw_post_id IN (
+        SELECT id FROM raw_posts WHERE external_post_id LIKE '940000000000000%'
+      );
+      DELETE FROM probability_backfill_replays WHERE raw_post_id IN (
         SELECT id FROM raw_posts WHERE external_post_id LIKE '940000000000000%'
       );
       DELETE FROM raw_posts WHERE external_post_id LIKE '940000000000000%';
-      DELETE FROM source_accounts WHERE external_account_id = '940000000000000001';" \
-    >/dev/null 2>&1 || true
+      DELETE FROM source_accounts WHERE external_account_id = '940000000000000001';"
+}
+
+cleanup() {
+  cleanup_database >/dev/null 2>&1 || true
   rm -rf "$temporary"
 }
 trap cleanup EXIT INT TERM
+
+cleanup_database >/dev/null
 
 docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
   --command "WITH source AS (

@@ -40,6 +40,24 @@ CREATE INDEX probability_backfill_replays_retry_idx
   ON probability_backfill_replays (lease_expires_at, raw_post_id)
   WHERE completed_at IS NULL;
 
+CREATE TABLE probability_backfill_claim_attempts (
+  raw_post_id bigint NOT NULL REFERENCES raw_posts (id) ON DELETE RESTRICT,
+  extraction_schema_version text NOT NULL CHECK (btrim(extraction_schema_version) <> ''),
+  run_key text NOT NULL CHECK (btrim(run_key) <> ''),
+  evaluation_time timestamptz NOT NULL,
+  claimed_at timestamptz NOT NULL,
+  lease_expires_at timestamptz NOT NULL,
+  completed_at timestamptz,
+  outcome text CHECK (outcome IN ('transfer', 'non_transfer')),
+  audit_reports jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(audit_reports) = 'array'),
+  last_error text,
+  PRIMARY KEY (raw_post_id, extraction_schema_version, run_key),
+  CHECK ((completed_at IS NULL AND outcome IS NULL) OR (completed_at IS NOT NULL AND outcome IS NOT NULL))
+);
+
+CREATE INDEX probability_backfill_claim_attempts_run_idx
+  ON probability_backfill_claim_attempts (run_key, extraction_schema_version, raw_post_id);
+
 CREATE FUNCTION claim_probability_backfill(
   requested_mode text,
   requested_evaluation_time timestamptz,
@@ -114,7 +132,22 @@ BEGIN
         updated_at = CURRENT_TIMESTAMP
     WHERE probability_backfill_replays.completed_at IS NULL
       AND probability_backfill_replays.lease_expires_at <= CURRENT_TIMESTAMP
-    RETURNING probability_backfill_replays.raw_post_id
+    RETURNING probability_backfill_replays.raw_post_id,
+      probability_backfill_replays.extraction_schema_version,
+      probability_backfill_replays.claimed_run_key,
+      probability_backfill_replays.evaluation_time,
+      probability_backfill_replays.claimed_at,
+      probability_backfill_replays.lease_expires_at
+  ), attempts AS (
+    INSERT INTO probability_backfill_claim_attempts (
+      raw_post_id, extraction_schema_version, run_key, evaluation_time,
+      claimed_at, lease_expires_at
+    )
+    SELECT claimed.raw_post_id, claimed.extraction_schema_version, claimed.claimed_run_key,
+      claimed.evaluation_time, claimed.claimed_at, claimed.lease_expires_at
+    FROM claimed
+    ON CONFLICT ON CONSTRAINT probability_backfill_claim_attempts_pkey DO NOTHING
+    RETURNING probability_backfill_claim_attempts.raw_post_id
   )
   SELECT row_number() OVER (ORDER BY post.posted_at, post.id),
     post.id, post.external_post_id, post.post_url, post.content, post.posted_at,
@@ -125,6 +158,7 @@ BEGIN
   FROM claimed
   JOIN raw_posts post ON post.id = claimed.raw_post_id
   JOIN source_accounts source ON source.id = post.source_account_id
+  CROSS JOIN (SELECT count(*) FROM attempts) inserted_attempts
   ORDER BY post.posted_at, post.id;
 END;
 $$;
@@ -138,15 +172,29 @@ CREATE FUNCTION fail_probability_backfill_claim(
 RETURNS bigint
 LANGUAGE sql
 AS $$
-  UPDATE probability_backfill_replays
-  SET lease_expires_at = CURRENT_TIMESTAMP,
-      last_error = requested_error,
-      updated_at = CURRENT_TIMESTAMP
-  WHERE raw_post_id = requested_raw_post_id
-    AND extraction_schema_version = requested_schema_version
-    AND claimed_run_key = requested_run_key
-    AND completed_at IS NULL
-  RETURNING raw_post_id;
+  WITH released AS (
+    UPDATE probability_backfill_replays
+    SET lease_expires_at = CURRENT_TIMESTAMP,
+        last_error = requested_error,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE raw_post_id = requested_raw_post_id
+      AND extraction_schema_version = requested_schema_version
+      AND claimed_run_key = requested_run_key
+      AND completed_at IS NULL
+    RETURNING probability_backfill_replays.raw_post_id
+  ), attempt AS (
+    UPDATE probability_backfill_claim_attempts
+    SET lease_expires_at = CURRENT_TIMESTAMP,
+        last_error = requested_error
+    WHERE raw_post_id = requested_raw_post_id
+      AND extraction_schema_version = requested_schema_version
+      AND run_key = requested_run_key
+      AND completed_at IS NULL
+      AND EXISTS (SELECT 1 FROM released)
+    RETURNING probability_backfill_claim_attempts.raw_post_id
+  )
+  SELECT released.raw_post_id
+  FROM released CROSS JOIN (SELECT count(*) FROM attempt) updated_attempt;
 $$;
 
 CREATE FUNCTION complete_probability_backfill(
@@ -161,9 +209,10 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   replay probability_backfill_replays%ROWTYPE;
-  payload jsonb;
+  report_payload jsonb;
   player_id bigint;
   report_id bigint;
+  v_audit_reports jsonb;
 BEGIN
   IF jsonb_typeof(requested_reports) IS DISTINCT FROM 'array' THEN
     RAISE EXCEPTION 'backfill reports must be a JSON array';
@@ -182,23 +231,23 @@ BEGIN
     RAISE EXCEPTION 'backfill claim is missing, expired, or owned by another run';
   END IF;
 
-  FOR payload IN SELECT value FROM jsonb_array_elements(requested_reports)
+  FOR report_payload IN SELECT value FROM jsonb_array_elements(requested_reports)
   LOOP
-    IF payload->>'probability_mode' IS DISTINCT FROM 'shadow'
-        OR (payload->>'evaluated_at')::timestamptz IS DISTINCT FROM requested_evaluation_time
-        OR jsonb_typeof(payload->'sources') IS DISTINCT FROM 'array'
-        OR jsonb_array_length(payload->'sources') <> 1
-        OR (payload #>> '{sources,0,raw_post_id}')::bigint <> requested_raw_post_id
-        OR payload #>> '{sources,0,extraction_schema_version}' IS DISTINCT FROM requested_schema_version THEN
+    IF report_payload->>'probability_mode' IS DISTINCT FROM 'shadow'
+        OR (report_payload->>'evaluated_at')::timestamptz IS DISTINCT FROM requested_evaluation_time
+        OR jsonb_typeof(report_payload->'sources') IS DISTINCT FROM 'array'
+        OR jsonb_array_length(report_payload->'sources') <> 1
+        OR (report_payload #>> '{sources,0,raw_post_id}')::bigint <> requested_raw_post_id
+        OR report_payload #>> '{sources,0,extraction_schema_version}' IS DISTINCT FROM requested_schema_version THEN
       RAISE EXCEPTION 'backfill report does not match its shadow claim';
     END IF;
 
     INSERT INTO players (identity_key, display_name, normalized_name)
-    VALUES (payload->>'player_identity_key', payload->>'player_name', payload->>'normalized_player_name')
+    VALUES (report_payload->>'player_identity_key', report_payload->>'player_name', report_payload->>'normalized_player_name')
     ON CONFLICT (identity_key) DO NOTHING
     RETURNING id INTO player_id;
     IF player_id IS NULL THEN
-      SELECT id INTO player_id FROM players WHERE identity_key = payload->>'player_identity_key';
+      SELECT id INTO player_id FROM players WHERE identity_key = report_payload->>'player_identity_key';
     END IF;
 
     INSERT INTO transfer_reports (
@@ -209,31 +258,50 @@ BEGIN
       has_option_to_buy, has_obligation_to_buy, sell_on_percentage, medical_status,
       agreement_status, confidence, first_reported_at, last_reported_at, normalized_data
     ) VALUES (
-      payload->>'dedupe_key', player_id, payload->>'player_name',
-      NULLIF(payload->>'current_club_name', ''), NULLIF(payload->>'destination_club_name', ''),
-      payload->>'classification', COALESCE(payload->>'move_type', 'unknown'),
-      NULLIF(payload->>'fee_amount', '')::numeric, NULLIF(payload->>'fee_currency', ''),
-      NULLIF(payload->>'add_ons_amount', '')::numeric, NULLIF(payload->>'add_ons_currency', ''),
-      NULLIF(payload->>'release_clause_amount', '')::numeric, NULLIF(payload->>'release_clause_currency', ''),
-      NULLIF(payload->>'contract_length_months', '')::integer,
-      NULLIF(payload->>'contract_expires_on', '')::date, NULLIF(payload->>'loan_ends_on', '')::date,
-      NULLIF(payload->>'has_option_to_buy', '')::boolean,
-      NULLIF(payload->>'has_obligation_to_buy', '')::boolean,
-      NULLIF(payload->>'sell_on_percentage', '')::numeric,
-      payload->>'medical_status', payload->>'agreement_status',
-      (payload->>'extraction_confidence')::numeric,
-      (payload->>'first_reported_at')::timestamptz,
-      (payload->>'last_reported_at')::timestamptz,
-      COALESCE(payload->'normalized_data', '{}'::jsonb)
+      report_payload->>'dedupe_key', player_id, report_payload->>'player_name',
+      NULLIF(report_payload->>'current_club_name', ''), NULLIF(report_payload->>'destination_club_name', ''),
+      report_payload->>'classification', COALESCE(report_payload->>'move_type', 'unknown'),
+      NULLIF(report_payload->>'fee_amount', '')::numeric, NULLIF(report_payload->>'fee_currency', ''),
+      NULLIF(report_payload->>'add_ons_amount', '')::numeric, NULLIF(report_payload->>'add_ons_currency', ''),
+      NULLIF(report_payload->>'release_clause_amount', '')::numeric, NULLIF(report_payload->>'release_clause_currency', ''),
+      NULLIF(report_payload->>'contract_length_months', '')::integer,
+      NULLIF(report_payload->>'contract_expires_on', '')::date, NULLIF(report_payload->>'loan_ends_on', '')::date,
+      NULLIF(report_payload->>'has_option_to_buy', '')::boolean,
+      NULLIF(report_payload->>'has_obligation_to_buy', '')::boolean,
+      NULLIF(report_payload->>'sell_on_percentage', '')::numeric,
+      report_payload->>'medical_status', report_payload->>'agreement_status',
+      (report_payload->>'extraction_confidence')::numeric,
+      (report_payload->>'first_reported_at')::timestamptz,
+      (report_payload->>'last_reported_at')::timestamptz,
+      COALESCE(report_payload->'normalized_data', '{}'::jsonb)
     )
     ON CONFLICT (dedupe_key) DO NOTHING
     RETURNING id INTO report_id;
     IF report_id IS NULL THEN
-      SELECT id INTO report_id FROM transfer_reports WHERE dedupe_key = payload->>'dedupe_key';
+      SELECT id INTO report_id FROM transfer_reports WHERE dedupe_key = report_payload->>'dedupe_key';
     END IF;
 
-    PERFORM apply_probability_v1_shadow(report_id, payload);
+    PERFORM apply_probability_v1_shadow(report_id, report_payload);
   END LOOP;
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'raw_post_id', requested_raw_post_id::text,
+    'report_id', report.id::text,
+    'stage', audit_payload.value #>> '{sources,0,normalized_evidence,stage_signal}',
+    'probability', revision.normalized_probability,
+    'explanation', revision.explanation
+  ) ORDER BY report.id), '[]'::jsonb)
+  INTO v_audit_reports
+  FROM jsonb_array_elements(requested_reports) audit_payload(value)
+  JOIN transfer_reports report ON report.dedupe_key = audit_payload.value->>'dedupe_key'
+  LEFT JOIN LATERAL (
+    SELECT scored_revision.normalized_probability, scored_revision.explanation
+    FROM transfer_probability_revisions scored_revision
+    WHERE scored_revision.transfer_report_id = report.id
+      AND scored_revision.evaluated_at = requested_evaluation_time
+    ORDER BY scored_revision.revision_number DESC, scored_revision.id DESC
+    LIMIT 1
+  ) revision ON true;
 
   UPDATE probability_backfill_replays
   SET completed_at = CURRENT_TIMESTAMP,
@@ -245,6 +313,15 @@ BEGIN
   WHERE raw_post_id = requested_raw_post_id
     AND extraction_schema_version = requested_schema_version
   RETURNING probability_backfill_replays.raw_post_id INTO requested_raw_post_id;
+  UPDATE probability_backfill_claim_attempts
+  SET completed_at = CURRENT_TIMESTAMP,
+      outcome = CASE WHEN jsonb_array_length(requested_reports) = 0 THEN 'non_transfer' ELSE 'transfer' END,
+      audit_reports = v_audit_reports,
+      lease_expires_at = CURRENT_TIMESTAMP,
+      last_error = NULL
+  WHERE raw_post_id = requested_raw_post_id
+    AND extraction_schema_version = requested_schema_version
+    AND run_key = requested_run_key;
   RETURN requested_raw_post_id;
 END;
 $$;
@@ -258,32 +335,24 @@ LANGUAGE sql
 STABLE
 AS $$
   WITH run_replays AS (
-    SELECT * FROM probability_backfill_replays
-    WHERE claimed_run_key = requested_run_key
+    SELECT raw_post_id, completed_at, outcome, audit_reports
+    FROM probability_backfill_claim_attempts
+    WHERE run_key = requested_run_key
       AND extraction_schema_version = requested_schema_version
   ), scored AS (
-    SELECT DISTINCT replay.raw_post_id, report.id AS report_id,
-      evidence.stage_signal AS transfer_stage,
-      revision.normalized_probability, revision.explanation AS probability_explanation,
+    SELECT replay.raw_post_id, (snapshot->>'report_id')::bigint AS report_id,
+      snapshot->>'stage' AS transfer_stage,
+      (snapshot->>'probability')::numeric AS normalized_probability,
+      snapshot->'explanation' AS probability_explanation,
       CASE
-        WHEN revision.normalized_probability IS NULL THEN 'unscored'
-        WHEN revision.normalized_probability < 0.25 THEN '00-24'
-        WHEN revision.normalized_probability < 0.50 THEN '25-49'
-        WHEN revision.normalized_probability < 0.75 THEN '50-74'
+        WHEN snapshot->>'probability' IS NULL THEN 'unscored'
+        WHEN (snapshot->>'probability')::numeric < 0.25 THEN '00-24'
+        WHEN (snapshot->>'probability')::numeric < 0.50 THEN '25-49'
+        WHEN (snapshot->>'probability')::numeric < 0.75 THEN '50-74'
         ELSE '75-100'
       END AS probability_bucket
     FROM run_replays replay
-    JOIN transfer_evidence evidence ON evidence.raw_post_id = replay.raw_post_id
-      AND evidence.extraction_schema_version = replay.extraction_schema_version
-    JOIN transfer_reports report ON report.id = evidence.transfer_report_id
-    LEFT JOIN LATERAL (
-      SELECT scored_revision.normalized_probability, scored_revision.explanation
-      FROM transfer_probability_revisions scored_revision
-      WHERE scored_revision.transfer_report_id = report.id
-        AND scored_revision.evaluated_at = replay.evaluation_time
-      ORDER BY scored_revision.revision_number DESC, scored_revision.id DESC
-      LIMIT 1
-    ) revision ON true
+    CROSS JOIN LATERAL jsonb_array_elements(replay.audit_reports) snapshot
   ), sample AS (
     SELECT *, row_number() OVER (
       PARTITION BY transfer_stage, probability_bucket ORDER BY raw_post_id, report_id

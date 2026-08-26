@@ -181,12 +181,26 @@
       }
     },
     {
+      "id": "prepare-failed-replay-release",
+      "name": "Prepare failed replay release",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map((item) => ({ json: { params: [\n  String(item.json.params?.[0] ?? ''),\n  'qwen-evidence-v1',\n  String($execution.id),\n  String(item.json.params?.[2] ?? 'Malformed or schema-invalid Qwen response'),\n] } }));"
+      }
+    },
+    {
       "id": "release-failed-claim",
       "name": "Release failed claim",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2,
       "position": [
-        640,
+        860,
         120
       ],
       "parameters": {
@@ -195,7 +209,7 @@
         "options": {
           "queryBatching": "transaction",
           "outputLargeFormatNumbers": "text",
-          "queryReplacement": "={{ [$json.params[0], 'qwen-evidence-v1', String($execution.id), $json.params[2]] }}"
+          "queryReplacement": "={{ $json.params }}"
         }
       },
       "credentials": {
@@ -324,7 +338,7 @@
         ],
         [
           {
-            "node": "Release failed claim",
+            "node": "Prepare failed replay release",
             "type": "main",
             "index": 0
           }
@@ -347,6 +361,17 @@
         [
           {
             "node": "Aggregate replay outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare failed replay release": {
+      "main": [
+        [
+          {
+            "node": "Release failed claim",
             "type": "main",
             "index": 0
           }

@@ -145,7 +145,8 @@ for test_file in \
   psql_file "$main_container" transfers "$test_file"
 done
 
-"$root_dir/tests/migrations/probability-backfill-concurrency.sh" "$main_container"
+"$root_dir/tests/migrations/probability-backfill-repeatability.sh" \
+  "$main_container" "$root_dir/tests/migrations/probability-backfill-concurrency.sh"
 "$root_dir/tests/migrations/probability-v1-concurrency.sh" "$main_container"
 
 node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \

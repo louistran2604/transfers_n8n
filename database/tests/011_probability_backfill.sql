@@ -106,6 +106,7 @@ SELECT complete_probability_backfill(
 CREATE TEMPORARY TABLE idempotency_before AS
 SELECT
   (SELECT count(*) FROM probability_backfill_replays) AS replay_count,
+  (SELECT count(*) FROM probability_backfill_claim_attempts) AS attempt_count,
   (SELECT count(*) FROM transfer_evidence) AS evidence_count,
   (SELECT count(*) FROM transfer_probability_revisions) AS probability_count,
   (SELECT coalesce(sum(version_counter), 0) FROM transfer_cases) AS version_count;
@@ -133,9 +134,23 @@ SELECT complete_probability_backfill(
 );
 SELECT pg_temp.assert_true('identical completion was not idempotent',
   (SELECT count(*) FROM probability_backfill_replays) = (SELECT replay_count FROM idempotency_before)
+  AND (SELECT count(*) FROM probability_backfill_claim_attempts) = (SELECT attempt_count FROM idempotency_before)
   AND (SELECT count(*) FROM transfer_evidence) = (SELECT evidence_count FROM idempotency_before)
   AND (SELECT count(*) FROM transfer_probability_revisions) = (SELECT probability_count FROM idempotency_before)
   AND (SELECT coalesce(sum(version_counter), 0) FROM transfer_cases) = (SELECT version_count FROM idempotency_before));
+
+CREATE TEMPORARY TABLE audit_snapshot AS
+SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1');
+SELECT pg_temp.assert_true('audit output is missing deterministic distributions/sample',
+  (SELECT audit ? 'stage_counts' AND audit ? 'probability_buckets' AND audit ? 'post_counts'
+      AND audit ? 'review_sample'
+      AND audit #>> '{stage_counts,advanced}' = '1'
+      AND audit #>> '{post_counts,completed}' = '2'
+      AND audit #>> '{post_counts,non_transfer}' = '1'
+      AND audit #>> '{post_counts,failed_or_retryable}' = '98'
+      AND jsonb_array_length(audit->'review_sample') = 1
+      AND audit #>> '{review_sample,0,raw_post_id}' = :'transfer_raw_id'
+   FROM audit_snapshot));
 
 UPDATE probability_backfill_replays
 SET lease_expires_at = CURRENT_TIMESTAMP - interval '1 second'
@@ -148,18 +163,8 @@ SELECT pg_temp.assert_true('expired claims were not retryable or completed claim
   (SELECT count(*) = 100 FROM retry_claim)
   AND NOT EXISTS (SELECT 1 FROM retry_claim WHERE raw_post_id IN (:transfer_raw_id, :ignored_raw_id)));
 
-CREATE TEMPORARY TABLE audit_snapshot AS
-SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1');
-SELECT pg_temp.assert_true('audit output is missing deterministic distributions/sample',
-  (SELECT audit ? 'stage_counts' AND audit ? 'probability_buckets' AND audit ? 'post_counts'
-      AND audit ? 'review_sample'
-      AND audit #>> '{stage_counts,advanced}' = '1'
-      AND audit #>> '{post_counts,completed}' = '2'
-      AND audit #>> '{post_counts,non_transfer}' = '1'
-      AND jsonb_array_length(audit->'review_sample') = 1
-      AND audit #>> '{review_sample,0,raw_post_id}' = :'transfer_raw_id'
-   FROM audit_snapshot)
-  AND (SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1'))
+SELECT pg_temp.assert_true('run audit changed after expired posts were reclaimed',
+  (SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1'))
     = (SELECT audit FROM audit_snapshot));
 
 ROLLBACK;

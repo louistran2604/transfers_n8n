@@ -2239,10 +2239,17 @@ return $input.all().map((item) => ({ json: {
 SELECT complete_probability_backfill(
   $1::bigint, $2::text, $3::text, $4::timestamptz, $5::jsonb
 )::text AS raw_post_id;`),
-    postgresNode('Release failed claim', [640, 120], `
+    codeNode('Prepare failed replay release', [640, 120], `
+return $input.all().map((item) => ({ json: { params: [
+  String(item.json.params?.[0] ?? ''),
+  'qwen-evidence-v1',
+  String($execution.id),
+  String(item.json.params?.[2] ?? 'Malformed or schema-invalid Qwen response'),
+] } }));`),
+    postgresNode('Release failed claim', [860, 120], `
 SELECT fail_probability_backfill_claim(
   $1::bigint, $2::text, $3::text, $4::text
-)::text AS raw_post_id;`, `={{ [$json.params[0], 'qwen-evidence-v1', String($execution.id), $json.params[2]] }}`),
+)::text AS raw_post_id;`),
     codeNode('Aggregate replay outcomes', [1080, 0], `
 return [{ json: { params: [String($execution.id), 'qwen-evidence-v1'] } }];`),
     postgresNode('Build deterministic audit', [1300, 0], `
@@ -2260,9 +2267,10 @@ SELECT audit FROM probability_backfill_audit($1::text, $2::text);`),
       'Build backfill Qwen request': { main: [[{ node: 'Re-extract with Qwen', type: 'main', index: 0 }]] },
       'Re-extract with Qwen': { main: [[{ node: 'Validate backfill Qwen response', type: 'main', index: 0 }]] },
       'Validate backfill Qwen response': { main: [[{ node: 'Backfill Qwen response valid', type: 'main', index: 0 }]] },
-      'Backfill Qwen response valid': { main: [[{ node: 'Build shadow report payloads', type: 'main', index: 0 }], [{ node: 'Release failed claim', type: 'main', index: 0 }]] },
+      'Backfill Qwen response valid': { main: [[{ node: 'Build shadow report payloads', type: 'main', index: 0 }], [{ node: 'Prepare failed replay release', type: 'main', index: 0 }]] },
       'Build shadow report payloads': { main: [[{ node: 'Persist shadow results', type: 'main', index: 0 }]] },
       'Persist shadow results': { main: [[{ node: 'Aggregate replay outcomes', type: 'main', index: 0 }]] },
+      'Prepare failed replay release': { main: [[{ node: 'Release failed claim', type: 'main', index: 0 }]] },
       'Release failed claim': { main: [[{ node: 'Aggregate replay outcomes', type: 'main', index: 0 }]] },
       'Aggregate replay outcomes': { main: [[{ node: 'Build deterministic audit', type: 'main', index: 0 }]] },
     },
