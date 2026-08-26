@@ -18,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outputPath = resolve(here, 'football-transfer-monitor.json');
 const errorOutputPath = resolve(here, 'football-transfer-monitor-errors.json');
+const backfillOutputPath = resolve(here, 'football-transfer-probability-backfill.json');
 const womensBlacklistPath = resolve(here, 'womens-football-blacklist.txt');
 const entityAliasesPath = resolve(here, 'entity-aliases.json');
 
@@ -2136,6 +2137,143 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
   };
 }
 
+function backfillPayloadCode() {
+  return `
+${runtimeHelpers()}
+const requests = new Map($('Build backfill Qwen request').all().map((item) => [String(item.json.raw_post_id), item.json]));
+const grouped = new Map();
+for (const item of $input.all()) {
+  const rawPostId = String(item.json.raw_post_id ?? item.json.report?.raw_post_id ?? '');
+  if (!/^\\d+$/.test(rawPostId)) throw new Error('Missing backfill raw-post identifier');
+  const group = grouped.get(rawPostId) ?? { ignored: false, reports: [] };
+  group.ignored ||= item.json.ignored === true;
+  if (item.json.report) group.reports.push(canonicalizeReport(item.json.report));
+  grouped.set(rawPostId, group);
+}
+const outputs = [];
+for (const [rawPostId, group] of grouped) {
+  const request = requests.get(rawPostId);
+  if (!request) throw new Error('Missing backfill request metadata for raw post ' + rawPostId);
+  const payloads = group.ignored ? [] : group.reports.map((report) => {
+    const dedupe_key = key(report);
+    const normalizedEvidence = report.normalized_evidence;
+    return {
+      ...report,
+      dedupe_key,
+      player_identity_key: normalize(report.player_name).replace(/\\s/g, '-'),
+      normalized_player_name: normalize(report.player_name),
+      extraction_confidence: report.extraction_confidence,
+      first_reported_at: report.posted_at,
+      last_reported_at: report.posted_at,
+      normalized_data: {
+        former_club_name: report.former_club_name ?? null,
+        reported_name_key: unicodeKey(report.player_name),
+        current_club_key: namedKey(report.current_club_name),
+        destination_club_key: namedKey(report.destination_club_name),
+      },
+      evaluated_at: request.evaluation_time,
+      probability_mode: 'shadow',
+      sources: [{
+        raw_post_id: rawPostId,
+        posted_at: report.posted_at,
+        post_url: report.post_url,
+        source: report.source,
+        report_ordinal: report.report_ordinal,
+        extraction_schema_version: 'qwen-evidence-v1',
+        ...normalizedEvidence,
+        normalized_evidence: normalizedEvidence,
+      }],
+    };
+  });
+  outputs.push({ json: { params: [rawPostId, 'qwen-evidence-v1', String($execution.id), request.evaluation_time, JSON.stringify(payloads)] } });
+}
+return outputs;`;
+}
+
+function probabilityBackfillWorkflow({ prompt, schema }) {
+  const schemaJson = JSON.stringify(schema);
+  const validateCode = qwenParseCode()
+    .replace("$('Build Qwen request').all()", "$('Build backfill Qwen request').all()")
+    .replace("if (!parsed.transfer_related) return", "if (!parsed.transfer_related || parsed.reports.length === 0) return");
+  const nodes = [
+    node('Manual shadow backfill', 'n8n-nodes-base.manualTrigger', [-900, 0], {}, { typeVersion: 1 }),
+    codeNode('Prepare shadow backfill', [-680, 0], `
+const selected = String($env.PROBABILITY_MODE ?? '').trim();
+if (selected !== 'shadow') return [];
+const evaluationTime = new Date().toISOString();
+return [{ json: { params: ['shadow', evaluationTime, String($execution.id), 'qwen-evidence-v1'], evaluation_time: evaluationTime } }];`),
+    postgresNode('Claim replay batch', [-460, 0], `
+SELECT * FROM claim_probability_backfill(
+  $1::text, $2::timestamptz, $3::text, $4::text, 100, interval '15 minutes'
+);`),
+    codeNode('Build backfill Qwen request', [-240, 0], `
+const prompt = ${JSON.stringify(prompt)};
+const schema = ${schemaJson};
+const llamaSchema = JSON.parse(JSON.stringify(schema));
+delete llamaSchema.properties.reports.items.properties.player_name.minLength;
+return $input.all().map((item) => ({ json: {
+  raw_post_id: String(item.json.raw_post_id), external_post_id: String(item.json.external_post_id),
+  post_url: item.json.post_url, posted_at: item.json.posted_at, evaluation_time: item.json.evaluation_time,
+  evaluated_at: item.json.evaluation_time, probability_mode: 'shadow',
+  source: {
+    external_account_id: item.json.external_account_id, username: item.json.username,
+    display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank),
+    reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability),
+    publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind,
+    is_aggregator: item.json.is_aggregator, is_official: item.json.is_official,
+  },
+  body: { model: 'qwen3.8-27b', temperature: 0, messages: [
+    { role: 'system', content: prompt }, { role: 'user', content: item.json.content },
+  ], response_format: { type: 'json_schema', json_schema: {
+    name: 'football_transfer_extraction', strict: true, schema: llamaSchema,
+  } } },
+} }));`),
+    httpNode('Re-extract with Qwen', [-20, 0], {
+      method: 'POST', url: '={{ $env.QWEN_CHAT_COMPLETIONS_URL || "http://llama:8080/v1/chat/completions" }}',
+      sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
+    }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
+    codeNode('Validate backfill Qwen response', [200, 0], validateCode),
+    node('Backfill Qwen response valid', 'n8n-nodes-base.if', [420, 0], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Build shadow report payloads', [640, -100], backfillPayloadCode()),
+    postgresNode('Persist shadow results', [860, -100], `
+SELECT complete_probability_backfill(
+  $1::bigint, $2::text, $3::text, $4::timestamptz, $5::jsonb
+)::text AS raw_post_id;`),
+    postgresNode('Release failed claim', [640, 120], `
+SELECT fail_probability_backfill_claim(
+  $1::bigint, $2::text, $3::text, $4::text
+)::text AS raw_post_id;`, `={{ [$json.params[0], 'qwen-evidence-v1', String($execution.id), $json.params[2]] }}`),
+    codeNode('Aggregate replay outcomes', [1080, 0], `
+return [{ json: { params: [String($execution.id), 'qwen-evidence-v1'] } }];`),
+    postgresNode('Build deterministic audit', [1300, 0], `
+SELECT audit FROM probability_backfill_audit($1::text, $2::text);`),
+  ];
+  return {
+    id: 'football-transfer-probability-backfill',
+    name: 'Football Transfer Probability Backfill',
+    nodes,
+    pinData: {},
+    connections: {
+      'Manual shadow backfill': { main: [[{ node: 'Prepare shadow backfill', type: 'main', index: 0 }]] },
+      'Prepare shadow backfill': { main: [[{ node: 'Claim replay batch', type: 'main', index: 0 }]] },
+      'Claim replay batch': { main: [[{ node: 'Build backfill Qwen request', type: 'main', index: 0 }]] },
+      'Build backfill Qwen request': { main: [[{ node: 'Re-extract with Qwen', type: 'main', index: 0 }]] },
+      'Re-extract with Qwen': { main: [[{ node: 'Validate backfill Qwen response', type: 'main', index: 0 }]] },
+      'Validate backfill Qwen response': { main: [[{ node: 'Backfill Qwen response valid', type: 'main', index: 0 }]] },
+      'Backfill Qwen response valid': { main: [[{ node: 'Build shadow report payloads', type: 'main', index: 0 }], [{ node: 'Release failed claim', type: 'main', index: 0 }]] },
+      'Build shadow report payloads': { main: [[{ node: 'Persist shadow results', type: 'main', index: 0 }]] },
+      'Persist shadow results': { main: [[{ node: 'Aggregate replay outcomes', type: 'main', index: 0 }]] },
+      'Release failed claim': { main: [[{ node: 'Aggregate replay outcomes', type: 'main', index: 0 }]] },
+      'Aggregate replay outcomes': { main: [[{ node: 'Build deterministic audit', type: 'main', index: 0 }]] },
+    },
+    active: false,
+    settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh' },
+    versionId: '1.0.0',
+    meta: { templateCredsSetupCompleted: false, instanceId: 'generated-without-secrets' },
+    tags: [],
+  };
+}
+
 function errorWorkflow() {
   const nodes = [
     node('Workflow error trigger', 'n8n-nodes-base.errorTrigger', [-440, 0], {}, { typeVersion: 1 }),
@@ -2209,6 +2347,7 @@ async function main() {
   const files = [
     [outputPath, `${JSON.stringify(mainWorkflow({ registry, prompt, schema }), null, 2)}\n`],
     [errorOutputPath, `${JSON.stringify(errorWorkflow(), null, 2)}\n`],
+    [backfillOutputPath, `${JSON.stringify(probabilityBackfillWorkflow({ prompt, schema }), null, 2)}\n`],
   ];
   const stale = [];
   for (const [path, content] of files) {

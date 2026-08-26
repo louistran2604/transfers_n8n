@@ -16,6 +16,7 @@ docker compose -f "$compose_file" exec -T postgres psql --username transfers_e2e
 docker compose -f "$compose_file" exec -T postgres psql --username transfers_e2e --dbname transfers_e2e --set ON_ERROR_STOP=1 --file /database/tests/004_enrichment_rollback_compatibility.sql
 docker compose -f "$compose_file" run --rm --no-deps n8n import:workflow --input=/workflows/football-transfer-monitor-errors.json
 docker compose -f "$compose_file" run --rm --no-deps n8n import:workflow --input=/workflows/football-transfer-monitor.json
+docker compose -f "$compose_file" run --rm --no-deps n8n import:workflow --input=/workflows/football-transfer-probability-backfill.json
 docker compose -f "$compose_file" up -d --wait n8n
 node "$root_dir/tests/e2e/scenario.mjs"
 

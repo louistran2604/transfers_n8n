@@ -85,4 +85,20 @@ END AS migration_005_pending \gset
   COMMIT;
 \endif
 
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1
+    FROM app_schema_migrations
+    WHERE version = '006_probability_backfill'
+  ) THEN 'false'
+  ELSE 'true'
+END AS migration_006_pending \gset
+
+\if :migration_006_pending
+  BEGIN;
+  \i /database/migrations/006_probability_backfill.sql
+  INSERT INTO app_schema_migrations (version) VALUES ('006_probability_backfill');
+  COMMIT;
+\endif
+
 SELECT pg_advisory_unlock(hashtext('transfers_net_schema_migrations'));

@@ -131,7 +131,7 @@ concurrent_versions=$(docker exec "$main_container" psql \
   --tuples-only \
   --no-align \
   --command "SELECT count(*) FROM app_schema_migrations;")
-test "$concurrent_versions" = "5"
+test "$concurrent_versions" = "6"
 
 for test_file in \
   /database/tests/001_dedup_restart_safety.sql \
@@ -140,10 +140,12 @@ for test_file in \
   /database/tests/004_enrichment_rollback_compatibility.sql \
   /database/tests/005_transfer_probability.sql \
   /database/tests/006_probability_v1_engine.sql \
-  /database/tests/007_probability_v1_normalization.sql; do
+  /database/tests/007_probability_v1_normalization.sql \
+  /database/tests/011_probability_backfill.sql; do
   psql_file "$main_container" transfers "$test_file"
 done
 
+"$root_dir/tests/migrations/probability-backfill-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/probability-v1-concurrency.sh" "$main_container"
 
 node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \
