@@ -43,7 +43,9 @@ ALTER TABLE transfer_reports
       probability_explanation IS NULL
       OR jsonb_typeof(probability_explanation) = 'object'
     ),
-  ADD COLUMN probability_updated_at timestamptz;
+  ADD COLUMN probability_updated_at timestamptz,
+  ADD CONSTRAINT transfer_reports_id_case_unique
+    UNIQUE (id, transfer_case_id);
 
 CREATE INDEX transfer_reports_case_idx
   ON transfer_reports (transfer_case_id);
@@ -93,7 +95,10 @@ CREATE TABLE transfer_evidence (
     CHECK (jsonb_typeof(raw_normalized_extraction) = 'object'),
   created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (raw_post_id, report_ordinal, extraction_schema_version)
+  UNIQUE (raw_post_id, report_ordinal, extraction_schema_version),
+  FOREIGN KEY (transfer_report_id, transfer_case_id)
+    REFERENCES transfer_reports (id, transfer_case_id)
+    ON DELETE SET NULL (transfer_report_id)
 );
 
 CREATE INDEX transfer_evidence_case_idx
@@ -121,7 +126,9 @@ CREATE TABLE transfer_probability_revisions (
   input_fingerprint text NOT NULL CHECK (input_fingerprint ~ '^[a-f0-9]{64}$'),
   created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (transfer_report_id, revision_number),
-  UNIQUE (transfer_report_id, input_fingerprint, engine_version)
+  UNIQUE (transfer_report_id, input_fingerprint, engine_version),
+  FOREIGN KEY (transfer_report_id, transfer_case_id)
+    REFERENCES transfer_reports (id, transfer_case_id) ON DELETE CASCADE
 );
 
 CREATE INDEX transfer_probability_revisions_case_idx
@@ -163,6 +170,8 @@ CREATE TABLE source_claim_outcomes (
   settled_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (source_account_id, transfer_case_id, transfer_report_id),
+  FOREIGN KEY (transfer_report_id, transfer_case_id)
+    REFERENCES transfer_reports (id, transfer_case_id) ON DELETE RESTRICT,
   CHECK (
     (
       settlement_outcome IS NULL
@@ -178,7 +187,8 @@ CREATE TABLE source_claim_outcomes (
         OR authoritative_transfer_report_revision_id IS NOT NULL
       )
     )
-  )
+  ),
+  CHECK (settled_at IS NULL OR settled_at >= claimed_at)
 );
 
 CREATE TRIGGER transfer_cases_set_updated_at

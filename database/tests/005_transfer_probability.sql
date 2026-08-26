@@ -14,6 +14,41 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION pg_temp.rejects_with_check_violation(statement text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  BEGIN
+    EXECUTE statement;
+    RAISE EXCEPTION USING ERRCODE = 'PT001';
+  EXCEPTION
+    WHEN check_violation THEN RETURN true;
+    WHEN SQLSTATE 'PT001' THEN RETURN false;
+  END;
+END;
+$$;
+
+CREATE FUNCTION pg_temp.rejects_with_foreign_key_violation(statement text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  BEGIN
+    EXECUTE statement;
+    RAISE EXCEPTION USING ERRCODE = 'PT001';
+  EXCEPTION
+    WHEN foreign_key_violation THEN RETURN true;
+    WHEN SQLSTATE 'PT001' THEN RETURN false;
+  END;
+END;
+$$;
+
+CREATE TEMPORARY TABLE expected_rejections (
+  label text PRIMARY KEY,
+  rejected boolean NOT NULL
+) ON COMMIT DROP;
+
 -- Old writers name only pre-003 columns.
 INSERT INTO source_accounts (
   external_account_id,
@@ -94,6 +129,9 @@ RETURNING id \gset transfer_case_
 INSERT INTO transfer_cases (case_key, transfer_window_key)
 VALUES ('probability-player|old-fc|2026-summer', '2026-summer')
 ON CONFLICT (case_key) DO NOTHING;
+
+INSERT INTO transfer_cases (case_key, transfer_window_key)
+VALUES ('probability-player|other-fc|2026-summer', '2026-summer');
 
 UPDATE transfer_cases
 SET version_counter = version_counter + 1
@@ -178,6 +216,38 @@ VALUES (
   '{}'::jsonb
 )
 ON CONFLICT (raw_post_id, report_ordinal, extraction_schema_version) DO NOTHING;
+
+-- A rollout evidence row may link only the case until its report is available.
+INSERT INTO transfer_evidence (
+  transfer_case_id,
+  raw_post_id,
+  extraction_schema_version,
+  report_ordinal,
+  stage_signal,
+  claim_stance,
+  wording_strength,
+  club_agreement_state,
+  personal_terms_state,
+  completion_claim,
+  attribution_kind,
+  extraction_confidence,
+  raw_normalized_extraction
+)
+VALUES (
+  :transfer_case_id,
+  :raw_post_id,
+  'rollout-v1',
+  2,
+  'not_reported',
+  'neutral',
+  'reported',
+  'not_reported',
+  'not_reported',
+  'none',
+  'unknown',
+  0.5000,
+  '{}'::jsonb
+);
 
 INSERT INTO transfer_probability_revisions (
   transfer_report_id,
@@ -313,175 +383,220 @@ VALUES (
 )
 ON CONFLICT (source_account_id, transfer_case_id, transfer_report_id) DO NOTHING;
 
-DO $$
-BEGIN
-  INSERT INTO source_accounts (
-    external_account_id, username, display_name, account_type, priority_rank,
-    seed_reliability
-  ) VALUES (
-    '900000000000000503', 'badreliability', 'Bad Reliability', 'individual', 9,
-    1.0001
-  );
-  RAISE EXCEPTION 'invalid seed reliability was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
+INSERT INTO expected_rejections (label, rejected)
+SELECT label, pg_temp.rejects_with_check_violation(statement)
+FROM (VALUES
+  ('source seed below zero', $sql$
+    UPDATE source_accounts SET seed_reliability = -0.0001
+    WHERE external_account_id = '900000000000000501'
+  $sql$),
+  ('source seed above one', $sql$
+    UPDATE source_accounts SET seed_reliability = 1.0001
+    WHERE external_account_id = '900000000000000501'
+  $sql$),
+  ('source kind enum', $sql$
+    UPDATE source_accounts SET source_kind = 'invalid'
+    WHERE external_account_id = '900000000000000501'
+  $sql$),
+  ('case stay probability below zero', $sql$
+    UPDATE transfer_cases SET stay_probability = -0.00001
+    WHERE case_key = 'probability-player|old-fc|2026-summer'
+  $sql$),
+  ('case stay probability above one', $sql$
+    UPDATE transfer_cases SET stay_probability = 1.00001
+    WHERE case_key = 'probability-player|old-fc|2026-summer'
+  $sql$),
+  ('case version counter nonnegative', $sql$
+    UPDATE transfer_cases SET version_counter = -1
+    WHERE case_key = 'probability-player|old-fc|2026-summer'
+  $sql$),
+  ('case status enum', $sql$
+    UPDATE transfer_cases SET status = 'invalid'
+    WHERE case_key = 'probability-player|old-fc|2026-summer'
+  $sql$),
+  ('report raw probability below zero', $sql$
+    UPDATE transfer_reports SET raw_probability = -0.00001
+    WHERE dedupe_key = 'probability-player|old-fc|new-fc'
+  $sql$),
+  ('report raw probability above one', $sql$
+    UPDATE transfer_reports SET raw_probability = 1.00001
+    WHERE dedupe_key = 'probability-player|old-fc|new-fc'
+  $sql$),
+  ('report normalized probability below zero', $sql$
+    UPDATE transfer_reports SET normalized_probability = -0.00001
+    WHERE dedupe_key = 'probability-player|old-fc|new-fc'
+  $sql$),
+  ('report normalized probability above one', $sql$
+    UPDATE transfer_reports SET normalized_probability = 1.00001
+    WHERE dedupe_key = 'probability-player|old-fc|new-fc'
+  $sql$),
+  ('report transfer stage enum', $sql$
+    UPDATE transfer_reports SET transfer_stage = 'invalid'
+    WHERE dedupe_key = 'probability-player|old-fc|new-fc'
+  $sql$),
+  ('evidence stage enum', $sql$
+    UPDATE transfer_evidence SET stage_signal = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence stance enum', $sql$
+    UPDATE transfer_evidence SET claim_stance = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence wording enum', $sql$
+    UPDATE transfer_evidence SET wording_strength = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence club agreement enum', $sql$
+    UPDATE transfer_evidence SET club_agreement_state = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence personal terms enum', $sql$
+    UPDATE transfer_evidence SET personal_terms_state = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence completion claim enum', $sql$
+    UPDATE transfer_evidence SET completion_claim = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence attribution enum', $sql$
+    UPDATE transfer_evidence SET attribution_kind = 'invalid'
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence confidence below zero', $sql$
+    UPDATE transfer_evidence SET extraction_confidence = -0.0001
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('evidence confidence above one', $sql$
+    UPDATE transfer_evidence SET extraction_confidence = 1.0001
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('revision raw probability below zero', $sql$
+    UPDATE transfer_probability_revisions SET raw_probability = -0.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision raw probability above one', $sql$
+    UPDATE transfer_probability_revisions SET raw_probability = 1.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision normalized probability below zero', $sql$
+    UPDATE transfer_probability_revisions SET normalized_probability = -0.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision normalized probability above one', $sql$
+    UPDATE transfer_probability_revisions SET normalized_probability = 1.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision previous probability below zero', $sql$
+    UPDATE transfer_probability_revisions SET previous_probability = -0.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision previous probability above one', $sql$
+    UPDATE transfer_probability_revisions SET previous_probability = 1.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision delta below minus one', $sql$
+    UPDATE transfer_probability_revisions SET probability_delta = -1.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision delta above one', $sql$
+    UPDATE transfer_probability_revisions SET probability_delta = 1.00001
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision current stage enum', $sql$
+    UPDATE transfer_probability_revisions SET current_stage = 'invalid'
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('revision number positive', $sql$
+    UPDATE transfer_probability_revisions SET revision_number = 0
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('reliability alpha positive', $sql$
+    UPDATE source_reliability_snapshots SET alpha = 0
+    WHERE engine_version = 'probability-v1'
+  $sql$),
+  ('reliability beta positive', $sql$
+    UPDATE source_reliability_snapshots SET beta = 0
+    WHERE engine_version = 'probability-v1'
+  $sql$),
+  ('reliability effective count nonnegative', $sql$
+    UPDATE source_reliability_snapshots SET effective_resolved_count = -0.0001
+    WHERE engine_version = 'probability-v1'
+  $sql$),
+  ('reliability posterior below zero', $sql$
+    UPDATE source_reliability_snapshots SET posterior_reliability = -0.0001
+    WHERE engine_version = 'probability-v1'
+  $sql$),
+  ('reliability posterior above one', $sql$
+    UPDATE source_reliability_snapshots SET posterior_reliability = 1.0001
+    WHERE engine_version = 'probability-v1'
+  $sql$),
+  ('claim first eligible stage enum', $sql$
+    UPDATE source_claim_outcomes SET first_eligible_stage = 'invalid'
+    WHERE settlement_outcome = 'success'
+  $sql$),
+  ('claim settlement outcome enum', $sql$
+    UPDATE source_claim_outcomes SET settlement_outcome = 'invalid'
+    WHERE settlement_outcome = 'success'
+  $sql$),
+  ('claim outcome weight positive', $sql$
+    UPDATE source_claim_outcomes SET outcome_weight = 0
+    WHERE settlement_outcome = 'success'
+  $sql$),
+  ('claim outcome weight at most one', $sql$
+    UPDATE source_claim_outcomes SET outcome_weight = 1.0001
+    WHERE settlement_outcome = 'success'
+  $sql$),
+  ('claim authoritative linkage', $sql$
+    UPDATE source_claim_outcomes SET authoritative_raw_post_id = NULL
+    WHERE settlement_outcome = 'success'
+  $sql$),
+  ('claim settled time chronology', $sql$
+    UPDATE source_claim_outcomes SET settled_at = claimed_at - INTERVAL '1 second'
+    WHERE settlement_outcome = 'success'
+  $sql$)
+) AS test(label, statement);
+
+INSERT INTO expected_rejections (label, rejected)
+SELECT label, pg_temp.rejects_with_foreign_key_violation(statement)
+FROM (VALUES
+  ('evidence report/case coherence', $sql$
+    UPDATE transfer_evidence
+    SET transfer_case_id = (
+      SELECT id FROM transfer_cases
+      WHERE case_key = 'probability-player|other-fc|2026-summer'
+    )
+    WHERE extraction_schema_version = 'evidence-v1'
+  $sql$),
+  ('probability revision report/case coherence', $sql$
+    UPDATE transfer_probability_revisions
+    SET transfer_case_id = (
+      SELECT id FROM transfer_cases
+      WHERE case_key = 'probability-player|other-fc|2026-summer'
+    )
+    WHERE input_fingerprint = repeat('a', 64)
+  $sql$),
+  ('claim outcome report/case coherence', $sql$
+    UPDATE source_claim_outcomes
+    SET transfer_case_id = (
+      SELECT id FROM transfer_cases
+      WHERE case_key = 'probability-player|other-fc|2026-summer'
+    )
+    WHERE settlement_outcome = 'success'
+  $sql$)
+) AS test(label, statement);
 
 DO $$
 DECLARE
-  enum_column text;
+  missing_enforcement text;
 BEGIN
-  FOREACH enum_column IN ARRAY ARRAY[
-    'claim_stance',
-    'wording_strength',
-    'club_agreement_state',
-    'personal_terms_state',
-    'completion_claim',
-    'attribution_kind'
-  ] LOOP
-    BEGIN
-      EXECUTE format(
-        'UPDATE transfer_evidence SET %I = ''invalid'' WHERE id = $1',
-        enum_column
-      ) USING (
-        SELECT id
-        FROM transfer_evidence
-        WHERE extraction_schema_version = 'evidence-v1'
-      );
-      RAISE EXCEPTION 'invalid value was accepted for %', enum_column;
-    EXCEPTION WHEN check_violation THEN
-      NULL;
-    END;
-  END LOOP;
-END;
-$$;
+  SELECT string_agg(label, ', ' ORDER BY label)
+  INTO missing_enforcement
+  FROM expected_rejections
+  WHERE NOT rejected;
 
-DO $$
-BEGIN
-  UPDATE source_accounts
-  SET source_kind = 'blog'
-  WHERE external_account_id = '900000000000000501';
-  RAISE EXCEPTION 'invalid source kind was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-BEGIN
-  UPDATE transfer_reports
-  SET normalized_probability = 1.00001
-  WHERE dedupe_key = 'probability-player|old-fc|new-fc';
-  RAISE EXCEPTION 'invalid report probability was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-BEGIN
-  UPDATE transfer_reports
-  SET transfer_stage = 'medical'
-  WHERE dedupe_key = 'probability-player|old-fc|new-fc';
-  RAISE EXCEPTION 'invalid transfer stage was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-BEGIN
-  INSERT INTO transfer_evidence (
-    raw_post_id, extraction_schema_version, report_ordinal, stage_signal,
-    claim_stance, wording_strength, club_agreement_state,
-    personal_terms_state, completion_claim, attribution_kind,
-    extraction_confidence, raw_normalized_extraction
-  ) VALUES (
-    (SELECT id FROM raw_posts WHERE external_post_id = '900000000000000502'),
-    'bad-evidence-v1', 1, 'medical',
-    'supports', 'direct', 'talks', 'agreed', 'none', 'original',
-    0.9000, '{}'::jsonb
-  );
-  RAISE EXCEPTION 'invalid evidence stage was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-BEGIN
-  INSERT INTO transfer_probability_revisions (
-    transfer_report_id, transfer_case_id, revision_number, engine_version,
-    evaluated_at, raw_probability, normalized_probability, current_stage,
-    explanation, input_fingerprint
-  ) VALUES (
-    (
-      SELECT id FROM transfer_reports
-      WHERE dedupe_key = 'probability-player|old-fc|new-fc'
-    ),
-    (
-      SELECT id FROM transfer_cases
-      WHERE case_key = 'probability-player|old-fc|2026-summer'
-    ),
-    2, 'probability-v2', CURRENT_TIMESTAMP,
-    -0.00001, 0.50000, 'link', '{}'::jsonb, repeat('c', 64)
-  );
-  RAISE EXCEPTION 'invalid revision probability was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-BEGIN
-  INSERT INTO source_reliability_snapshots (
-    source_account_id, engine_version, alpha, beta, effective_resolved_count,
-    posterior_reliability, calculated_at
-  ) VALUES (
-    (
-      SELECT id FROM source_accounts
-      WHERE external_account_id = '900000000000000501'
-    ),
-    'probability-v1', 0, 1, 0, 0.5000, CURRENT_TIMESTAMP
-  );
-  RAISE EXCEPTION 'nonpositive reliability alpha was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
-END;
-$$;
-
-DO $$
-DECLARE
-  invalid_source_id bigint;
-BEGIN
-  INSERT INTO source_accounts (
-    external_account_id, username, display_name, account_type, priority_rank
-  ) VALUES (
-    '900000000000000504', 'invalidoutcome', 'Invalid Outcome', 'individual', 10
-  )
-  RETURNING id INTO invalid_source_id;
-
-  INSERT INTO source_claim_outcomes (
-    source_account_id, transfer_case_id, transfer_report_id,
-    first_eligible_stage, claimed_at, settlement_outcome, outcome_weight,
-    settled_at
-  ) VALUES (
-    invalid_source_id,
-    (
-      SELECT id FROM transfer_cases
-      WHERE case_key = 'probability-player|old-fc|2026-summer'
-    ),
-    (
-      SELECT id FROM transfer_reports
-      WHERE dedupe_key = 'probability-player|old-fc|new-fc'
-    ),
-    'advanced', CURRENT_TIMESTAMP,
-    'failure', 0.5000, CURRENT_TIMESTAMP
-  );
-  RAISE EXCEPTION 'settled outcome without authoritative evidence was accepted';
-EXCEPTION WHEN check_violation THEN
-  NULL;
+  IF missing_enforcement IS NOT NULL THEN
+    RAISE EXCEPTION 'Expected rejection was not enforced: %', missing_enforcement;
+  END IF;
 END;
 $$;
 
