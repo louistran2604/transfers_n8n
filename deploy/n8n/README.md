@@ -55,6 +55,8 @@ The ignored local `.env` supplies the runner token, `X_COLLECTOR`, Discord webho
 
 `PLAYER_ENRICHMENT_MODE` defaults to `off`. Keep it `off` until the documented provider-policy, fixture, test, and shadow gates pass. The other supported values are `shadow` (persist but do not render) and `active` (persist and render); changing the mode requires recreating n8n. The enrichment service itself needs no secrets.
 
+`PROBABILITY_MODE` also defaults to `off`; `shadow` is the only other supported value. Recreate both `n8n` and `n8n-runner` after changing it.
+
 | Mode | Enrichment service call | Enrichment writes | Digest output |
 | --- | --- | --- | --- |
 | `off` | No | No | Transfer-only |

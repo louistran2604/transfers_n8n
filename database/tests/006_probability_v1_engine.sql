@@ -54,6 +54,73 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION pg_temp.make_unassigned_report(label text)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  player_id bigint;
+  report_id bigint;
+BEGIN
+  INSERT INTO players (identity_key, display_name, normalized_name)
+  VALUES ('p-v1-' || label, 'Player ' || label, 'player ' || label)
+  RETURNING id INTO player_id;
+  INSERT INTO transfer_reports (
+    dedupe_key, player_id, reported_player_name, current_club_name, destination_club_name,
+    classification, confidence, first_reported_at, last_reported_at
+  ) VALUES (
+    'p-v1-' || label || '|old-fc|new-fc', player_id, 'Player ' || label, 'Old FC', 'New FC',
+    'rumor', 0.8, '2026-01-01 00:00:00+00', '2027-08-27 00:00:00+00'
+  ) RETURNING id INTO report_id;
+  RETURN report_id;
+END;
+$$;
+
+CREATE FUNCTION pg_temp.make_raw(source_id bigint, posted_at timestamptz)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  post_id bigint;
+  external_id text := nextval('pg_temp.fixture_id')::text;
+BEGIN
+  INSERT INTO raw_posts (source_account_id, external_post_id, post_url, content, posted_at)
+  VALUES (source_id, external_id, 'https://x.com/test/status/' || external_id, 'probability-v1 fresh fixture', posted_at)
+  RETURNING id INTO post_id;
+  RETURN post_id;
+END;
+$$;
+
+CREATE FUNCTION pg_temp.source_payload(
+  raw_post_id bigint,
+  report_ordinal integer DEFAULT 1,
+  stage_signal text DEFAULT 'advanced',
+  claim_stance text DEFAULT 'supports',
+  wording_strength text DEFAULT 'direct',
+  club_state text DEFAULT 'talks',
+  personal_state text DEFAULT 'talks',
+  completion_claim text DEFAULT 'none',
+  attribution_kind text DEFAULT 'original',
+  named_originator text DEFAULT NULL,
+  extraction_confidence numeric DEFAULT 0.95
+)
+RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_build_object(
+    'raw_post_id', raw_post_id,
+    'posted_at', post.posted_at,
+    'report_ordinal', report_ordinal,
+    'extraction_schema_version', 'qwen-evidence-v1',
+    'normalized_evidence', jsonb_build_object(
+      'stage_signal', stage_signal,
+      'claim_stance', claim_stance,
+      'wording_strength', wording_strength,
+      'club_agreement_state', club_state,
+      'personal_terms_state', personal_state,
+      'completion_claim', completion_claim,
+      'attribution_kind', attribution_kind,
+      'named_originator', named_originator,
+      'extraction_confidence', extraction_confidence
+    )
+  )
+  FROM raw_posts post WHERE post.id = raw_post_id;
+$$;
+
 CREATE FUNCTION pg_temp.add_evidence(
   report_id bigint,
   source_id bigint,
@@ -205,6 +272,16 @@ SELECT pg_temp.assert_true('direct denial and non-authoritative collapse did not
     jsonb_array_elements(scored.explanation->'contradictions') item
     WHERE (item->>'base')::numeric = -1.60) = 2);
 
+SELECT pg_temp.make_report('denial-half-life') AS denial_half_life_report \gset
+SELECT pg_temp.add_evidence(:denial_half_life_report, :primary_id, '2026-08-27', independence_key => 'support');
+SELECT pg_temp.add_evidence(:denial_half_life_report, :low_id, '2026-08-13',
+  stage_signal => 'link', claim_stance => 'contradicts', independence_key => 'denial-half-life');
+SELECT pg_temp.assert_close('direct denial uses the 14-day half-life before stage half-life',
+  (SELECT item->>'recency_factor' FROM score_transfer_probability_v1(:denial_half_life_report, '2026-08-27') scored,
+    jsonb_array_elements(scored.explanation->'contradictions') item
+    WHERE item->>'independence_key' = 'denial-half-life')::numeric,
+  0.50, 0.000001);
+
 SELECT pg_temp.make_report('reporter-done') AS reporter_done_report \gset
 SELECT pg_temp.make_report('wording-done') AS wording_done_report \gset
 SELECT pg_temp.make_report('official-done') AS official_done_report \gset
@@ -221,6 +298,15 @@ SELECT pg_temp.assert_true('official confirmation was not 1.0',
   (SELECT raw_probability FROM score_transfer_probability_v1(:official_done_report, '2026-08-27')) = 1);
 SELECT pg_temp.assert_true('official collapse was not 0.02',
   (SELECT raw_probability FROM score_transfer_probability_v1(:official_collapse_report, '2026-08-27')) = 0.02);
+
+SELECT pg_temp.make_report('official-permanent') AS official_permanent_report \gset
+SELECT pg_temp.add_evidence(:official_permanent_report, :official_id, '2026-08-01',
+  stage_signal => 'official_wording', completion_claim => 'official_announcement', independence_key => 'club:v1-official');
+SELECT pg_temp.add_evidence(:official_permanent_report, :official_id, '2026-08-27',
+  stage_signal => 'collapsed', claim_stance => 'contradicts', club_state => 'collapsed', independence_key => 'club:v1-official');
+SELECT pg_temp.assert_true('verified official confirmation did not remain permanently terminal',
+  (SELECT raw_probability = 1 AND explanation->>'terminal_kind' = 'official_confirmation'
+    FROM score_transfer_probability_v1(:official_permanent_report, '2026-08-27')));
 
 SELECT pg_temp.make_report('low-confidence') AS low_conf_report \gset
 SELECT pg_temp.add_evidence(:low_conf_report, :primary_id, '2026-08-27', stage_signal => 'link', extraction_confidence => 0.9);
@@ -297,6 +383,107 @@ SELECT pg_temp.assert_true('shadow apply did not update report columns',
       AND probability_engine_version = 'probability-v1'
       AND probability_explanation->>'normalization' = 'pending-stage-5'
     FROM transfer_reports WHERE id = :golden_report));
+
+CREATE TEMPORARY TABLE pg_temp.fix_payloads (
+  label text PRIMARY KEY,
+  report_id bigint NOT NULL,
+  payload jsonb NOT NULL
+) ON COMMIT DROP;
+
+-- Fresh apply: the lower raw-post ID is newer, so the initial case must use the
+-- earlier timestamp rather than row identity.
+SELECT pg_temp.make_unassigned_report('case-window') AS case_window_report \gset
+SELECT pg_temp.make_raw(:primary_id, '2026-08-20') AS case_later_raw \gset
+SELECT pg_temp.make_raw(:independent_id, '2026-06-30') AS case_earlier_raw \gset
+INSERT INTO pg_temp.fix_payloads (label, report_id, payload)
+VALUES ('case-initial', :case_window_report, jsonb_build_object(
+  'probability_mode', 'shadow',
+  'evaluated_at', '2026-08-27T00:00:00Z',
+  'destination_club_name', 'New FC',
+  'normalized_data', jsonb_build_object('current_club_key', 'old fc'),
+  'sources', jsonb_build_array(
+    pg_temp.source_payload(:case_later_raw),
+    pg_temp.source_payload(:case_earlier_raw)
+  )
+));
+SELECT apply_probability_v1_shadow(report_id, payload) AS case_initial_revision
+FROM pg_temp.fix_payloads WHERE label = 'case-initial' \gset
+SELECT transfer_case_id AS stable_case_id FROM transfer_reports WHERE id = :case_window_report \gset
+SELECT pg_temp.assert_true('initial case window did not use earliest evidence timestamp',
+  (SELECT transfer_window_key = '2026-H1' FROM transfer_cases WHERE id = :stable_case_id));
+SELECT pg_temp.assert_true('first probability revision did not increment the case exactly once',
+  (SELECT version_counter = 1 FROM transfer_cases WHERE id = :stable_case_id));
+
+SELECT apply_probability_v1_shadow(report_id, payload) AS case_replay_revision
+FROM pg_temp.fix_payloads WHERE label = 'case-initial' \gset
+SELECT pg_temp.assert_true('identical replay returned a different probability revision',
+  :'case_initial_revision' = :'case_replay_revision');
+SELECT pg_temp.assert_true('identical replay changed the case version counter',
+  (SELECT version_counter = 1 FROM transfer_cases WHERE id = :stable_case_id));
+
+SELECT pg_temp.make_raw(:primary_id, '2027-08-20') AS later_window_raw \gset
+INSERT INTO pg_temp.fix_payloads (label, report_id, payload)
+VALUES ('case-later-window', :case_window_report, jsonb_build_object(
+  'probability_mode', 'shadow',
+  'evaluated_at', '2027-08-27T00:00:00Z',
+  'destination_club_name', 'New FC',
+  'normalized_data', jsonb_build_object('current_club_key', 'old fc'),
+  'sources', jsonb_build_array(pg_temp.source_payload(:later_window_raw, stage_signal => 'agreed', club_state => 'agreed'))
+));
+SELECT apply_probability_v1_shadow(report_id, payload)
+FROM pg_temp.fix_payloads WHERE label = 'case-later-window';
+SELECT pg_temp.assert_true('later evidence reassigned the report case',
+  (SELECT transfer_case_id = :stable_case_id FROM transfer_reports WHERE id = :case_window_report));
+SELECT pg_temp.assert_true('new revision did not increment the stable case exactly once',
+  (SELECT version_counter = 2 FROM transfer_cases WHERE id = :stable_case_id));
+
+-- Fresh apply and named-originator resolution must persist immutable authority
+-- metadata before the source registry is changed.
+SELECT pg_temp.make_unassigned_report('fresh-official') AS fresh_official_report \gset
+SELECT pg_temp.make_raw(:primary_id, '2026-08-27') AS fresh_official_raw \gset
+INSERT INTO pg_temp.fix_payloads (label, report_id, payload)
+VALUES ('fresh-official', :fresh_official_report, jsonb_build_object(
+  'probability_mode', 'shadow',
+  'evaluated_at', '2026-08-27T00:00:00Z',
+  'destination_club_name', 'New FC',
+  'normalized_data', jsonb_build_object('current_club_key', 'old fc'),
+  'sources', jsonb_build_array(pg_temp.source_payload(
+    :fresh_official_raw,
+    stage_signal => 'official_wording',
+    completion_claim => 'official_announcement',
+    attribution_kind => 'cites_named_source',
+    named_originator => '@v1official'
+  ))
+));
+SELECT apply_probability_v1_shadow(report_id, payload)
+FROM pg_temp.fix_payloads WHERE label = 'fresh-official';
+SELECT pg_temp.assert_true('fresh shadow apply did not insert and resolve named-originator evidence',
+  (SELECT count(*) = 1
+      AND min(resolved_independence_key) = 'club:v1-official'
+      AND min(raw_normalized_extraction #>> '{_resolved_source,account_id}') = :'official_id'
+      AND min(raw_normalized_extraction #>> '{_resolved_source,username}') = 'v1official'
+      AND min(raw_normalized_extraction #>> '{_resolved_source,source_kind}') = 'club_official'
+    FROM transfer_evidence WHERE transfer_report_id = :fresh_official_report));
+SELECT pg_temp.assert_true('fresh official apply did not create a terminal revision',
+  (SELECT count(*) = 1 AND min(raw_probability) = 1
+    FROM transfer_probability_revisions WHERE transfer_report_id = :fresh_official_report));
+CREATE TEMPORARY TABLE pg_temp.immutable_score AS
+SELECT raw_probability, input_fingerprint
+FROM score_transfer_probability_v1(:fresh_official_report, '2026-08-27');
+UPDATE source_accounts
+SET username = 'v1officialnew', source_kind = 'journalist',
+    seed_reliability = 0.55, reliability_score = 0.55
+WHERE id = :official_id;
+SELECT pg_temp.assert_true('source metadata mutation changed stored evidence authority or fingerprint',
+  (SELECT current.raw_probability = before.raw_probability
+      AND current.input_fingerprint = before.input_fingerprint
+      AND current.raw_probability = 1
+    FROM score_transfer_probability_v1(:fresh_official_report, '2026-08-27') current
+    CROSS JOIN pg_temp.immutable_score before));
+UPDATE source_accounts
+SET username = 'v1official', source_kind = 'club_official',
+    seed_reliability = 1.00, reliability_score = 1.00
+WHERE id = :official_id;
 
 ROLLBACK;
 

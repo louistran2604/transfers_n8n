@@ -2220,6 +2220,17 @@ test('generated workflow carries shadow-only probability evidence without changi
   assert.match(persistNode.parameters.query, /apply_probability_v1_shadow/);
 });
 
+test('standard n8n deployment exposes probability mode to main and runner services', async () => {
+  const compose = await readFile(new URL('../../deploy/n8n/compose.yaml', import.meta.url), 'utf8');
+  const serviceBlock = (name, nextName) => compose.slice(
+    compose.indexOf(`  ${name}:`),
+    nextName ? compose.indexOf(`  ${nextName}:`) : compose.length,
+  );
+  const expected = '- PROBABILITY_MODE=${PROBABILITY_MODE:-off}';
+  assert.match(serviceBlock('n8n', 'n8n-runner'), new RegExp(expected.replace(/[${}]/g, '\\$&')));
+  assert.match(serviceBlock('n8n-runner', 'twscrape'), new RegExp(expected.replace(/[${}]/g, '\\$&')));
+});
+
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const errorWorkflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));

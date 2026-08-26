@@ -29,7 +29,7 @@ LANGUAGE sql
 STABLE
 PARALLEL SAFE
 AS $$
-WITH accepted AS (
+WITH resolved AS (
   SELECT
     evidence.*,
     post.posted_at,
@@ -39,31 +39,26 @@ WITH accepted AS (
       WHEN evidence.attribution_kind IN ('original', 'unknown') THEN COALESCE(posting.publisher_group_key, 'source:' || posting.id)
       ELSE 'unknown'
     END) AS independence_key,
-    COALESCE(originator.source_kind,
+    COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,account_id}', '')::bigint,
+      originator.id,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.id END,
+      posting.id
+    ) AS resolved_account_id,
+    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,source_kind}', originator.source_kind,
       CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.source_kind END
     ) AS resolved_source_kind,
-    COALESCE(originator.username,
+    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,username}', originator.username,
       CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.username END,
       posting.username
     ) AS source_username,
-    COALESCE(snapshot.posterior_reliability,
-      GREATEST(0.55, LEAST(0.95, COALESCE(
-        COALESCE(originator.seed_reliability, CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.seed_reliability END),
-        COALESCE(originator.reliability_score, CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.reliability_score END),
-        0.70
-      )))
-    )::numeric AS reliability,
-    CASE evidence.wording_strength
-      WHEN 'hedged' THEN 0.75 WHEN 'reported' THEN 0.90
-      WHEN 'direct' THEN 1.00 WHEN 'definitive' THEN 1.10
-    END::numeric AS wording_factor,
-    CASE
-      WHEN evidence.stage_signal IN ('link', 'interest') THEN 7
-      WHEN evidence.stage_signal IN ('agreed', 'done', 'official_wording')
-        OR evidence.completion_claim <> 'none' THEN 30
-      ELSE 14
-    END::numeric AS half_life_days,
-    GREATEST(0, EXTRACT(epoch FROM (requested_evaluated_at - post.posted_at)) / 86400)::numeric AS age_days
+    COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,seed_reliability}', '')::numeric,
+      originator.seed_reliability,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.seed_reliability END
+    ) AS resolved_seed_reliability,
+    COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,reliability_score}', '')::numeric,
+      originator.reliability_score,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.reliability_score END
+    ) AS resolved_reliability_score
   FROM transfer_evidence evidence
   JOIN raw_posts post ON post.id = evidence.raw_post_id
   JOIN source_accounts posting ON posting.id = post.source_account_id
@@ -76,21 +71,43 @@ WITH accepted AS (
     ORDER BY account.id
     LIMIT 1
   ) originator ON true
+  WHERE evidence.transfer_report_id = requested_transfer_report_id
+    AND evidence.extraction_confidence >= 0.50
+    AND post.posted_at <= requested_evaluated_at
+), accepted AS (
+  SELECT resolved.*,
+    COALESCE(snapshot.posterior_reliability,
+      GREATEST(0.55, LEAST(0.95, COALESCE(
+        resolved.resolved_seed_reliability,
+        resolved.resolved_reliability_score,
+        0.70
+      )))
+    )::numeric AS reliability,
+    CASE resolved.wording_strength
+      WHEN 'hedged' THEN 0.75 WHEN 'reported' THEN 0.90
+      WHEN 'direct' THEN 1.00 WHEN 'definitive' THEN 1.10
+    END::numeric AS wording_factor,
+    CASE
+      WHEN resolved.claim_stance = 'contradicts'
+        OR resolved.club_agreement_state IN ('rejected', 'collapsed')
+        OR resolved.personal_terms_state = 'rejected'
+        OR resolved.stage_signal IN ('setback', 'collapsed') THEN 14
+      WHEN resolved.stage_signal IN ('link', 'interest') THEN 7
+      WHEN resolved.stage_signal IN ('agreed', 'done', 'official_wording')
+        OR resolved.completion_claim <> 'none' THEN 30
+      ELSE 14
+    END::numeric AS half_life_days,
+    GREATEST(0, EXTRACT(epoch FROM (requested_evaluated_at - resolved.posted_at)) / 86400)::numeric AS age_days
+  FROM resolved
   LEFT JOIN LATERAL (
     SELECT reliability.posterior_reliability
     FROM source_reliability_snapshots reliability
-    WHERE reliability.source_account_id = COALESCE(originator.id,
-      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.id END,
-      posting.id
-    )
+    WHERE reliability.source_account_id = resolved.resolved_account_id
       AND reliability.engine_version = 'probability-v1'
       AND reliability.calculated_at <= requested_evaluated_at
     ORDER BY reliability.calculated_at DESC, reliability.id DESC
     LIMIT 1
   ) snapshot ON true
-  WHERE evidence.transfer_report_id = requested_transfer_report_id
-    AND evidence.extraction_confidence >= 0.50
-    AND post.posted_at <= requested_evaluated_at
 ), ranked AS (
   SELECT accepted.*,
     CASE
@@ -126,8 +143,8 @@ WITH accepted AS (
       AND resolved_source_kind IN ('club_official', 'league_official'))
     OR ((stage_signal = 'collapsed' OR club_agreement_state = 'collapsed')
       AND resolved_source_kind IN ('club_official', 'league_official'))
-  ORDER BY posted_at DESC,
-    CASE WHEN completion_claim = 'official_announcement' THEN 1 ELSE 2 END DESC,
+  ORDER BY CASE WHEN completion_claim = 'official_announcement' THEN 2 ELSE 1 END DESC,
+    posted_at DESC,
     raw_post_id DESC, id DESC
   LIMIT 1
 ), support_pool AS (
@@ -280,7 +297,12 @@ WITH accepted AS (
     'evaluated_at', requested_evaluated_at,
     'evidence', COALESCE(jsonb_agg(jsonb_build_object(
       'id', id, 'raw_post_id', raw_post_id, 'posted_at', posted_at,
+      'destination_club_name', destination_club_name,
+      'source_account_id', resolved_account_id,
+      'source_username', source_username,
+      'source_kind', resolved_source_kind,
       'independence_key', independence_key, 'reliability', reliability,
+      'recency_factor', recency_factor,
       'stage_signal', stage_signal, 'claim_stance', claim_stance,
       'wording_strength', wording_strength, 'club_agreement_state', club_agreement_state,
       'personal_terms_state', personal_terms_state, 'completion_claim', completion_claim
@@ -351,6 +373,7 @@ DECLARE
   player_identity_key text;
   normalized_current_club text;
   window_key text;
+  stable_case_key text;
   prior_probability numeric;
   scored record;
   probability_revision_id bigint;
@@ -372,36 +395,37 @@ BEGIN
   SELECT (source->>'posted_at')::timestamptz
   INTO evidence_posted_at
   FROM jsonb_array_elements(payload->'sources') source
-  ORDER BY (source->>'raw_post_id')::bigint
+  ORDER BY (source->>'posted_at')::timestamptz, (source->>'raw_post_id')::bigint
   LIMIT 1;
   window_key := to_char(evidence_posted_at AT TIME ZONE 'UTC', 'YYYY') ||
     CASE WHEN EXTRACT(month FROM evidence_posted_at AT TIME ZONE 'UTC') <= 6 THEN '-H1' ELSE '-H2' END;
+  stable_case_key := player_identity_key || '|' || normalized_current_club || '|' || window_key;
 
   IF existing_transfer_case_id IS NULL THEN
     INSERT INTO transfer_cases (
-      case_key, player_id, normalized_current_club, transfer_window_key,
-      probability_engine_version, version_counter
+      case_key, player_id, normalized_current_club, transfer_window_key
     )
-    SELECT player_identity_key || '|' || normalized_current_club || '|' || window_key,
-      report.player_id, NULLIF(normalized_current_club, 'unknown'), window_key,
-      'probability-v1', 1
+    SELECT stable_case_key, report.player_id,
+      NULLIF(normalized_current_club, 'unknown'), window_key
     FROM transfer_reports report
     WHERE report.id = requested_transfer_report_id
-    ON CONFLICT (case_key) DO UPDATE
-    SET version_counter = transfer_cases.version_counter + 1,
-        probability_engine_version = 'probability-v1'
+    ON CONFLICT (case_key) DO NOTHING
     RETURNING id INTO v_transfer_case_id;
+    IF v_transfer_case_id IS NULL THEN
+      SELECT id INTO v_transfer_case_id
+      FROM transfer_cases
+      WHERE case_key = stable_case_key
+      FOR UPDATE;
+    END IF;
+    UPDATE transfer_reports
+    SET transfer_case_id = v_transfer_case_id
+    WHERE id = requested_transfer_report_id;
   ELSE
-    UPDATE transfer_cases
-    SET version_counter = version_counter + 1,
-        probability_engine_version = 'probability-v1'
+    SELECT id INTO v_transfer_case_id
+    FROM transfer_cases
     WHERE id = existing_transfer_case_id
-    RETURNING id INTO v_transfer_case_id;
+    FOR UPDATE;
   END IF;
-
-  UPDATE transfer_reports
-  SET transfer_case_id = v_transfer_case_id
-  WHERE id = requested_transfer_report_id;
 
   INSERT INTO transfer_evidence (
     transfer_report_id, transfer_case_id, raw_post_id, extraction_schema_version,
@@ -423,13 +447,20 @@ BEGIN
     source #>> '{normalized_evidence,attribution_kind}',
     NULLIF(source #>> '{normalized_evidence,named_originator}', ''),
     CASE
-      WHEN originator.id IS NOT NULL THEN COALESCE(originator.publisher_group_key, 'source:' || originator.id)
-      WHEN source #>> '{normalized_evidence,attribution_kind}' IN ('original', 'unknown')
-        THEN COALESCE(posting.publisher_group_key, 'source:' || posting.id)
+      WHEN resolved_source.id IS NOT NULL
+        THEN COALESCE(resolved_source.publisher_group_key, 'source:' || resolved_source.id)
       ELSE 'unknown'
     END,
     (source #>> '{normalized_evidence,extraction_confidence}')::numeric,
-    source->'normalized_evidence'
+    source->'normalized_evidence' || jsonb_build_object(
+      '_resolved_source', jsonb_strip_nulls(jsonb_build_object(
+        'account_id', COALESCE(resolved_source.id, posting.id),
+        'username', COALESCE(resolved_source.username, posting.username),
+        'source_kind', resolved_source.source_kind,
+        'seed_reliability', resolved_source.seed_reliability,
+        'reliability_score', resolved_source.reliability_score
+      ))
+    )
   FROM jsonb_array_elements(payload->'sources') source
   JOIN raw_posts post ON post.id = (source->>'raw_post_id')::bigint
   JOIN source_accounts posting ON posting.id = post.source_account_id
@@ -442,6 +473,15 @@ BEGIN
     ORDER BY account.id
     LIMIT 1
   ) originator ON true
+  LEFT JOIN LATERAL (
+    SELECT account.*
+    FROM source_accounts account
+    WHERE account.id = COALESCE(
+      originator.id,
+      CASE WHEN source #>> '{normalized_evidence,attribution_kind}' IN ('original', 'unknown')
+        THEN posting.id END
+    )
+  ) resolved_source ON true
   ON CONFLICT (raw_post_id, report_ordinal, extraction_schema_version) DO NOTHING;
 
   SELECT * INTO scored
@@ -462,9 +502,21 @@ BEGIN
     prior_probability, CASE WHEN prior_probability IS NULL THEN NULL ELSE scored.raw_probability - prior_probability END,
     scored.current_stage, scored.explanation, scored.input_fingerprint
   )
-  ON CONFLICT (transfer_report_id, input_fingerprint, engine_version) DO UPDATE
-  SET input_fingerprint = EXCLUDED.input_fingerprint
+  ON CONFLICT (transfer_report_id, input_fingerprint, engine_version) DO NOTHING
   RETURNING id INTO probability_revision_id;
+
+  IF probability_revision_id IS NULL THEN
+    SELECT id INTO probability_revision_id
+    FROM transfer_probability_revisions
+    WHERE transfer_report_id = requested_transfer_report_id
+      AND input_fingerprint = scored.input_fingerprint
+      AND engine_version = 'probability-v1';
+  ELSE
+    UPDATE transfer_cases
+    SET version_counter = version_counter + 1,
+        probability_engine_version = 'probability-v1'
+    WHERE id = v_transfer_case_id;
+  END IF;
 
   UPDATE transfer_reports
   SET transfer_stage = scored.current_stage,
