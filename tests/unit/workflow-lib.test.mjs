@@ -2169,6 +2169,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const rapidApiNode = workflow.nodes.find((node) => node.name === 'Collect 20 X posts');
   const rapidApiParserNode = workflow.nodes.find((node) => node.name === 'Parse RapidAPI posts');
   const qwenParserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const mergeExtractedNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
   const sampleNode = workflow.nodes.find((node) => node.name === 'Load sample collected X posts');
   const reserveNode = workflow.nodes.find((node) => node.name === 'Reserve digest before delivery');
   const candidatesNode = workflow.nodes.find((node) => node.name === 'Find undelivered revisions');
@@ -2230,6 +2231,43 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(parsedEvidence[0].json.valid, true);
   assert.equal(parsedEvidence[0].json.report.extraction_confidence, 0.84);
   assert.equal((await parseQwen(validReport()))[0].json.valid, false);
+  const runMerge = new AsyncFunction('$input', mergeExtractedNode.parameters.jsCode);
+  const preferredEvidence = evidenceReport({
+    stage_signal: 'talks', claim_stance: 'supports', wording_strength: 'direct', club_agreement_state: 'talks', personal_terms_state: 'talks',
+    completion_claim: 'none', attribution_kind: 'original', named_originator: null, extraction_confidence: 0.55,
+  });
+  const lowerRankedEvidence = evidenceReport({
+    stage_signal: 'done', claim_stance: 'contradicts', wording_strength: 'definitive', club_agreement_state: 'agreed', personal_terms_state: 'agreed',
+    completion_claim: 'reporter_done', attribution_kind: 'cites_named_source', named_originator: 'David Ornstein', extraction_confidence: 0.95,
+  });
+  const mergedEvidence = await runMerge({ all: () => [
+    { json: { report: { ...preferredEvidence, raw_post_id: '1', post_url: 'https://x.com/preferred/status/1', posted_at: '2026-08-27T00:00:00.000Z', source: { priority_rank: 1, reliability_score: 0.9 } } } },
+    { json: { report: { ...lowerRankedEvidence, raw_post_id: '2', post_url: 'https://x.com/lower/status/2', posted_at: '2026-08-27T00:01:00.000Z', source: { priority_rank: 4, reliability_score: 0.7 } } } },
+  ] });
+  const mergedPayload = JSON.parse(mergedEvidence[0].json.params[0]);
+  const mergedSnapshot = mergedPayload.snapshot;
+  for (const field of ['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence']) {
+    assert.deepEqual(mergedSnapshot[field], preferredEvidence[field], field);
+    assert.deepEqual(mergedPayload.normalized_data.conflicts[field], [preferredEvidence[field], lowerRankedEvidence[field]], `${field} conflict`);
+  }
+  for (const [field, value] of [
+    ['player_name', ''],
+    ['player_identity_hint', 42],
+    ['classification', 'maybe'],
+    ['move_type', 'teleport'],
+    ['fee_amount', 'many'],
+    ['add_ons_amount', -1],
+    ['fee_currency', 'eur'],
+    ['contract_length_months', 1.5],
+    ['contract_expires_on', 'next year'],
+    ['has_option_to_buy', 'yes'],
+    ['sell_on_percentage', 101],
+    ['medical_status', 'whatever'],
+    ['agreement_status', 'whatever'],
+    ['is_digest_worthy', 'yes'],
+  ]) {
+    assert.equal((await parseQwen(evidenceReport({ [field]: value })))[0].json.valid, false, field);
+  }
   assert.doesNotMatch(workflow.nodes.find((node) => node.name === 'Prepare delivery finalization').parameters.jsCode, /itemMatching/);
   assert.match(sampleNode.parameters.jsCode, /TEST DATA/);
   assert.ok(workflow.connections['Manual sample run']);

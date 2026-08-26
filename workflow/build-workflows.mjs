@@ -1241,6 +1241,14 @@ const clubAgreementStates = ${JSON.stringify(CLUB_AGREEMENT_STATES)};
 const personalTermsStates = ${JSON.stringify(PERSONAL_TERMS_STATES)};
 const completionClaims = ${JSON.stringify(COMPLETION_CLAIMS)};
 const attributionKinds = ${JSON.stringify(ATTRIBUTION_KINDS)};
+const moveTypes = ${JSON.stringify(['permanent', 'loan', 'unknown'])};
+const medicalStates = ${JSON.stringify(['not_reported', 'scheduled', 'passed', 'failed', 'pending', 'unknown'])};
+const agreementStates = ${JSON.stringify(['not_reported', 'reached', 'close', 'negotiating', 'rejected', 'unknown'])};
+const nullableString = (value) => value === null || typeof value === 'string';
+const nullableNumber = (value) => value === null || (Number.isFinite(value) && value >= 0);
+const nullableCurrency = (value) => value === null || (typeof value === 'string' && /^[A-Z]{3}$/.test(value));
+const nullableDate = (value) => value === null || (typeof value === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(value));
+const nullableBoolean = (value) => value === null || typeof value === 'boolean';
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
   const request = requests[requestIndex]?.json;
@@ -1250,8 +1258,8 @@ return $input.all().flatMap((item, index) => {
   let parsed;
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
-  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
-  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
+  if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
+  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
@@ -1271,6 +1279,7 @@ for (const item of $input.all()) {
   groups.set(groupKey, [...(groups.get(groupKey) ?? []), report]);
 }
 const outputs = [];
+const evidenceFields = new Set(${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])});
 for (const reports of groups.values()) {
   reports.sort(compareSource);
   const best = reports[0];
@@ -1279,11 +1288,11 @@ for (const reports of groups.values()) {
   for (const field of Object.keys(best)) {
     if (['raw_post_id', 'post_url', 'posted_at', 'source'].includes(field)) continue;
     const values = reports.map((report) => report[field]).filter((value) => value !== null && value !== undefined && value !== '');
-    if (values.length) merged[field] = values[0];
-    if (new Set(values.map((value) => JSON.stringify(value))).size > 1) conflicts[field] = values;
+    if (values.length && !evidenceFields.has(field)) merged[field] = values[0];
+    const conflictValues = evidenceFields.has(field) ? reports.map((report) => report[field] ?? null) : values;
+    if (new Set(conflictValues.map((value) => JSON.stringify(value))).size > 1) conflicts[field] = conflictValues;
   }
   merged.classification = reports.map((report) => report.classification).sort((a, b) => precedence[b] - precedence[a])[0];
-  merged.extraction_confidence = Math.max(...reports.map((report) => report.extraction_confidence));
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
