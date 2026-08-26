@@ -35,7 +35,15 @@
           "agreement_status",
           "is_huge_rumor",
           "is_digest_worthy",
-          "confidence"
+          "stage_signal",
+          "claim_stance",
+          "wording_strength",
+          "club_agreement_state",
+          "personal_terms_state",
+          "completion_claim",
+          "attribution_kind",
+          "named_originator",
+          "extraction_confidence"
         ],
         "properties": {
           "player_name": { "type": "string", "minLength": 1 },
@@ -70,7 +78,21 @@
           },
           "is_huge_rumor": { "type": "boolean" },
           "is_digest_worthy": { "type": "boolean" },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          "stage_signal": {
+            "type": "string",
+            "enum": ["link", "interest", "talks", "advanced", "agreed", "done", "setback", "collapsed", "official_wording", "not_reported"]
+          },
+          "claim_stance": { "type": "string", "enum": ["supports", "contradicts", "neutral"] },
+          "wording_strength": { "type": "string", "enum": ["hedged", "reported", "direct", "definitive"] },
+          "club_agreement_state": {
+            "type": "string",
+            "enum": ["not_reported", "not_applicable", "talks", "agreed", "rejected", "collapsed"]
+          },
+          "personal_terms_state": { "type": "string", "enum": ["not_reported", "talks", "agreed", "rejected"] },
+          "completion_claim": { "type": "string", "enum": ["none", "reporter_done", "official_announcement"] },
+          "attribution_kind": { "type": "string", "enum": ["original", "cites_named_source", "aggregation", "unknown"] },
+          "named_originator": { "type": ["string", "null"], "minLength": 1 },
+          "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
         }
       }
     }

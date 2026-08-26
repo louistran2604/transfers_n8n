@@ -17,6 +17,18 @@ export const MEDICAL_STATES = Object.freeze([
 export const AGREEMENT_STATES = Object.freeze([
   'not_reported', 'reached', 'close', 'negotiating', 'rejected', 'unknown',
 ]);
+export const STAGE_SIGNALS = Object.freeze([
+  'link', 'interest', 'talks', 'advanced', 'agreed', 'done',
+  'setback', 'collapsed', 'official_wording', 'not_reported',
+]);
+export const CLAIM_STANCES = Object.freeze(['supports', 'contradicts', 'neutral']);
+export const WORDING_STRENGTHS = Object.freeze(['hedged', 'reported', 'direct', 'definitive']);
+export const CLUB_AGREEMENT_STATES = Object.freeze([
+  'not_reported', 'not_applicable', 'talks', 'agreed', 'rejected', 'collapsed',
+]);
+export const PERSONAL_TERMS_STATES = Object.freeze(['not_reported', 'talks', 'agreed', 'rejected']);
+export const COMPLETION_CLAIMS = Object.freeze(['none', 'reporter_done', 'official_announcement']);
+export const ATTRIBUTION_KINDS = Object.freeze(['original', 'cites_named_source', 'aggregation', 'unknown']);
 
 const REPORT_FIELDS = Object.freeze([
   'player_name',
@@ -44,6 +56,32 @@ const REPORT_FIELDS = Object.freeze([
   'is_digest_worthy',
   'confidence',
 ]);
+
+const EVIDENCE_FIELDS = Object.freeze([
+  'stage_signal',
+  'claim_stance',
+  'wording_strength',
+  'club_agreement_state',
+  'personal_terms_state',
+  'completion_claim',
+  'attribution_kind',
+  'named_originator',
+  'extraction_confidence',
+]);
+const QWEN_REPORT_FIELDS = Object.freeze([
+  ...REPORT_FIELDS.filter((field) => field !== 'confidence'),
+  ...EVIDENCE_FIELDS,
+]);
+const LEGACY_EVIDENCE_DEFAULTS = Object.freeze({
+  stage_signal: 'not_reported',
+  claim_stance: 'neutral',
+  wording_strength: 'hedged',
+  club_agreement_state: 'not_reported',
+  personal_terms_state: 'not_reported',
+  completion_claim: 'none',
+  attribution_kind: 'unknown',
+  named_originator: null,
+});
 
 const CLASSIFICATION_PRECEDENCE = Object.freeze({
   contract_renewal: 6,
@@ -775,26 +813,27 @@ function isNullableCurrency(value) {
 }
 
 export function validateQwenResponse(value) {
+  const canonical = canonicalizeQwenResponse(value);
   const errors = [];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
     return { valid: false, errors: ['response must be an object'] };
   }
   const expected = new Set(['transfer_related', 'reports']);
-  for (const key of Object.keys(value)) if (!expected.has(key)) errors.push(`unexpected response property: ${key}`);
-  for (const key of expected) if (!(key in value)) errors.push(`missing response property: ${key}`);
-  if (typeof value.transfer_related !== 'boolean') errors.push('transfer_related must be boolean');
-  if (!Array.isArray(value.reports)) errors.push('reports must be an array');
-  if (value.transfer_related === false && Array.isArray(value.reports) && value.reports.length) errors.push('non-transfer responses cannot include reports');
-  if (Array.isArray(value.reports)) {
-    value.reports.forEach((report, index) => {
+  for (const key of Object.keys(canonical)) if (!expected.has(key)) errors.push(`unexpected response property: ${key}`);
+  for (const key of expected) if (!(key in canonical)) errors.push(`missing response property: ${key}`);
+  if (typeof canonical.transfer_related !== 'boolean') errors.push('transfer_related must be boolean');
+  if (!Array.isArray(canonical.reports)) errors.push('reports must be an array');
+  if (canonical.transfer_related === false && Array.isArray(canonical.reports) && canonical.reports.length) errors.push('non-transfer responses cannot include reports');
+  if (Array.isArray(canonical.reports)) {
+    canonical.reports.forEach((report, index) => {
       const label = `reports[${index}]`;
       if (!report || typeof report !== 'object' || Array.isArray(report)) {
         errors.push(`${label} must be an object`);
         return;
       }
       const keys = new Set(Object.keys(report));
-      for (const field of REPORT_FIELDS) if (!keys.has(field)) errors.push(`${label}.${field} is required`);
-      for (const field of keys) if (!REPORT_FIELDS.includes(field)) errors.push(`${label}.${field} is not allowed`);
+      for (const field of QWEN_REPORT_FIELDS) if (!keys.has(field)) errors.push(`${label}.${field} is required`);
+      for (const field of keys) if (!QWEN_REPORT_FIELDS.includes(field)) errors.push(`${label}.${field} is not allowed`);
       if (typeof report.player_name !== 'string' || !report.player_name.trim()) errors.push(`${label}.player_name must be non-empty string`);
       for (const field of ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name']) {
         if (!isNullableString(report[field])) errors.push(`${label}.${field} must be string or null`);
@@ -818,10 +857,32 @@ export function validateQwenResponse(value) {
       if (!AGREEMENT_STATES.includes(report.agreement_status)) errors.push(`${label}.agreement_status is invalid`);
       if (typeof report.is_huge_rumor !== 'boolean') errors.push(`${label}.is_huge_rumor must be boolean`);
       if (typeof report.is_digest_worthy !== 'boolean') errors.push(`${label}.is_digest_worthy must be boolean`);
-      if (typeof report.confidence !== 'number' || !Number.isFinite(report.confidence) || report.confidence < 0 || report.confidence > 1) errors.push(`${label}.confidence must be between 0 and 1`);
+      if (!STAGE_SIGNALS.includes(report.stage_signal)) errors.push(`${label}.stage_signal is invalid`);
+      if (!CLAIM_STANCES.includes(report.claim_stance)) errors.push(`${label}.claim_stance is invalid`);
+      if (!WORDING_STRENGTHS.includes(report.wording_strength)) errors.push(`${label}.wording_strength is invalid`);
+      if (!CLUB_AGREEMENT_STATES.includes(report.club_agreement_state)) errors.push(`${label}.club_agreement_state is invalid`);
+      if (!PERSONAL_TERMS_STATES.includes(report.personal_terms_state)) errors.push(`${label}.personal_terms_state is invalid`);
+      if (!COMPLETION_CLAIMS.includes(report.completion_claim)) errors.push(`${label}.completion_claim is invalid`);
+      if (!ATTRIBUTION_KINDS.includes(report.attribution_kind)) errors.push(`${label}.attribution_kind is invalid`);
+      if (report.named_originator !== null && (typeof report.named_originator !== 'string' || !report.named_originator.trim())) errors.push(`${label}.named_originator must be non-empty string or null`);
+      if (typeof report.extraction_confidence !== 'number' || !Number.isFinite(report.extraction_confidence) || report.extraction_confidence < 0 || report.extraction_confidence > 1) errors.push(`${label}.extraction_confidence must be between 0 and 1`);
     });
   }
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, value: canonical };
+}
+
+export function canonicalizeQwenResponse(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(value.reports)) return value;
+  return {
+    ...value,
+    reports: value.reports.map((report) => {
+      if (!report || typeof report !== 'object' || Array.isArray(report)) return report;
+      const keys = Object.keys(report);
+      if (keys.length !== REPORT_FIELDS.length || !REPORT_FIELDS.every((field) => field in report)) return report;
+      const { confidence, ...legacy } = report;
+      return { ...legacy, ...LEGACY_EVIDENCE_DEFAULTS, extraction_confidence: confidence };
+    }),
+  };
 }
 
 export function chooseClassification(classifications) {
@@ -1285,3 +1346,4 @@ export function recoverInterruptedDelivery(delivery) {
 }
 
 export const REPORT_FIELD_NAMES = REPORT_FIELDS;
+export const QWEN_REPORT_FIELD_NAMES = QWEN_REPORT_FIELDS;

@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   buildEnrichmentRequest,
   buildDiscordDigest,
+  canonicalizeQwenResponse,
   canonicalizeReport,
   chooseClassification,
   dedupeKey,
@@ -55,6 +56,23 @@ const validReport = (overrides = {}) => ({
   confidence: 0.7,
   ...overrides,
 });
+
+const evidenceReport = (overrides = {}) => {
+  const { confidence: _confidence, ...report } = validReport();
+  return {
+    ...report,
+    stage_signal: 'talks',
+    claim_stance: 'supports',
+    wording_strength: 'reported',
+    club_agreement_state: 'talks',
+    personal_terms_state: 'not_reported',
+    completion_claim: 'none',
+    attribution_kind: 'original',
+    named_originator: null,
+    extraction_confidence: 0.7,
+    ...overrides,
+  };
+};
 
 const source = (username, account_type = 'individual') => {
   const lower = username.toLowerCase();
@@ -195,18 +213,69 @@ test('RapidAPI parser accepts direct and quoted tweets and ignores pure retweets
   assert.equal(posts[0].external_post_id, '900000000000000101');
 });
 
-test('strict Qwen validation rejects extra properties, invalid currencies, and missing fields', () => {
-  const accepted = { transfer_related: true, reports: [validReport()] };
+test('strict Qwen validation accepts the exact evidence contract and rejects unknown scoring fields', () => {
+  const accepted = { transfer_related: true, reports: [evidenceReport()] };
   assert.equal(validateQwenResponse(accepted).valid, true);
   assert.equal(validateQwenResponse({ ...accepted, source_url: 'https://bad.example' }).valid, false);
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [validReport({ fee_currency: 'eur' })] }).valid, false);
-  const missing = validReport();
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ fee_currency: 'eur' })] }).valid, false);
+  for (const field of ['percentage', 'transfer_probability', 'probability_contribution', 'reliability_score', 'independent_source_count', 'explanation']) {
+    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 1 })] }).valid, false, field);
+  }
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ confidence: 0.9 })] }).valid, false);
+  const missing = evidenceReport();
   delete missing.player_name;
   assert.equal(validateQwenResponse({ transfer_related: true, reports: [missing] }).valid, false);
 });
 
+test('Qwen evidence enums cover stages, gates, completion wording, and attribution', () => {
+  const enumCases = {
+    stage_signal: ['link', 'interest', 'talks', 'advanced', 'agreed', 'done', 'setback', 'collapsed', 'official_wording', 'not_reported'],
+    claim_stance: ['supports', 'contradicts', 'neutral'],
+    wording_strength: ['hedged', 'reported', 'direct', 'definitive'],
+    club_agreement_state: ['not_reported', 'not_applicable', 'talks', 'agreed', 'rejected', 'collapsed'],
+    personal_terms_state: ['not_reported', 'talks', 'agreed', 'rejected'],
+    completion_claim: ['none', 'reporter_done', 'official_announcement'],
+    attribution_kind: ['original', 'cites_named_source', 'aggregation', 'unknown'],
+  };
+  for (const [field, values] of Object.entries(enumCases)) {
+    for (const value of values) assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: value })] }).valid, true, `${field}=${value}`);
+    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 'invalid' })] }).valid, false, field);
+  }
+
+  for (const report of [
+    evidenceReport({ stage_signal: 'setback', club_agreement_state: 'rejected' }),
+    evidenceReport({ stage_signal: 'collapsed', club_agreement_state: 'collapsed', claim_stance: 'contradicts' }),
+    evidenceReport({ stage_signal: 'agreed', club_agreement_state: 'agreed', personal_terms_state: 'not_reported' }),
+    evidenceReport({ stage_signal: 'agreed', club_agreement_state: 'agreed', personal_terms_state: 'agreed' }),
+    evidenceReport({ stage_signal: 'done', completion_claim: 'reporter_done' }),
+    evidenceReport({ stage_signal: 'official_wording', completion_claim: 'official_announcement' }),
+    evidenceReport({ attribution_kind: 'cites_named_source', named_originator: 'David Ornstein' }),
+    evidenceReport({ attribution_kind: 'aggregation' }),
+  ]) assert.equal(validateQwenResponse({ transfer_related: true, reports: [report] }).valid, true);
+
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: '' })] }).valid, false);
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: 42 })] }).valid, false);
+  for (const extraction_confidence of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ extraction_confidence })] }).valid, false);
+  }
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [
+    evidenceReport({ destination_club_name: 'Club A', stage_signal: 'link' }),
+    evidenceReport({ destination_club_name: 'Club B', stage_signal: 'interest' }),
+  ] }).valid, true);
+});
+
+test('reusable Qwen compatibility maps the exact legacy confidence report once', () => {
+  const legacy = { transfer_related: true, reports: [validReport({ confidence: 0.83 })] };
+  assert.equal(validateQwenResponse(legacy).valid, true);
+  const canonical = canonicalizeQwenResponse(legacy);
+  assert.equal(canonical.reports[0].extraction_confidence, 0.83);
+  assert.equal('confidence' in canonical.reports[0], false);
+  assert.equal(canonical.reports[0].stage_signal, 'not_reported');
+  assert.equal(validateQwenResponse({ transfer_related: true, reports: [{ ...evidenceReport(), confidence: 0.5 }] }).valid, false);
+});
+
 test('Qwen contract keeps explicit former senior club separate from omitted current club', async () => {
-  const report = validReport({
+  const report = evidenceReport({
     player_name: 'Endrick',
     current_club_name: null,
     former_club_name: 'Palmeiras',
@@ -222,6 +291,8 @@ test('Qwen contract keeps explicit former senior club separate from omitted curr
   assert.match(prompt, /same player is linked to multiple distinct destination clubs/);
   const schema = JSON.parse(await readFile(new URL('../../workflow/qwen-response-schema.json', import.meta.url), 'utf8'));
   assert.ok(schema.properties.reports.items.required.includes('former_club_name'));
+  assert.ok(schema.properties.reports.items.required.includes('extraction_confidence'));
+  assert.equal(schema.properties.reports.items.required.includes('confidence'), false);
 });
 
 test('merging uses source tier, fills missing fields, keeps conflicts, and creates only material revisions', () => {
@@ -2122,7 +2193,15 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenNode.parameters.jsCode, /Normalized common football surnames/);
   assert.match(qwenNode.parameters.jsCode, /preserve any first or given name stated/);
   assert.match(qwenNode.parameters.jsCode, /never reorder a surname-first name/);
+  assert.match(qwenNode.parameters.jsCode, /A rejected bid is `stage_signal=setback` plus `club_agreement_state=rejected`/);
+  assert.match(qwenNode.parameters.jsCode, /official_announcement` describes wording only/);
+  assert.match(qwenNode.parameters.jsCode, /not the likelihood that the move completes/);
+  assert.match(qwenNode.parameters.jsCode, /Never output any percentage, transfer probability/);
+  assert.match(qwenNode.parameters.jsCode, /"extraction_confidence"/);
+  assert.doesNotMatch(qwenNode.parameters.jsCode, /"confidence":\s*\{\s*"type"/);
   assert.match(qwenParserNode.parameters.jsCode, /Randal Kolo Muani/);
+  assert.match(qwenParserNode.parameters.jsCode, /report\.extraction_confidence/);
+  assert.doesNotMatch(qwenParserNode.parameters.jsCode, /report\.confidence/);
   assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
   assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
   assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
@@ -2142,6 +2221,15 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenNode.parameters.jsCode, /delete llamaSchema\.properties\.reports\.items\.properties\.player_name\.minLength/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.player_name\.trim\(\)\.length > 0/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.is_huge_rumor === 'boolean'/);
+  assert.match(mergeReportsNode.parameters.query, /payload->>'extraction_confidence'/);
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runQwenParser = new AsyncFunction('$input', '$', qwenParserNode.parameters.jsCode);
+  const request = { json: { raw_post_id: '1', external_post_id: '2', post_url: 'https://x.com/test/status/2', posted_at: '2026-08-27T00:00:00.000Z', source: source('test') } };
+  const parseQwen = (report) => runQwenParser({ all: () => [{ json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [report] }) } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
+  const parsedEvidence = await parseQwen(evidenceReport({ extraction_confidence: 0.84 }));
+  assert.equal(parsedEvidence[0].json.valid, true);
+  assert.equal(parsedEvidence[0].json.report.extraction_confidence, 0.84);
+  assert.equal((await parseQwen(validReport()))[0].json.valid, false);
   assert.doesNotMatch(workflow.nodes.find((node) => node.name === 'Prepare delivery finalization').parameters.jsCode, /itemMatching/);
   assert.match(sampleNode.parameters.jsCode, /TEST DATA/);
   assert.ok(workflow.connections['Manual sample run']);

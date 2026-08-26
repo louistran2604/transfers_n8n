@@ -2,7 +2,17 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEntityAliases, loadSourceRegistry } from './lib.mjs';
+import {
+  ATTRIBUTION_KINDS,
+  CLAIM_STANCES,
+  CLUB_AGREEMENT_STATES,
+  COMPLETION_CLAIMS,
+  loadEntityAliases,
+  loadSourceRegistry,
+  PERSONAL_TERMS_STATES,
+  STAGE_SIGNALS,
+  WORDING_STRENGTHS,
+} from './lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -156,7 +166,7 @@ report AS (
     NULLIF(payload->>'contract_length_months', '')::integer, NULLIF(payload->>'contract_expires_on', '')::date,
     NULLIF(payload->>'loan_ends_on', '')::date, NULLIF(payload->>'has_option_to_buy', '')::boolean,
     NULLIF(payload->>'has_obligation_to_buy', '')::boolean, NULLIF(payload->>'sell_on_percentage', '')::numeric,
-    payload->>'medical_status', payload->>'agreement_status', (payload->>'confidence')::numeric,
+    payload->>'medical_status', payload->>'agreement_status', (payload->>'extraction_confidence')::numeric,
     (payload->>'first_reported_at')::timestamptz, (payload->>'last_reported_at')::timestamptz,
     COALESCE(payload->'normalized_data', '{}'::jsonb)
   FROM input
@@ -1222,8 +1232,15 @@ function qwenParseCode() {
   return `
 ${entityAliasHelpers()}
 const requests = $('Build Qwen request').all();
-const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])};
+const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
+const stages = ${JSON.stringify(STAGE_SIGNALS)};
+const stances = ${JSON.stringify(CLAIM_STANCES)};
+const strengths = ${JSON.stringify(WORDING_STRENGTHS)};
+const clubAgreementStates = ${JSON.stringify(CLUB_AGREEMENT_STATES)};
+const personalTermsStates = ${JSON.stringify(PERSONAL_TERMS_STATES)};
+const completionClaims = ${JSON.stringify(COMPLETION_CLAIMS)};
+const attributionKinds = ${JSON.stringify(ATTRIBUTION_KINDS)};
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
   const request = requests[requestIndex]?.json;
@@ -1234,7 +1251,7 @@ return $input.all().flatMap((item, index) => {
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }));
-  const valid = parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && Number.isFinite(report.confidence) && report.confidence >= 0 && report.confidence <= 1);
+  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && parsed.reports.every((report) => report && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && classes.includes(report.classification) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
@@ -1266,16 +1283,18 @@ for (const reports of groups.values()) {
     if (new Set(values.map((value) => JSON.stringify(value))).size > 1) conflicts[field] = values;
   }
   merged.classification = reports.map((report) => report.classification).sort((a, b) => precedence[b] - precedence[a])[0];
-  merged.confidence = Math.max(...reports.map((report) => report.confidence));
+  merged.extraction_confidence = Math.max(...reports.map((report) => report.extraction_confidence));
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
-  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'confidence'])}.map((field) => [field, merged[field] ?? null]));
+  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])}.map((field) => [field, merged[field] ?? null]));
+  snapshot.confidence = merged.extraction_confidence;
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
     ...snapshot,
     player_identity_key: normalize(merged.player_name).replace(/\\s/g, '-'),
     normalized_player_name: normalize(merged.player_name),
+    extraction_confidence: merged.extraction_confidence,
     first_reported_at: merged.first_reported_at,
     last_reported_at: merged.last_reported_at,
     normalized_data: { conflicts, former_club_name: merged.former_club_name ?? null, reported_name_key: unicodeKey(merged.player_name), current_club_key: namedKey(merged.current_club_name), destination_club_key: namedKey(merged.destination_club_name) },

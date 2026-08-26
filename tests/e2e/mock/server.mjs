@@ -16,7 +16,9 @@ const validExtraction = {
     classification: 'advanced_negotiations', move_type: 'permanent', fee_amount: null, fee_currency: null,
     add_ons_amount: null, add_ons_currency: null, release_clause_amount: null, release_clause_currency: null,
     contract_length_months: null, contract_expires_on: null, loan_ends_on: null, has_option_to_buy: null,
-    has_obligation_to_buy: null, sell_on_percentage: null, medical_status: 'not_reported', agreement_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true, confidence: 0.8,
+    has_obligation_to_buy: null, sell_on_percentage: null, medical_status: 'not_reported', agreement_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
+    stage_signal: 'advanced', claim_stance: 'supports', wording_strength: 'reported', club_agreement_state: 'talks', personal_terms_state: 'talks',
+    completion_claim: 'none', attribution_kind: 'original', named_originator: null, extraction_confidence: 0.8,
   }],
 };
 
