@@ -67,8 +67,9 @@ function sourceUpsertSql() {
   return `
 INSERT INTO source_accounts (
   platform, external_account_id, username, display_name, account_type,
-  is_official, priority_rank, reliability_score
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  is_official, priority_rank, reliability_score, seed_reliability,
+  publisher_group_key, source_kind, is_aggregator
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (platform, external_account_id) DO UPDATE
 SET username = EXCLUDED.username,
     display_name = EXCLUDED.display_name,
@@ -76,9 +77,14 @@ SET username = EXCLUDED.username,
     is_official = EXCLUDED.is_official,
     priority_rank = EXCLUDED.priority_rank,
     reliability_score = EXCLUDED.reliability_score,
+    seed_reliability = EXCLUDED.seed_reliability,
+    publisher_group_key = EXCLUDED.publisher_group_key,
+    source_kind = EXCLUDED.source_kind,
+    is_aggregator = EXCLUDED.is_aggregator,
     is_active = true
 RETURNING id::text AS source_account_id, platform, external_account_id, username,
-  display_name, account_type, is_official, priority_rank, reliability_score;`.trim();
+  display_name, account_type, is_official, priority_rank, reliability_score,
+  seed_reliability, publisher_group_key, source_kind, is_aggregator;`.trim();
 }
 
 function rawPostUpsertSql() {
@@ -1857,11 +1863,11 @@ return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stri
     postgresNode('Register sample workflow run', [-500, 220], runRegistrationSql()),
     codeNode('Load generated sources', [-300, -40], `
 const sources = ${registryJson};
-return sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score] } }));`),
+return sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }));`),
     postgresNode('Upsert source accounts', [-100, -40], sourceUpsertSql()),
     codeNode('Load sample source', [-300, 220], `
-const source = { platform: 'x', external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton', account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.70 };
-return [{ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score] } }];`),
+const source = { platform: 'x', external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton', account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.70, seed_reliability: 0.70, publisher_group_key: 'reporter:adamcrafton', source_kind: 'journalist', is_aggregator: false };
+return [{ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }];`),
     postgresNode('Upsert sample source account', [-100, 220], sourceUpsertSql()),
     codeNode('Select X collector', [100, -40], `
 const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();
@@ -1897,7 +1903,7 @@ return $input.all().map((item) => ({ json: { source: item.json, requestPath: '/u
       ] },
     }, { continueOnFail: true, retryOnFail: true, maxTries: 5, waitBetweenTries: 1000 }),
     codeNode('Load sample collected X posts', [320, 220], `
-const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score) };
+const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score), seed_reliability: Number($json.seed_reliability), publisher_group_key: $json.publisher_group_key, source_kind: $json.source_kind, is_aggregator: $json.is_aggregator };
 const createdAt = new Date().toUTCString();
 const tweet = (id, text) => ({ rest_id: id, legacy: { id_str: id, full_text: text, created_at: createdAt } });
 return [{ json: { source, body: { data: { entries: [

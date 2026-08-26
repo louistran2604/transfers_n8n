@@ -54,8 +54,7 @@ const CLASSIFICATION_PRECEDENCE = Object.freeze({
   rumor: 1,
 });
 
-const OFFICIAL_USERNAMES = new Set(['realmadrid', 'manutd']);
-const TIER_TWO_USERNAMES = new Set(['david_ornstein', 'fabrizioromano']);
+const SOURCE_KINDS = new Set(['journalist', 'publisher', 'club_official', 'league_official', 'aggregator']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const DECIMAL_ID = /^\d+$/;
@@ -611,7 +610,8 @@ export function parseSourceRegistry(markdown) {
     if (!accountType || !line.trimStart().startsWith('|')) continue;
 
     const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
-    if (cells.length !== 4 || /^(name|organization)$/i.test(cells[0]) || /^-+$/.test(cells[0].replace(/\s/g, ''))) continue;
+    if (/^(name|organization)$/i.test(cells[0]) || /^-+$/.test(cells[0].replace(/\s/g, ''))) continue;
+    if (cells.length !== 8) throw new Error(`Missing explicit source metadata for ${cells[0]}`);
     const username = cells[1].replace(/`/g, '').replace(/^@/, '').trim();
     const externalAccountId = cells[3].replace(/`/g, '').trim();
     if (!/^[A-Za-z0-9_]{1,15}$/.test(username)) {
@@ -629,6 +629,10 @@ export function parseSourceRegistry(markdown) {
       username,
       external_account_id: externalAccountId,
       account_type: accountType,
+      source_kind: cells[4],
+      publisher_group_key: cells[5].replace(/`/g, '').trim(),
+      is_aggregator: cells[6] === 'true' ? true : cells[6] === 'false' ? false : cells[6],
+      seed_reliability: cells[7] === '' ? Number.NaN : Number(cells[7]),
     }));
   }
 
@@ -644,30 +648,39 @@ export async function loadSourceRegistry(path) {
 
 export function sourceMetadata(account) {
   const username = String(account.username).replace(/^@/, '');
-  const lower = username.toLowerCase();
-  let priority_rank = 4;
-  let reliability_score = 0.70;
-  let is_official = false;
-  if (OFFICIAL_USERNAMES.has(lower)) {
-    priority_rank = 1;
-    reliability_score = 1.00;
-    is_official = true;
-  } else if (TIER_TWO_USERNAMES.has(lower)) {
-    priority_rank = 2;
-    reliability_score = 0.95;
-  } else if (account.account_type === 'organization') {
-    priority_rank = 3;
-    reliability_score = 0.80;
+  const source_kind = account.source_kind;
+  const publisher_group_key = account.publisher_group_key;
+  const is_aggregator = account.is_aggregator;
+  const seed_reliability = account.seed_reliability;
+  if (!SOURCE_KINDS.has(source_kind)) throw new Error(`Invalid source kind for @${username}: ${source_kind}`);
+  if (typeof publisher_group_key !== 'string' || !/^[a-z0-9]+(?::[a-z0-9]+(?:-[a-z0-9]+)*)?$/.test(publisher_group_key)) {
+    throw new Error(`Invalid publisher group for @${username}: ${publisher_group_key}`);
   }
+  const expectedGroupPrefix = source_kind === 'journalist' ? 'reporter' : source_kind === 'publisher' ? 'publisher' : source_kind === 'club_official' ? 'club' : null;
+  const expectedGroupKey = expectedGroupPrefix && `${expectedGroupPrefix}:${normalizeIdentity(source_kind === 'journalist' ? username : account.display_name)}`;
+  if (expectedGroupKey && publisher_group_key !== expectedGroupKey) {
+    throw new Error(`Invalid publisher group for @${username}: expected ${expectedGroupKey}`);
+  }
+  if (typeof is_aggregator !== 'boolean') throw new Error(`Invalid aggregator value for @${username}: ${is_aggregator}`);
+  if (typeof seed_reliability !== 'number' || !Number.isFinite(seed_reliability) || seed_reliability < 0 || seed_reliability > 1) {
+    throw new Error(`Invalid seed reliability for @${username}: ${account.seed_reliability}`);
+  }
+  if ((source_kind === 'aggregator') !== is_aggregator) throw new Error(`Inconsistent aggregator metadata for @${username}`);
+  const is_official = source_kind === 'club_official' || source_kind === 'league_official';
+  const priority_rank = is_official ? 1 : seed_reliability >= 0.95 ? 2 : account.account_type === 'organization' ? 3 : 4;
   return {
     platform: 'x',
     external_account_id: String(account.external_account_id),
     username,
     display_name: String(account.display_name),
     account_type: account.account_type,
+    seed_reliability,
+    publisher_group_key,
+    source_kind,
+    is_aggregator,
     is_official,
     priority_rank,
-    reliability_score,
+    reliability_score: seed_reliability,
   };
 }
 

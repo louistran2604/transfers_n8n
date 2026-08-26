@@ -16,6 +16,7 @@ import {
   mergeReportGroup,
   normalizeEnrichmentResponse,
   parseEntityAliases,
+  parseSourceRegistry,
   parseRapidApiPosts,
   recoverInterruptedDelivery,
   retryDelayMs,
@@ -55,12 +56,21 @@ const validReport = (overrides = {}) => ({
   ...overrides,
 });
 
-const source = (username, account_type = 'individual') => sourceMetadata({
-  username,
-  display_name: username,
-  external_account_id: '900000000000000001',
-  account_type,
-});
+const source = (username, account_type = 'individual') => {
+  const lower = username.toLowerCase();
+  const isOfficial = ['realmadrid', 'manutd'].includes(lower);
+  const seed_reliability = ['david_ornstein', 'fabrizioromano'].includes(lower) ? 0.95 : isOfficial ? 1 : account_type === 'organization' ? 0.8 : 0.7;
+  return sourceMetadata({
+    username,
+    display_name: username,
+    external_account_id: '900000000000000001',
+    account_type,
+    source_kind: isOfficial ? 'club_official' : account_type === 'organization' ? 'publisher' : 'journalist',
+    publisher_group_key: `${isOfficial ? 'club' : account_type === 'organization' ? 'publisher' : 'reporter'}:${lower.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
+    is_aggregator: false,
+    seed_reliability,
+  });
+};
 
 const richEnrichment = (overrides = {}) => ({
   profile: {
@@ -106,16 +116,59 @@ const discordCharacterCount = (embed) => (
   + embed.fields.reduce((total, field) => total + field.name.length + field.value.length, 0)
 );
 
-test('source parser returns all 78 sources and preserves large IDs as strings', async () => {
+test('source registry exposes valid explicit metadata for all 78 unique decimal IDs', async () => {
   const registry = await loadSourceRegistry(new URL('../../docs/journalist_list.md', import.meta.url));
   assert.equal(registry.length, 78);
+  assert.equal(new Set(registry.map((account) => account.external_account_id)).size, 78);
+  assert.ok(registry.every((account) => /^\d+$/.test(account.external_account_id)));
+  assert.ok(registry.every((account) => ['journalist', 'publisher', 'club_official', 'league_official', 'aggregator'].includes(account.source_kind)));
+  assert.ok(registry.every((account) => /^[a-z0-9]+(?::[a-z0-9]+(?:-[a-z0-9]+)*)?$/.test(account.publisher_group_key)));
+  assert.ok(registry.every((account) => typeof account.is_aggregator === 'boolean'));
+  assert.ok(registry.every((account) => Number.isFinite(account.seed_reliability) && account.seed_reliability >= 0 && account.seed_reliability <= 1));
   const harpur = registry.find((account) => account.username === 'charlotteharpur');
   assert.equal(harpur.external_account_id, '922928582866980864');
   assert.equal(typeof harpur.external_account_id, 'string');
-  assert.deepEqual(source('realmadrid'), { platform: 'x', external_account_id: '900000000000000001', username: 'realmadrid', display_name: 'realmadrid', account_type: 'individual', is_official: true, priority_rank: 1, reliability_score: 1 });
-  assert.equal(source('David_Ornstein').priority_rank, 2);
-  assert.equal(source('BBCSport', 'organization').priority_rank, 3);
-  assert.equal(source('someone').priority_rank, 4);
+  const expected = {
+    realmadrid: ['club_official', 'club:real-madrid', 1, false, true, 1],
+    David_Ornstein: ['journalist', 'reporter:david-ornstein', 0.95, false, false, 2],
+    AdamCrafton_: ['journalist', 'reporter:adamcrafton', 0.7, false, false, 4],
+    BBCSport: ['publisher', 'publisher:bbc-sport', 0.8, false, false, 3],
+  };
+  for (const [username, values] of Object.entries(expected)) {
+    const account = registry.find((candidate) => candidate.username === username);
+    assert.deepEqual([account.source_kind, account.publisher_group_key, account.seed_reliability, account.is_aggregator, account.is_official, account.priority_rank], values);
+    assert.equal(account.reliability_score, account.seed_reliability);
+  }
+});
+
+test('source metadata rejects missing, malformed, and inconsistent explicit values', async () => {
+  const markdown = await readFile(new URL('../../docs/journalist_list.md', import.meta.url), 'utf8');
+  const missing = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '|  | `reporter:adamcrafton` | false | 0.7000 |');
+  const malformed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `Reporter:Adam Crafton` | false | 1.2000 |');
+  const invalidSeed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `reporter:adamcrafton` | false | NaN |');
+  const invalidBoolean = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `reporter:adamcrafton` | no | 0.7000 |');
+  const inconsistent = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| aggregator | `reporter:adamcrafton` | false | 0.7000 |');
+  assert.throws(() => parseSourceRegistry(missing), /source kind/i);
+  assert.throws(() => parseSourceRegistry(malformed), /publisher group|seed reliability/i);
+  assert.throws(() => parseSourceRegistry(invalidSeed), /seed reliability/i);
+  assert.throws(() => parseSourceRegistry(invalidBoolean), /aggregator/i);
+  assert.throws(() => parseSourceRegistry(inconsistent), /aggregator/i);
+});
+
+test('generated source upserts persist explicit reliability and independence metadata', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  for (const name of ['Upsert source accounts', 'Upsert sample source account']) {
+    const query = workflow.nodes.find((node) => node.name === name).parameters.query;
+    for (const field of ['seed_reliability', 'publisher_group_key', 'source_kind', 'is_aggregator']) {
+      assert.match(query, new RegExp(`\\b${field}\\b`));
+    }
+  }
+  for (const name of ['Load generated sources', 'Load sample source']) {
+    const jsCode = workflow.nodes.find((node) => node.name === name).parameters.jsCode;
+    for (const field of ['seed_reliability', 'publisher_group_key', 'source_kind', 'is_aggregator']) {
+      assert.match(jsCode, new RegExp(`\\bsource\\.${field}\\b`));
+    }
+  }
 });
 
 test('RapidAPI parser accepts direct and quoted tweets and ignores pure retweets', () => {
