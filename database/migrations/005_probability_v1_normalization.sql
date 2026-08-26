@@ -1,3 +1,21 @@
+CREATE FUNCTION probability_v1_validate_official_outcomes(
+  requested_transfer_case_id bigint,
+  outcome_count bigint
+)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+  IF outcome_count > 1 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = format('transfer case %s has conflicting official destinations', requested_transfer_case_id);
+  END IF;
+  RETURN true;
+END;
+$$;
+
 CREATE FUNCTION probability_v1_case_scores(
   requested_transfer_case_id bigint,
   requested_evaluated_at timestamptz
@@ -23,10 +41,16 @@ WITH raw_scores AS (
   FROM transfer_reports report
   CROSS JOIN LATERAL score_transfer_probability_v1(report.id, requested_evaluated_at) scored
   WHERE report.transfer_case_id = requested_transfer_case_id
-), official_winner AS (
-  SELECT min(report_id) AS report_id
+), official_outcomes AS (
+  SELECT min(report_id) AS report_id, count(*) AS outcome_count
   FROM raw_scores
   WHERE raw_probability = 1.00000
+), validated_official_outcomes AS MATERIALIZED (
+  SELECT report_id, outcome_count
+  FROM official_outcomes
+  WHERE probability_v1_validate_official_outcomes(
+    requested_transfer_case_id, outcome_count
+  )
 ), destination_odds AS (
   SELECT raw_scores.*,
     CASE WHEN raw_probability = 1 THEN NULL
@@ -35,20 +59,20 @@ WITH raw_scores AS (
 ), denominator AS (
   SELECT 1 + COALESCE(sum(odds), 0) AS value
   FROM destination_odds
-  WHERE NOT EXISTS (SELECT 1 FROM official_winner WHERE report_id IS NOT NULL)
+  WHERE NOT EXISTS (SELECT 1 FROM validated_official_outcomes WHERE report_id IS NOT NULL)
 ), ideal_items AS (
   SELECT 'destination'::text AS kind, destination_odds.report_id,
     CASE
-      WHEN official_winner.report_id IS NOT NULL
-        THEN (destination_odds.report_id = official_winner.report_id)::integer::numeric
+      WHEN validated_official_outcomes.report_id IS NOT NULL
+        THEN (destination_odds.report_id = validated_official_outcomes.report_id)::integer::numeric
       ELSE destination_odds.odds / denominator.value
     END AS ideal_share
-  FROM destination_odds CROSS JOIN official_winner CROSS JOIN denominator
+  FROM destination_odds CROSS JOIN validated_official_outcomes CROSS JOIN denominator
   UNION ALL
   SELECT 'stay', NULL::bigint,
-    CASE WHEN official_winner.report_id IS NOT NULL THEN 0::numeric
+    CASE WHEN validated_official_outcomes.report_id IS NOT NULL THEN 0::numeric
       ELSE 1 / denominator.value END
-  FROM official_winner CROSS JOIN denominator
+  FROM validated_official_outcomes CROSS JOIN denominator
 ), item_units AS (
   SELECT ideal_items.*,
     floor(ideal_share * 100000)::integer AS base_units,
@@ -119,6 +143,7 @@ DECLARE
   window_key text;
   stable_case_key text;
   inserted_revision_count integer;
+  locked_report_count integer;
   probability_revision_id bigint;
 BEGIN
   IF payload->>'probability_mode' IS DISTINCT FROM 'shadow' THEN
@@ -132,8 +157,7 @@ BEGIN
   INTO player_identity_key, normalized_current_club, existing_transfer_case_id
   FROM transfer_reports report
   JOIN players player ON player.id = report.player_id
-  WHERE report.id = requested_transfer_report_id
-  FOR UPDATE OF report;
+  WHERE report.id = requested_transfer_report_id;
 
   SELECT (source->>'posted_at')::timestamptz
   INTO evidence_posted_at
@@ -157,17 +181,32 @@ BEGIN
     IF v_transfer_case_id IS NULL THEN
       SELECT id INTO v_transfer_case_id
       FROM transfer_cases
-      WHERE case_key = stable_case_key
-      FOR UPDATE;
+      WHERE case_key = stable_case_key;
     END IF;
+  ELSE
+    v_transfer_case_id := existing_transfer_case_id;
+  END IF;
+
+  PERFORM 1
+  FROM transfer_cases
+  WHERE id = v_transfer_case_id
+  FOR UPDATE;
+
+  PERFORM 1
+  FROM transfer_reports report
+  WHERE report.transfer_case_id = v_transfer_case_id
+  ORDER BY report.id
+  FOR UPDATE;
+
+  IF existing_transfer_case_id IS NULL THEN
     UPDATE transfer_reports
     SET transfer_case_id = v_transfer_case_id
-    WHERE id = requested_transfer_report_id;
-  ELSE
-    SELECT id INTO v_transfer_case_id
-    FROM transfer_cases
-    WHERE id = existing_transfer_case_id
-    FOR UPDATE;
+    WHERE id = requested_transfer_report_id
+      AND (transfer_case_id IS NULL OR transfer_case_id = v_transfer_case_id);
+    GET DIAGNOSTICS locked_report_count = ROW_COUNT;
+    IF locked_report_count <> 1 THEN
+      RAISE EXCEPTION 'transfer report % was assigned to a different case', requested_transfer_report_id;
+    END IF;
   END IF;
 
   INSERT INTO transfer_evidence (

@@ -11,6 +11,18 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION pg_temp.rejects_conflicting_official(report_id bigint, report_payload jsonb)
+RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    PERFORM apply_probability_v1_shadow(report_id, report_payload);
+    RETURN false;
+  EXCEPTION WHEN check_violation THEN
+    RETURN true;
+  END;
+END;
+$$;
+
 CREATE SEQUENCE pg_temp.fixture_id START 920000000000000000;
 
 CREATE FUNCTION pg_temp.make_raw(source_id bigint, posted_at timestamptz)
@@ -165,6 +177,27 @@ SELECT apply_probability_v1_shadow(:alpha_report_id,
   pg_temp.payload(:alpha_official_raw_id, 'Alpha FC', 'official_wording', 'official_announcement'));
 SELECT pg_temp.assert_true('official confirmation did not lock destination/competitor/stay shares',
   (SELECT normalized_probability = 1.00000 FROM transfer_reports WHERE id = :alpha_report_id)
+  AND (SELECT normalized_probability = 0.00000 FROM transfer_reports WHERE id = :beta_report_id)
+  AND (SELECT stay_probability = 0.00000 FROM transfer_cases WHERE id = :multi_case_id));
+
+-- A second official destination is invalid and the entire application rolls back.
+CREATE TEMPORARY TABLE official_before AS
+SELECT
+  (SELECT count(*) FROM transfer_evidence WHERE transfer_case_id = :multi_case_id) AS evidence_count,
+  (SELECT count(*) FROM transfer_probability_revisions WHERE transfer_case_id = :multi_case_id) AS revision_count,
+  (SELECT version_counter FROM transfer_cases WHERE id = :multi_case_id) AS version_counter;
+SELECT pg_temp.make_raw(:official_id, '2026-08-27 11:45:00+00') AS beta_official_raw_id \gset
+SELECT pg_temp.assert_true('conflicting official destination was accepted',
+  pg_temp.rejects_conflicting_official(:beta_report_id,
+    pg_temp.payload(:beta_official_raw_id, 'Beta FC', 'official_wording', 'official_announcement')));
+SELECT pg_temp.assert_true('rejected official conflict changed case evidence, revisions, version, or projections',
+  (SELECT count(*) FROM transfer_evidence WHERE transfer_case_id = :multi_case_id)
+    = (SELECT evidence_count FROM official_before)
+  AND (SELECT count(*) FROM transfer_probability_revisions WHERE transfer_case_id = :multi_case_id)
+    = (SELECT revision_count FROM official_before)
+  AND (SELECT version_counter FROM transfer_cases WHERE id = :multi_case_id)
+    = (SELECT version_counter FROM official_before)
+  AND (SELECT normalized_probability = 1.00000 FROM transfer_reports WHERE id = :alpha_report_id)
   AND (SELECT normalized_probability = 0.00000 FROM transfer_reports WHERE id = :beta_report_id)
   AND (SELECT stay_probability = 0.00000 FROM transfer_cases WHERE id = :multi_case_id));
 
