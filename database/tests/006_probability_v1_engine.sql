@@ -381,7 +381,7 @@ SELECT pg_temp.assert_true('revision replay was not idempotent',
 SELECT pg_temp.assert_true('shadow apply did not update report columns',
   (SELECT raw_probability = normalized_probability
       AND probability_engine_version = 'probability-v1'
-      AND probability_explanation->>'normalization' = 'pending-stage-5'
+      AND probability_explanation->>'normalization' = 'case-level-destination-stay'
     FROM transfer_reports WHERE id = :golden_report));
 
 CREATE TEMPORARY TABLE pg_temp.fix_payloads (
