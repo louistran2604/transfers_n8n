@@ -155,6 +155,7 @@ test('Qwen contract keeps explicit former senior club separate from omitted curr
   const prompt = await readFile(new URL('../../workflow/qwen-system-prompt.md', import.meta.url), 'utf8');
   assert.match(prompt, /former\/ex-player/);
   assert.match(prompt, /Academy, birthplace, nationality, and origin-only wording must not populate/);
+  assert.match(prompt, /same player is linked to multiple distinct destination clubs/);
   const schema = JSON.parse(await readFile(new URL('../../workflow/qwen-response-schema.json', import.meta.url), 'utf8'));
   assert.ok(schema.properties.reports.items.required.includes('former_club_name'));
 });
@@ -260,6 +261,8 @@ test('enrichment grouping uses provider ID or Unicode name and club context, nev
   ]);
   assert.deepEqual(grouped.request.players[0].report_ids, ['10', '11']);
   assert.equal(grouped.request.players[0].current_club_name, 'Real Madrid');
+  assert.equal(grouped.request.players[0].allow_exact_name_without_club, true);
+  assert.equal(grouped.request.players[0].completed_move, false);
   assert.equal(grouped.request.players[1].current_club_name, 'Real Madrid');
   assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
 });
@@ -760,7 +763,7 @@ test('profile-only statistics failures remain renderable partial enrichment', ()
       items: [{
         item_key: 'provider:826643',
         status: 'partial',
-        resolver_version: 'identity-v8',
+        resolver_version: 'identity-v9',
         retryable: true,
         identity: {
           provider: 'sofascore',
@@ -768,7 +771,7 @@ test('profile-only statistics failures remain renderable partial enrichment', ()
           stable_source_identifier: 'sofascore:player:826643',
           score: 80,
           margin: 80,
-          resolver_version: 'identity-v8',
+          resolver_version: 'identity-v9',
         },
         profile: {
           canonical_name: 'Kylian Mbappé',
@@ -1019,7 +1022,34 @@ test('digest uses fresh active profile club only as a bounded presentation fallb
     assert.equal(selectDigestReports([{ ...fallback, ...overrides }], { entityAliases }).length, 0);
   }
   const sourceWins = { ...fallback, current_club_name: 'Palmeiras' };
-  assert.match(buildDiscordDigest([sourceWins], { entityAliases }).embeds[0].fields[0].value, /^Palmeiras → Chelsea/m);
+  assert.match(buildDiscordDigest([sourceWins], { entityAliases }).embeds[0].fields[0].value, /^Real Madrid → Chelsea/m);
+});
+
+test('digest keeps distinct destinations from one post and uses the fresh profile club', () => {
+  const enrichment = { profile: { current_club_name: 'Chelsea', stale: false } };
+  const reports = [
+    {
+      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Aston Villa', confidence: 0.9 }),
+      preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
+      post_url: 'https://x.com/FabrizioRomano/status/1',
+      revision_id: 'jackson-villa',
+      enrichment,
+    },
+    {
+      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Atlético Madrid', confidence: 0.95 }),
+      preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
+      post_url: 'https://x.com/FabrizioRomano/status/1',
+      revision_id: 'jackson-atleti',
+      enrichment,
+    },
+  ];
+  const selected = selectDigestReports(reports, { entityAliases });
+  assert.deepEqual(selected.map((report) => report.destination_club_name), ['Atlético Madrid', 'Aston Villa']);
+  const value = buildDiscordDigest(reports, { entityAliases }).embeds[0].fields.map((field) => field.value).join('\n');
+  assert.match(value, /Chelsea → Atlético Madrid/);
+  assert.match(value, /Chelsea → Aston Villa/);
+  assert.match(value, /Confidence: 95%/);
+  assert.match(value, /Confidence: 90%/);
 });
 
 test('generated digest applies presentation fallback without changing the frozen snapshot', async () => {
@@ -1150,6 +1180,21 @@ test('goalkeeper statistics render only for goalkeeper profiles in library and g
         goalkeeper_saves: 87,
       },
     });
+    if (primaryPosition === 'Goalkeeper') {
+      enrichment.statistics = {
+        ...enrichment.statistics,
+        competition: enrichment.statistics.competition_name,
+        season: enrichment.statistics.season_label,
+        minutes_per_game: enrichment.statistics.minutes_per_appearance,
+        clean_sheets: enrichment.statistics.goalkeeper_clean_sheets,
+        saves: enrichment.statistics.goalkeeper_saves,
+      };
+      delete enrichment.statistics.competition_name;
+      delete enrichment.statistics.season_label;
+      delete enrichment.statistics.minutes_per_appearance;
+      delete enrichment.statistics.goalkeeper_clean_sheets;
+      delete enrichment.statistics.goalkeeper_saves;
+    }
     const postUrl = `https://x.com/David_Ornstein/status/${999000000000000500n + BigInt(index)}`;
     const report = {
       ...validReport({ player_name: `Position ${index}` }),
@@ -2064,7 +2109,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /false AS is_current_request/);
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
-  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v8'/);
+  assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v9'/);
   assert.match(contextNode.parameters.query, /season\.season_state = 'latest_completed'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);

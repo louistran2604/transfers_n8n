@@ -268,6 +268,12 @@ export function buildEnrichmentRequest(contexts, {
     const nameTokens = reportedNameKey.split(' ').filter(Boolean);
     const allowSurnameOnlyMatch = nameTokens.length === 1
       && !entityAliases.common_surnames.includes(normalizeText(nameTokens[0]));
+    const allowExactNameWithoutClub = nameTokens.length > 1
+      && ['rumor', 'advanced_negotiations'].includes(context.classification)
+      && context.move_type !== 'loan';
+    const completedMove = context.classification === 'official_confirmed'
+      || context.classification === 'loan'
+      || context.move_type === 'loan';
     if (!knownProviderId && (!reportedNameKey || !clubKey)) continue;
     const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
     const latestStatus = String(context.latest_attempt_status ?? '');
@@ -283,7 +289,7 @@ export function buildEnrichmentRequest(contexts, {
       && latestStartedAt > now - 24 * 60 * 60 * 1000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? `${groupedItemKey}|report:${reportId}` : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
   const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
   const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
@@ -291,7 +297,7 @@ export function buildEnrichmentRequest(contexts, {
   const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
   const groups = new Map();
   for (const prepared of preparedContexts.toSorted(enrichmentContextComparator)) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, overrides, latestStatus, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
@@ -314,6 +320,8 @@ export function buildEnrichmentRequest(contexts, {
         }
       }
       if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
+      existing.allow_exact_name_without_club ||= allowExactNameWithoutClub;
+      existing.completed_move ||= completedMove;
       for (const override of overrides) {
         if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) {
           existing.identity_overrides.push(override);
@@ -326,6 +334,8 @@ export function buildEnrichmentRequest(contexts, {
       item_key: itemKey,
       reported_name: canonicalReportedName,
       allow_surname_only_match: allowSurnameOnlyMatch,
+      allow_exact_name_without_club: allowExactNameWithoutClub,
+      completed_move: completedMove,
       known_provider_player_id: knownProviderId || null,
       current_club_name: typeof canonicalCurrentClub === 'string'
         ? canonicalCurrentClub
@@ -383,7 +393,7 @@ function enrichmentFailure(player, code = 'service_contract_invalid') {
     report_ids: player.report_ids,
     request_context: player.request_context ?? {},
     status: 'schema_failure',
-    resolver_version: 'identity-v8',
+    resolver_version: 'identity-v9',
     retryable: true,
     provider_calls: 0,
     cache_hits: 0,
@@ -929,12 +939,13 @@ function equivalentClub(left, right, entityAliases) {
 }
 
 function withPresentationCurrentClub(report, entityAliases) {
-  if (hasNamedClub(report.current_club_name) || report.pending_idempotency_key) return report;
+  if (report.pending_idempotency_key) return report;
   const profile = report.enrichment?.profile;
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
   const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
   if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan') return report;
   if (equivalentClub(profileClub, report.destination_club_name, entityAliases)) return report;
+  if (equivalentClub(profileClub, report.current_club_name, entityAliases)) return report;
   return { ...report, current_club_name: profileClub };
 }
 
@@ -955,7 +966,10 @@ function configuredSiblingPair(left, right, entityAliases) {
 function digestPlayerConflict(left, right, entityAliases) {
   const leftName = normalizeText(left.player_name);
   const rightName = normalizeText(right.player_name);
-  if (leftName === rightName) return true;
+  if (leftName === rightName) {
+    return normalizeIdentity(left.destination_club_name) === normalizeIdentity(right.destination_club_name)
+      || !(left.post_url && right.post_url && left.post_url === right.post_url);
+  }
   if (configuredSiblingPair(left, right, entityAliases)) return false;
   const leftTokens = leftName.split(' ').filter(Boolean);
   const rightTokens = rightName.split(' ').filter(Boolean);
@@ -1098,8 +1112,8 @@ function enrichmentGroups(enrichment, now) {
     ? staleLabel(statistics, now, 72 * 60 * 60 * 1000)
     : null;
 
-  const competition = namedEnrichmentValue(statistics?.competition_name);
-  const season = namedEnrichmentValue(statistics?.season_label);
+  const competition = namedEnrichmentValue(statistics?.competition_name ?? statistics?.competition);
+  const season = namedEnrichmentValue(statistics?.season_label ?? statistics?.season);
   const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
   const statisticsValid = Boolean(
     statistics
@@ -1130,9 +1144,9 @@ function enrichmentGroups(enrichment, now) {
 
   const advancedStatistics = statisticsValid ? [
     integerStatistic(statistics.starts, 'starts'),
-    finiteNumber(statistics.minutes_per_appearance) === null
+    finiteNumber(statistics.minutes_per_appearance ?? statistics.minutes_per_game) === null
       ? null
-      : `${Number(finiteNumber(statistics.minutes_per_appearance).toFixed(1))} min/app`,
+      : `${Number(finiteNumber(statistics.minutes_per_appearance ?? statistics.minutes_per_game).toFixed(1))} min/app`,
     decimalStatistic(statistics.expected_goals, 'xG'),
     decimalStatistic(statistics.expected_assists, 'xA'),
     decimalStatistic(statistics.average_rating, 'rating'),
@@ -1148,8 +1162,8 @@ function enrichmentGroups(enrichment, now) {
     integerStatistic(statistics.yellow_cards, 'yellow'),
     integerStatistic(statistics.red_cards, 'red'),
     ...(profile?.primary_position === 'Goalkeeper' ? [
-      integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
-      integerStatistic(statistics.goalkeeper_saves, 'saves'),
+      integerStatistic(statistics.goalkeeper_clean_sheets ?? statistics.clean_sheets, 'clean sheets'),
+      integerStatistic(statistics.goalkeeper_saves ?? statistics.saves, 'saves'),
     ] : []),
   ].filter(Boolean) : [];
   const statisticsValues = [...primaryStatistics, ...advancedStatistics];

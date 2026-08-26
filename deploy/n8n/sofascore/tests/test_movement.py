@@ -89,6 +89,26 @@ class MovementTests(unittest.TestCase):
         self.assertIsNone(result["statistics"])
         self.assertEqual(["player/934354"], [call["endpoint"] for call in self.transport.calls])
 
+    def test_completed_move_accepts_destination_profile_after_mapping_lags(self):
+        moved = item("934354", "60", "Antoine Semenyo")
+        moved.update({
+            "classification": "official_confirmed",
+            "move_type": "permanent",
+            "destination_club_name": "Manchester City",
+        })
+        result = self.adapter.enrich(moved)
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("Manchester City", result["profile"]["current_club"]["name"])
+        self.assertEqual("Premier League", result["statistics"]["competition"])
+        self.assertEqual(
+            [
+                "player/934354",
+                "unique-tournament/17",
+                "player/934354/unique-tournament/17/season/76986/statistics/overall",
+            ],
+            [call["endpoint"] for call in self.transport.calls],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

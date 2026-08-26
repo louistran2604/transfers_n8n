@@ -7,7 +7,7 @@ from typing import Any
 from models import DECIMAL_ID
 
 
-RESOLVER_VERSION = "identity-v8"
+RESOLVER_VERSION = "identity-v9"
 NON_DISCRIMINATING_CLUB_KEYS = {
     "",
     "free agent",
@@ -225,6 +225,7 @@ def resolve_search(
     destination_club_names: list[str] | None = None,
     destination_weight: int = 30,
     allow_surname_only_match: bool = False,
+    allow_exact_name_without_club: bool = False,
     rejected_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     exact = unicode_exact_key(reported_name)
@@ -288,6 +289,10 @@ def resolve_search(
     best = candidates[0]
     margin = best["score"] - (candidates[1]["score"] if len(candidates) > 1 else 0)
     if best["score"] < 80:
+        if allow_exact_name_without_club and len(candidates) == 1 and best["score"] >= 50:
+            identity = known_identity(best["provider_player_id"])
+            identity.update(score=best["score"], margin=best["score"])
+            return {"status": "resolved", "identity": identity, "candidates": candidates[:5]}
         status = "ambiguous" if len(candidates) > 1 and margin < 15 else "unresolved"
         return {"status": status, "candidates": candidates[:5]}
     if margin < 15:

@@ -17,6 +17,7 @@ from urllib.parse import quote
 from competition import select_reporting_season, validated_competition
 from identity import (
     RESOLVER_VERSION,
+    _reported_club_matches,
     exact_name_candidates,
     is_discriminating_club_name,
     known_identity,
@@ -390,6 +391,7 @@ class SofascoreAdapter:
                 "destination_club_names": destination_club_names,
                 "destination_weight": destination_weight,
                 "allow_surname_only_match": item.get("allow_surname_only_match", False),
+                "allow_exact_name_without_club": item.get("allow_exact_name_without_club", False),
                 "rejected_player_ids": rejected_player_ids,
             }
             resolution = resolve_search(item["reported_name"], search, **resolve_options)
@@ -495,13 +497,33 @@ class SofascoreAdapter:
             )
 
         team_mapping = item.get("team_mapping")
-        if team_mapping:
-            if str(team.get("id", "")) != team_mapping["provider_team_id"]:
+        season_mapping = item.get("season_mapping")
+        completed_move = (
+            item.get("completed_move") is True
+            or item.get("classification") in {"official_confirmed", "loan"}
+            or item.get("move_type") == "loan"
+        )
+        destination_club_names = [
+            club_name
+            for club_name in [
+                item.get("destination_club_name"),
+                *(item.get("destination_club_aliases") or []),
+            ]
+            if isinstance(club_name, str) and is_discriminating_club_name(club_name)
+        ]
+        if team_mapping and str(team.get("id", "")) != team_mapping["provider_team_id"]:
+            if not completed_move or not any(
+                _reported_club_matches(club_name, team)
+                for club_name in destination_club_names
+            ):
                 return self._partial(
                     item_key, identity, profile, calls_before, "club_conflict", profile_payload
                 )
-            tournament = team.get("primaryUniqueTournament") or {}
-            if str(tournament.get("id", "")) != team_mapping["provider_unique_tournament_id"]:
+            team_mapping = None
+
+        tournament = team.get("primaryUniqueTournament") or {}
+        if team_mapping and str(tournament.get("id", "")) != team_mapping["provider_unique_tournament_id"]:
+            if not completed_move:
                 return self._partial(
                     item_key,
                     identity,
@@ -510,6 +532,10 @@ class SofascoreAdapter:
                     "unsupported_competition",
                     profile_payload,
                 )
+            team_mapping = None
+            season_mapping = None
+
+        if team_mapping:
             competition = {
                 "provider_unique_tournament_id": team_mapping[
                     "provider_unique_tournament_id"
@@ -535,7 +561,7 @@ class SofascoreAdapter:
                     profile_payload,
                 )
 
-        season = item.get("season_mapping")
+        season = season_mapping
         if season and season.get("state") == "latest_completed":
             season = dict(season)
         else:

@@ -47,6 +47,30 @@ class IdentityTests(unittest.TestCase):
         self.assertGreaterEqual(resolved["identity"]["score"], 80)
         self.assertGreaterEqual(resolved["identity"]["margin"], 15)
 
+    def test_soft_report_can_accept_one_exact_full_name_without_club_match(self):
+        payload = {
+            "results": [{
+                "type": "player",
+                "entity": {
+                    "id": 826643,
+                    "name": "Kylian Mbappé",
+                    "team": {"id": 2829, "name": "Real Madrid", "sport": {"slug": "football"}, "gender": "M"},
+                },
+            }],
+        }
+        unresolved = resolve_search(
+            "Kylian Mbappé", payload, reported_club_name="Atletico Madrid"
+        )
+        self.assertEqual("unresolved", unresolved["status"])
+        resolved = resolve_search(
+            "Kylian Mbappé",
+            payload,
+            reported_club_name="Atletico Madrid",
+            allow_exact_name_without_club=True,
+        )
+        self.assertEqual("resolved", resolved["status"])
+        self.assertEqual(50, resolved["identity"]["score"])
+
     def test_exact_reported_club_bootstraps_an_empty_identity_map(self):
         resolved = resolve_search(
             "Kylian Mbappé",

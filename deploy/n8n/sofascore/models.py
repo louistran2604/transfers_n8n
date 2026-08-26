@@ -51,6 +51,14 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
     if not isinstance(allow_surname_only_match, bool):
         raise ValueError(f"players[{index}].allow_surname_only_match must be a boolean")
     normalized["allow_surname_only_match"] = allow_surname_only_match
+    allow_exact_name_without_club = value.get("allow_exact_name_without_club", False)
+    if not isinstance(allow_exact_name_without_club, bool):
+        raise ValueError(f"players[{index}].allow_exact_name_without_club must be a boolean")
+    normalized["allow_exact_name_without_club"] = allow_exact_name_without_club
+    completed_move = value.get("completed_move", False)
+    if not isinstance(completed_move, bool):
+        raise ValueError(f"players[{index}].completed_move must be a boolean")
+    normalized["completed_move"] = completed_move
     report_ids = value.get("report_ids", [])
     if not isinstance(report_ids, list) or any(
         not isinstance(item, str) or not item for item in report_ids

@@ -247,7 +247,7 @@ historical_candidates AS (
         latest_attempt.status IN ('unresolved', 'ambiguous')
         AND (
           latest_attempt.started_at <= CURRENT_TIMESTAMP - interval '24 hours'
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9'
         )
       )
       OR (
@@ -255,12 +255,12 @@ historical_candidates AS (
         AND latest_attempt.retryable
         AND (
           latest_attempt.next_retry_at <= CURRENT_TIMESTAMP
-          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8'
+          OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9'
         )
       )
     )
   ORDER BY
-    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8') DESC,
+    (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9') DESC,
     latest_attempt.started_at,
     tr.id
   LIMIT 25
@@ -322,7 +322,7 @@ SELECT
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
   latest_attempt.resolver_version AS latest_attempt_resolver_version,
-  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v8' AS force_resolver_retry,
+  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9' AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
@@ -1352,6 +1352,12 @@ if (mode !== 'off') {
     const nameTokens = reportedNameKey.split(' ').filter(Boolean);
     const allowSurnameOnlyMatch = nameTokens.length === 1
       && !entityAliases.common_surnames.includes(normalizeAlias(nameTokens[0]));
+    const allowExactNameWithoutClub = nameTokens.length > 1
+      && ['rumor', 'advanced_negotiations'].includes(context.classification)
+      && context.move_type !== 'loan';
+    const completedMove = context.classification === 'official_confirmed'
+      || context.classification === 'loan'
+      || context.move_type === 'loan';
     if (!providerId && (!reportedNameKey || !clubKey)) continue;
     const groupedItemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
     const forceResolverRetry = context.force_resolver_retry === true;
@@ -1363,7 +1369,7 @@ if (mode !== 'off') {
       && latestStarted > now - 86400000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? groupedItemKey + '|report:' + reportId : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
 }
 const enrichmentPriority = ({ context }) => {
@@ -1393,7 +1399,7 @@ const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) =
 const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
 const groups = new Map();
 for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
@@ -1404,6 +1410,8 @@ for (const prepared of preparedContexts) {
       existing.report_ids.push(reportId);
       for (const alias of aliases) if (typeof alias === 'string' && alias.trim() && !existing.aliases.includes(alias.trim())) existing.aliases.push(alias.trim());
       if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
+      existing.allow_exact_name_without_club ||= allowExactNameWithoutClub;
+      existing.completed_move ||= completedMove;
       for (const override of overrides) if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) existing.identity_overrides.push(override);
       continue;
     }
@@ -1411,6 +1419,8 @@ for (const prepared of preparedContexts) {
       item_key: itemKey,
       reported_name: canonicalReportedName,
       allow_surname_only_match: allowSurnameOnlyMatch,
+      allow_exact_name_without_club: allowExactNameWithoutClub,
+      completed_move: completedMove,
       known_provider_player_id: providerId || null,
       current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
       current_club_aliases: entityAliases.club_variants[normalizeAlias(canonicalCurrentClub)] ?? [],
@@ -1451,7 +1461,7 @@ const failure = (player, code) => ({
   report_ids: player.report_ids,
   request_context: player.request_context ?? {},
   status: 'schema_failure',
-  resolver_version: 'identity-v8',
+  resolver_version: 'identity-v9',
   retryable: true,
   provider_calls: 0,
   cache_hits: 0,
@@ -1619,8 +1629,8 @@ const enrichmentGroups = (enrichment, now) => {
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
   const profileStale = profile ? staleLabel(profile, now, profileClub ? 72 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000) : null;
   const statisticsStale = statistics ? staleLabel(statistics, now, 72 * 60 * 60 * 1000) : null;
-  const competition = namedEnrichmentValue(statistics?.competition_name);
-  const season = namedEnrichmentValue(statistics?.season_label);
+  const competition = namedEnrichmentValue(statistics?.competition_name ?? statistics?.competition);
+  const season = namedEnrichmentValue(statistics?.season_label ?? statistics?.season);
   const scope = statistics?.scope === 'selected_domestic_league_all_clubs' ? 'all clubs' : null;
   const statisticsValid = Boolean(statistics && statistics.season_state === 'latest_completed' && statisticsStale !== null && competition && season && scope);
   const primaryStatistics = statisticsValid ? [
@@ -1640,7 +1650,7 @@ const enrichmentGroups = (enrichment, now) => {
   const profileLine = profileParts.length ? 'Profile' + (profileStale ? ' · ' + profileStale : '') + ': ' + profileParts.join(' · ') : null;
   const advancedStatistics = statisticsValid ? [
     integerStatistic(statistics.starts, 'starts'),
-    finiteNumber(statistics.minutes_per_appearance) === null ? null : Number(finiteNumber(statistics.minutes_per_appearance).toFixed(1)) + ' min/app',
+    finiteNumber(statistics.minutes_per_appearance ?? statistics.minutes_per_game) === null ? null : Number(finiteNumber(statistics.minutes_per_appearance ?? statistics.minutes_per_game).toFixed(1)) + ' min/app',
     decimalStatistic(statistics.expected_goals, 'xG'),
     decimalStatistic(statistics.expected_assists, 'xA'),
     decimalStatistic(statistics.average_rating, 'rating'),
@@ -1654,8 +1664,8 @@ const enrichmentGroups = (enrichment, now) => {
     integerStatistic(statistics.yellow_cards, 'yellow'),
     integerStatistic(statistics.red_cards, 'red'),
     ...(profile?.primary_position === 'Goalkeeper' ? [
-      integerStatistic(statistics.goalkeeper_clean_sheets, 'clean sheets'),
-      integerStatistic(statistics.goalkeeper_saves, 'saves'),
+      integerStatistic(statistics.goalkeeper_clean_sheets ?? statistics.clean_sheets, 'clean sheets'),
+      integerStatistic(statistics.goalkeeper_saves ?? statistics.saves, 'saves'),
     ] : []),
   ].filter(Boolean) : [];
   const statisticsValues = [...primaryStatistics, ...advancedStatistics];
@@ -1681,11 +1691,11 @@ const equivalentClub = (left, right) => {
   return leftParts.length > 0 && leftParts.join(' ') === rightParts.join(' ');
 };
 const withPresentationCurrentClub = (report) => {
-  if (hasNamedClub(report.current_club_name) || report.pending_idempotency_key) return report;
+  if (report.pending_idempotency_key) return report;
   const profile = report.enrichment?.profile;
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
   const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
-  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name)) return report;
+  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name) || equivalentClub(profileClub, report.current_club_name)) return report;
   return { ...report, current_club_name: profileClub };
 };
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
@@ -1702,7 +1712,8 @@ const configuredSiblingPair = (left, right) => {
 const digestPlayerConflict = (left, right) => {
   const leftName = normalizeAlias(left.player_name);
   const rightName = normalizeAlias(right.player_name);
-  if (leftName === rightName) return true;
+  if (leftName === rightName) return normalizeAlias(left.destination_club_name) === normalizeAlias(right.destination_club_name)
+    || !(left.post_url && right.post_url && left.post_url === right.post_url);
   if (configuredSiblingPair(left, right)) return false;
   const leftTokens = leftName.split(' ').filter(Boolean);
   const rightTokens = rightName.split(' ').filter(Boolean);
