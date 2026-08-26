@@ -1712,8 +1712,12 @@ const configuredSiblingPair = (left, right) => {
 const digestPlayerConflict = (left, right) => {
   const leftName = normalizeAlias(left.player_name);
   const rightName = normalizeAlias(right.player_name);
-  if (leftName === rightName) return normalizeAlias(left.destination_club_name) === normalizeAlias(right.destination_club_name)
-    || !(left.post_url && right.post_url && left.post_url === right.post_url);
+  if (leftName === rightName) {
+    const leftPostUrl = left.post_url ?? left.sources?.[0]?.post_url;
+    const rightPostUrl = right.post_url ?? right.sources?.[0]?.post_url;
+    return normalizeAlias(left.destination_club_name) === normalizeAlias(right.destination_club_name)
+      || !(leftPostUrl && rightPostUrl && leftPostUrl === rightPostUrl);
+  }
   if (configuredSiblingPair(left, right)) return false;
   const leftTokens = leftName.split(' ').filter(Boolean);
   const rightTokens = rightName.split(' ').filter(Boolean);

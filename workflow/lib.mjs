@@ -967,8 +967,10 @@ function digestPlayerConflict(left, right, entityAliases) {
   const leftName = normalizeText(left.player_name);
   const rightName = normalizeText(right.player_name);
   if (leftName === rightName) {
+    const leftPostUrl = left.post_url ?? left.sources?.[0]?.post_url;
+    const rightPostUrl = right.post_url ?? right.sources?.[0]?.post_url;
     return normalizeIdentity(left.destination_club_name) === normalizeIdentity(right.destination_club_name)
-      || !(left.post_url && right.post_url && left.post_url === right.post_url);
+      || !(leftPostUrl && rightPostUrl && leftPostUrl === rightPostUrl);
   }
   if (configuredSiblingPair(left, right, entityAliases)) return false;
   const leftTokens = leftName.split(' ').filter(Boolean);

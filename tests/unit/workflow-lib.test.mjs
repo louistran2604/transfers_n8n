@@ -1031,14 +1031,14 @@ test('digest keeps distinct destinations from one post and uses the fresh profil
     {
       ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Aston Villa', confidence: 0.9 }),
       preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
-      post_url: 'https://x.com/FabrizioRomano/status/1',
+      sources: [{ post_url: 'https://x.com/FabrizioRomano/status/1' }],
       revision_id: 'jackson-villa',
       enrichment,
     },
     {
       ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Atlético Madrid', confidence: 0.95 }),
       preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
-      post_url: 'https://x.com/FabrizioRomano/status/1',
+      sources: [{ post_url: 'https://x.com/FabrizioRomano/status/1' }],
       revision_id: 'jackson-atleti',
       enrichment,
     },
