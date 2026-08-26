@@ -1,8 +1,6 @@
 \set ON_ERROR_STOP on
 
-DROP TRIGGER IF EXISTS probability_v1_concurrency_pause ON transfer_evidence;
-DROP FUNCTION IF EXISTS probability_v1_concurrency_pause();
-DROP TABLE IF EXISTS probability_v1_concurrency_fixture;
+\i /database/tests/010_probability_v1_concurrency_cleanup.sql
 
 CREATE TABLE probability_v1_concurrency_fixture (
   label text PRIMARY KEY,

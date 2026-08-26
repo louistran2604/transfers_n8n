@@ -9,6 +9,8 @@ cleanup() {
     --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
       WHERE application_name IN ('prob-v1-lock-controller', 'prob-v1-concurrency-a', 'prob-v1-concurrency-b')
         AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
+    --file /database/tests/010_probability_v1_concurrency_cleanup.sql >/dev/null 2>&1 || true
   rm -rf "$temporary"
 }
 trap cleanup EXIT INT TERM
@@ -81,3 +83,6 @@ fi
 
 docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
   --file /database/tests/009_probability_v1_concurrency_assert.sql
+
+docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
+  --file /database/tests/010_probability_v1_concurrency_cleanup.sql

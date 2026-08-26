@@ -23,8 +23,4 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER probability_v1_concurrency_pause ON transfer_evidence;
-DROP FUNCTION probability_v1_concurrency_pause();
-DROP TABLE probability_v1_concurrency_fixture;
-
 SELECT 'probability-v1 concurrency test passed' AS result;
