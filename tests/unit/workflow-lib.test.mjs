@@ -2156,6 +2156,70 @@ test('generated pending delivery preserves the stored JSONB payload structurally
   assert.deepEqual(deliveryOutput[0].json.body, storedPayload);
 });
 
+test('generated workflow carries shadow-only probability evidence without changing the off path', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
+  const parserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const mergeNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
+  const persistNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runRequest = new AsyncFunction('$input', '$env', '$', requestNode.parameters.jsCode);
+  const input = { all: () => [{ json: {
+    raw_post_id: '41', external_post_id: '42', post_url: 'https://x.com/test/status/42',
+    posted_at: '2026-08-27T01:02:03.000Z', content: 'fixture', ...source('test'),
+  } }] };
+  const lookup = () => ({ first: () => ({ json: { collection_started_at: '2026-08-27T01:05:00.000Z' } }) });
+
+  for (const [configured, expected] of [[undefined, 'off'], ['', 'off'], ['active', 'off'], ['invalid', 'off'], [' SHADOW ', 'shadow']]) {
+    const [request] = await runRequest(input, { PROBABILITY_MODE: configured }, lookup);
+    assert.equal(request.json.probability_mode, expected, String(configured));
+    assert.equal(request.json.evaluated_at, '2026-08-27T01:05:00.000Z');
+  }
+
+  const [request] = await runRequest(input, { PROBABILITY_MODE: 'shadow' }, lookup);
+  const response = { json: { choices: [{ message: { content: JSON.stringify({
+    transfer_related: true,
+    reports: [evidenceReport({ destination_club_name: 'Club A' }), evidenceReport({ destination_club_name: 'Club B', stage_signal: 'advanced' })],
+  }) } }] }, pairedItem: { item: 0 } };
+  const runParser = new AsyncFunction('$input', '$', parserNode.parameters.jsCode);
+  const parsed = await runParser({ all: () => [response] }, () => ({ all: () => [request] }));
+  assert.deepEqual(parsed.map((item) => item.json.report.report_ordinal), [1, 2]);
+  for (const item of parsed) {
+    const report = item.json.report;
+    assert.equal(report.extraction_schema_version, 'qwen-evidence-v1');
+    assert.equal(report.probability_mode, 'shadow');
+    assert.equal(report.evaluated_at, '2026-08-27T01:05:00.000Z');
+    assert.deepEqual(Object.keys(report.normalized_evidence).sort(), [
+      'attribution_kind', 'claim_stance', 'club_agreement_state', 'completion_claim',
+      'extraction_confidence', 'named_originator', 'personal_terms_state', 'stage_signal', 'wording_strength',
+    ]);
+  }
+
+  const runMerge = new AsyncFunction('$input', mergeNode.parameters.jsCode);
+  const shadowPayloads = await runMerge({ all: () => parsed });
+  assert.equal(shadowPayloads.length, 2);
+  for (const item of shadowPayloads) {
+    const payload = JSON.parse(item.json.params[0]);
+    assert.equal(payload.probability_mode, 'shadow');
+    assert.equal(payload.evaluated_at, '2026-08-27T01:05:00.000Z');
+    assert.equal(payload.sources[0].report_ordinal, 1 + (payload.destination_club_name === 'Club B'));
+    assert.equal(payload.sources[0].extraction_schema_version, 'qwen-evidence-v1');
+    assert.equal(payload.sources[0].normalized_evidence.destination_club_name, undefined);
+    for (const [field, value] of Object.entries(payload.sources[0].normalized_evidence)) {
+      assert.deepEqual(payload.sources[0][field], value, field);
+    }
+  }
+
+  const [offRequest] = await runRequest(input, { PROBABILITY_MODE: 'active' }, lookup);
+  const offParsed = await runParser({ all: () => [response] }, () => ({ all: () => [offRequest] }));
+  const [offMerged] = await runMerge({ all: () => offParsed });
+  assert.equal(JSON.parse(offMerged.json.params[0]).probability_mode, 'off');
+  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
+  assert.equal(persistNode.typeVersion, 2.6);
+  assert.match(persistNode.parameters.query, /probability_mode.*shadow/is);
+  assert.match(persistNode.parameters.query, /apply_probability_v1_shadow/);
+});
+
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const errorWorkflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));

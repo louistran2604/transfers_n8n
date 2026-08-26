@@ -131,14 +131,15 @@ concurrent_versions=$(docker exec "$main_container" psql \
   --tuples-only \
   --no-align \
   --command "SELECT count(*) FROM app_schema_migrations;")
-test "$concurrent_versions" = "3"
+test "$concurrent_versions" = "4"
 
 for test_file in \
   /database/tests/001_dedup_restart_safety.sql \
   /database/tests/002_workflow_safety.sql \
   /database/tests/003_soccerdata_enrichment.sql \
   /database/tests/004_enrichment_rollback_compatibility.sql \
-  /database/tests/005_transfer_probability.sql; do
+  /database/tests/005_transfer_probability.sql \
+  /database/tests/006_probability_v1_engine.sql; do
   psql_file "$main_container" transfers "$test_file"
 done
 

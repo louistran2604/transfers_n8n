@@ -18,6 +18,8 @@ Both workflows target n8n `2.31.6`, use `Asia/Ho_Chi_Minh`, and contain no secre
 
 `qwen-system-prompt.md` and `qwen-response-schema.json` are embedded verbatim into the generated workflow. The model may output only `transfer_related` and normalized report terms. Journalist/source identity, URL, platform, timestamp, priority, and reliability are injected from the normalized selected-collector post and generated source registry after model output, so Qwen cannot invent them.
 
+`PROBABILITY_MODE=shadow` stores the validated `qwen-evidence-v1` evidence and deterministic PostgreSQL `probability-v1` raw revision for each destination. Missing, invalid, or `active` values are treated as `off`; shadow probabilities do not change Discord output. Destination/stay normalization is not part of this stage, so `normalized_probability` temporarily equals `raw_probability`.
+
 ## X collector selection
 
 `X_COLLECTOR` must be explicitly `twscrape` or `rapidapi`. The generated `twscrape` branch submits all configured numeric X IDs as strings in one request, then adapts successful normalized posts into the existing raw-post SQL parameters. Its structured source failures produce no raw-post rows and do not stop successful sources. The retained RapidAPI branch keeps its existing per-source request and retry behavior. Both branches join before `Persist raw posts`; Qwen, PostgreSQL deduplication, report merging, digest reservation, and Discord delivery are unchanged.

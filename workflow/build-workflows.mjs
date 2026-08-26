@@ -100,7 +100,7 @@ RETURNING id::text AS source_account_id, platform, external_account_id, username
 function rawPostUpsertSql() {
   return `
 WITH source AS (
-  SELECT id FROM source_accounts WHERE platform = 'x' AND external_account_id = $1
+  SELECT * FROM source_accounts WHERE platform = 'x' AND external_account_id = $1
 ), raw AS (
   INSERT INTO raw_posts (
     source_account_id, platform, external_post_id, post_url, content, posted_at, raw_payload
@@ -112,8 +112,9 @@ WITH source AS (
 SELECT raw.id::text AS raw_post_id, $1::text AS external_account_id, $2::text AS external_post_id,
   $3::text AS post_url, $4::text AS content, $5::text AS posted_at,
   $7::text AS username, $8::text AS display_name, $9::smallint AS priority_rank,
-  $10::numeric AS reliability_score, $11::boolean AS is_official
-FROM raw;`.trim();
+  $10::numeric AS reliability_score, $11::boolean AS is_official,
+  source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator
+FROM raw CROSS JOIN source;`.trim();
 }
 
 function qwenFailureSql() {
@@ -233,7 +234,24 @@ revision AS (
 )
 SELECT (SELECT id::text FROM report) AS transfer_report_id,
   (SELECT id::text FROM revision) AS revision_id,
-  (SELECT payload->>'preferred_raw_post_id' FROM input) AS preferred_raw_post_id;`.trim();
+  (SELECT payload->>'preferred_raw_post_id' FROM input) AS preferred_raw_post_id
+WHERE false;
+
+WITH input AS (SELECT $1::jsonb AS payload),
+report AS (
+  SELECT transfer_reports.id
+  FROM transfer_reports, input
+  WHERE transfer_reports.dedupe_key = input.payload->>'dedupe_key'
+)
+SELECT report.id::text AS transfer_report_id,
+  (SELECT revision.id::text FROM transfer_report_revisions revision, input
+    WHERE revision.transfer_report_id = report.id
+      AND revision.content_sha256 = input.payload->>'content_sha256') AS revision_id,
+  input.payload->>'preferred_raw_post_id' AS preferred_raw_post_id,
+  CASE WHEN input.payload->>'probability_mode' = 'shadow'
+    THEN apply_probability_v1_shadow(report.id, input.payload)::text
+  END AS probability_revision_id
+FROM input CROSS JOIN report;`.trim();
 }
 
 function enrichmentContextSql() {
@@ -1264,7 +1282,19 @@ return $input.all().flatMap((item, index) => {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
-  return parsed.reports.map((report) => ({ json: { valid: true, ignored: false, report: { ...report, raw_post_id: request.raw_post_id, post_url: request.post_url, posted_at: request.posted_at, source: request.source } } }));
+  const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
+  return parsed.reports.map((report, reportIndex) => ({ json: { valid: true, ignored: false, report: {
+    ...report,
+    raw_post_id: request.raw_post_id,
+    post_url: request.post_url,
+    posted_at: request.posted_at,
+    source: request.source,
+    report_ordinal: reportIndex + 1,
+    extraction_schema_version: 'qwen-evidence-v1',
+    normalized_evidence: Object.fromEntries(evidenceFields.map((field) => [field, report[field]])),
+    evaluated_at: request.evaluated_at,
+    probability_mode: request.probability_mode,
+  } } }));
 });`;
 }
 
@@ -1307,8 +1337,15 @@ for (const reports of groups.values()) {
     first_reported_at: merged.first_reported_at,
     last_reported_at: merged.last_reported_at,
     normalized_data: { conflicts, former_club_name: merged.former_club_name ?? null, reported_name_key: unicodeKey(merged.player_name), current_club_key: namedKey(merged.current_club_name), destination_club_key: namedKey(merged.destination_club_name) },
+    evaluated_at: best.evaluated_at,
+    probability_mode: best.probability_mode === 'shadow' ? 'shadow' : 'off',
     preferred_raw_post_id: String(best.raw_post_id),
-    sources: reports.map((report) => ({ raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source })),
+    sources: reports.map((report) => ({
+      raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source,
+      report_ordinal: report.report_ordinal, extraction_schema_version: report.extraction_schema_version,
+      ...report.normalized_evidence,
+      normalized_evidence: report.normalized_evidence,
+    })),
     snapshot,
     content_sha256: sha256(Object.fromEntries(Object.entries(snapshot).filter(([field]) => field !== 'is_digest_worthy'))),
   };
@@ -1946,9 +1983,16 @@ const prompt = ${JSON.stringify(prompt)};
 const schema = ${schemaJson};
 const llamaSchema = JSON.parse(JSON.stringify(schema));
 delete llamaSchema.properties.reports.items.properties.player_name.minLength;
+const selectedProbabilityMode = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
+const probabilityMode = selectedProbabilityMode === 'shadow' ? 'shadow' : 'off';
+const runContext = $('Create run context').isExecuted
+  ? $('Create run context').first().json
+  : $('Create sample run context').first().json;
 return $input.all().map((item) => ({ json: {
   raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,
-  source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), is_official: item.json.is_official },
+  evaluated_at: runContext.collection_started_at,
+  probability_mode: probabilityMode,
+  source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
   body: { model: 'qwen3.8-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }
 } }));`),
     httpNode('Extract with Qwen', [1200, -40], {
@@ -1961,7 +2005,7 @@ return $input.all().map((item) => ({ json: {
     node('Transfer related', 'n8n-nodes-base.if', [1860, -100], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !$json.ignored }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id;`),
     codeNode('Merge extracted reports', [2080, -180], mergeCode()),
-    postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql()),
+    postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql(), undefined, { typeVersion: 2.6 }),
     codeNode('Prepare preferred source reset', [2520, -180], `
 return $input.all().map((item) => {
   const reportId = String(item.json.transfer_report_id ?? '');
