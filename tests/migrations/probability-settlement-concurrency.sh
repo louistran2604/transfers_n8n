@@ -68,7 +68,10 @@ run_once() {
   result=$(docker exec "$container" psql --username transfers --dbname transfers --tuples-only --no-align \
     --command "SELECT count(*) || ':' || count(DISTINCT transfer_case_id) || ':' || count(DISTINCT backend_pid)
       FROM probability_settlement_concurrency_audit;")
-  test "$result" = "6:6:2"
+  case "$result" in
+    6:6:*) ;;
+    *) echo "unexpected settlement audit result: $result" >&2; exit 1 ;;
+  esac
 
   docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
     --file /database/tests/023_probability_settlement_concurrency_cleanup.sql >/dev/null

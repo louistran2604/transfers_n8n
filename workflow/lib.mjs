@@ -1116,7 +1116,23 @@ function storyLines(report) {
   ];
   const source = report.preferred_source?.display_name ?? report.source?.display_name ?? 'Source';
   const sourceUrl = report.sources?.[0]?.post_url ?? report.post_url;
-  const probability = report.probability_status === 'active_scored' ? report.probability : null;
+  let probability = null;
+  if (report.probability_status === 'active_scored') {
+    probability = report.probability;
+    const validStages = ['link', 'interest', 'talks', 'advanced', 'agreed', 'done', 'collapsed'];
+    const validTerminalStates = ['open', 'official', 'collapsed'];
+    if (!probability || typeof probability !== 'object' || Array.isArray(probability)
+      || probability.engine_version !== 'probability-v1'
+      || finiteNumber(probability.normalized_probability) === null
+      || finiteNumber(probability.normalized_probability) < 0
+      || finiteNumber(probability.normalized_probability) > 1
+      || !validStages.includes(probability.current_stage)
+      || !validTerminalStates.includes(probability.terminal_state)
+      || !probability.explanation || typeof probability.explanation !== 'object'
+      || Array.isArray(probability.explanation)) {
+      throw new Error(`active_scored report ${report.revision_id ?? report.player_name ?? 'unknown'} has invalid deterministic probability payload`);
+    }
+  }
   const probabilityValue = finiteNumber(probability?.normalized_probability);
   const previousProbability = finiteNumber(probability?.previous_probability);
   const delta = finiteNumber(probability?.probability_delta);
@@ -1147,7 +1163,7 @@ function storyLines(report) {
     const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
     if (reasons.length) probabilityLines.push(`Why: ${reasons.join('; ')}`);
   } else {
-    probabilityLines.push(`Legacy extraction confidence: ${Math.round(report.confidence * 100)}%`);
+    probabilityLines.push(`Confidence: ${Math.round(report.confidence * 100)}%`);
   }
   return [clubDirection, ...details, ...probabilityLines, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
 }

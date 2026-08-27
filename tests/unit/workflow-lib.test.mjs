@@ -1183,8 +1183,8 @@ test('digest keeps distinct destinations from one post and uses the fresh profil
   const value = buildDiscordDigest(reports, { entityAliases }).embeds[0].fields.map((field) => field.value).join('\n');
   assert.match(value, /Chelsea → Atlético Madrid/);
   assert.match(value, /Chelsea → Aston Villa/);
-  assert.match(value, /Legacy extraction confidence: 95%/);
-  assert.match(value, /Legacy extraction confidence: 90%/);
+  assert.match(value, /Confidence: 95%/);
+  assert.match(value, /Confidence: 90%/);
 });
 
 test('digest renders active probability details and labels legacy confidence honestly', () => {
@@ -1222,7 +1222,7 @@ test('digest renders active probability details and labels legacy confidence hon
   assert.match(values[0], /Why: strong primary report \(87% reliability\); \+1 independent source/);
   assert.doesNotMatch(values[0], /competition/);
   assert.doesNotMatch(values[0], /Confidence:/);
-  assert.match(values[1], /Legacy extraction confidence: 73%/);
+  assert.match(values[1], /Confidence: 73%/);
   assert.doesNotMatch(values[1], /Probability:/);
   const prior = {
     ...active,
@@ -1232,6 +1232,56 @@ test('digest renders active probability details and labels legacy confidence hon
     ...active,
     sent_history: [{ snapshot: prior, sent_at: '2026-08-27T00:00:00.000Z' }],
   }]).embeds[0].fields.length, 1);
+});
+
+test('digest preserves exact legacy confidence and rejects malformed active probability', () => {
+  for (const probability_status of ['legacy_unscored', 'shadow_scored']) {
+    const report = {
+      ...validReport({ player_name: `Legacy ${probability_status}`, confidence: 0.73 }),
+      preferred_source: source('someone'),
+      revision_id: `legacy-${probability_status}`,
+      probability_status,
+      probability: { normalized_probability: 0.91 },
+    };
+    const value = buildDiscordDigest([report]).embeds[0].fields[0].value;
+    assert.match(value, /Confidence: 73%/);
+    assert.doesNotMatch(value, /Legacy extraction confidence/);
+    assert.doesNotMatch(value, /Probability:/);
+  }
+
+  const malformed = {
+    ...validReport({ player_name: 'Malformed active' }),
+    preferred_source: source('someone'),
+    revision_id: 'malformed-active',
+    probability_status: 'active_scored',
+    probability: { explanation: {} },
+  };
+  assert.throws(
+    () => buildDiscordDigest([malformed]),
+    /active_scored.*deterministic probability/i,
+  );
+});
+
+test('generated digest preserves legacy confidence and rejects malformed active probability', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
+  const candidate = (status, probability) => ({ json: { row_type: 'candidate', payload: {
+    revision_id: `generated-${status}`,
+    snapshot: { ...validReport({ player_name: `Generated ${status}`, confidence: 0.73 }), probability_status: status, probability },
+    post_url: 'https://example.test/generated', priority_rank: '2', reliability_score: '0.95',
+    source_username: 'someone', source_name: 'Someone',
+  } } });
+  for (const status of ['legacy_unscored', 'shadow_scored']) {
+    const output = await runDigest({ all: () => [candidate(status, { normalized_probability: 0.91 })] });
+    const payload = JSON.parse(output[0].json.params[0]);
+    assert.match(payload.discord_payload.embeds[0].fields[0].value, /Confidence: 73%/);
+  }
+  await assert.rejects(
+    runDigest({ all: () => [candidate('active_scored', { explanation: {} })] }),
+    /active_scored.*deterministic probability/i,
+  );
 });
 
 test('competition reason is causal, negative-only, and wins the single negative slot', () => {
@@ -1430,7 +1480,7 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   };
   const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
   const value = embed.fields[0].value;
-  assert.match(value, /Legacy extraction confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
+  assert.match(value, /Confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
   assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
   assert.match(value, /LaLiga 2025\/26 - all clubs: 31 app · 2,604 min · 25 G · 5 A · 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating · stale 18h/);
   assert.doesNotMatch(value, /Advanced:/);
@@ -2541,8 +2591,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
   assert.match(candidatesNode.parameters.query, /dd\.request_payload AS pending_request_payload/);
   assert.match(candidatesNode.parameters.query, /current_player_enrichment/);
-  assert.match(candidatesNode.parameters.query, /CASE WHEN \$3::text = 'active'\s+THEN project_transfer_fee_context\(\s*CURRENT_TIMESTAMP, \$1::timestamptz, \$2::timestamptz\s*\) ELSE 0 END/);
-  assert.match(candidatesNode.parameters.query, /CASE WHEN \$3::text = 'active' THEN/);
+  assert.match(candidatesNode.parameters.query, /CASE WHEN \$4::text = 'active'\s+THEN project_transfer_fee_context\(\s*CURRENT_TIMESTAMP, \$1::timestamptz, \$2::timestamptz\s*\) ELSE 0 END/);
+  assert.match(candidatesNode.parameters.query, /CASE WHEN \$4::text = 'active' THEN/);
   assert.match(candidatesNode.parameters.query, /'canonical_name'/);
   assert.match(candidatesNode.parameters.query, /'current_club_name'/);
   assert.match(candidatesNode.parameters.query, /'goals'/);
@@ -2564,6 +2614,12 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);
   assert.match(candidatesNode.parameters.query, /'sent_history'::text AS row_type/);
+  assert.match(candidatesNode.parameters.query, /r\.snapshot->>'probability_status' IS DISTINCT FROM 'active_scored'/);
+  assert.match(candidatesNode.parameters.query, /\$3::text = 'active'/);
+  assert.match(candidatesNode.parameters.query, /CASE WHEN \$4::text = 'active'/);
+  const prepareCandidatesNode = workflow.nodes.find((node) => node.name === 'Prepare digest candidates query');
+  assert.match(prepareCandidatesNode.parameters.jsCode, /PROBABILITY_MODE/);
+  assert.match(prepareCandidatesNode.parameters.jsCode, /params: \[context\.collection_cutoff_at, context\.collection_started_at, probabilityMode, enrichmentMode\]/);
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));

@@ -915,7 +915,7 @@ FROM input;`.trim();
 function candidatesSql() {
   return `
 WITH fee_projection AS (
-  SELECT CASE WHEN $3::text = 'active'
+  SELECT CASE WHEN $4::text = 'active'
     THEN project_transfer_fee_context(
       CURRENT_TIMESTAMP, $1::timestamptz, $2::timestamptz
     ) ELSE 0 END
@@ -938,7 +938,7 @@ WITH fee_projection AS (
   WHERE dd.status = 'pending'
 ),
 latest_revisions AS (
-  SELECT DISTINCT ON (transfer_report_id) id, transfer_report_id, snapshot
+  SELECT DISTINCT ON (transfer_report_id) id, transfer_report_id, snapshot, created_at
   FROM transfer_report_revisions, fee_projection
   ORDER BY transfer_report_id, revision_number DESC, id DESC
 ),
@@ -950,7 +950,7 @@ fresh_candidates AS (
   NULL::timestamptz AS pending_window_started_at,
   NULL::timestamptz AS pending_window_ended_at,
   NULL::jsonb AS pending_request_payload,
-  CASE WHEN $3::text = 'active' THEN NULLIF(jsonb_strip_nulls(jsonb_build_object(
+  CASE WHEN $4::text = 'active' THEN NULLIF(jsonb_strip_nulls(jsonb_build_object(
     'profile', CASE WHEN
       current.profile_fresh_until > CURRENT_TIMESTAMP
       OR (
@@ -1035,6 +1035,8 @@ LEFT JOIN LATERAL (
 WHERE di.id IS NULL
   AND r.created_at >= $1::timestamptz
   AND r.created_at <= $2::timestamptz
+  AND (r.snapshot->>'probability_status' IS DISTINCT FROM 'active_scored'
+    OR $3::text = 'active')
   AND NOT EXISTS (SELECT 1 FROM pending_candidates)
 ),
 candidates AS (
@@ -1669,9 +1671,25 @@ const finiteNumber = (value) => {
   return Number.isFinite(number) ? number : null;
 };
 const probabilityLines = (report) => {
-  const probability = report.probability_status === 'active_scored' ? report.probability : null;
+  let probability = null;
+  if (report.probability_status === 'active_scored') {
+    probability = report.probability;
+    const validStages = ['link', 'interest', 'talks', 'advanced', 'agreed', 'done', 'collapsed'];
+    const validTerminalStates = ['open', 'official', 'collapsed'];
+    if (!probability || typeof probability !== 'object' || Array.isArray(probability)
+      || probability.engine_version !== 'probability-v1'
+      || finiteNumber(probability.normalized_probability) === null
+      || finiteNumber(probability.normalized_probability) < 0
+      || finiteNumber(probability.normalized_probability) > 1
+      || !validStages.includes(probability.current_stage)
+      || !validTerminalStates.includes(probability.terminal_state)
+      || !probability.explanation || typeof probability.explanation !== 'object'
+      || Array.isArray(probability.explanation)) {
+      throw new Error('active_scored report ' + (report.revision_id || report.player_name || 'unknown') + ' has invalid deterministic probability payload');
+    }
+  }
   const value = finiteNumber(probability?.normalized_probability);
-  if (value === null) return ['Legacy extraction confidence: ' + Math.round(report.confidence * 100) + '%'];
+  if (value === null) return ['Confidence: ' + Math.round(report.confidence * 100) + '%'];
   const previous = finiteNumber(probability.previous_probability);
   const delta = finiteNumber(probability.probability_delta);
   const points = delta === null ? null : Math.round(delta * 100);
@@ -2115,9 +2133,11 @@ RETURNING $1::text AS transfer_report_id, $2::text AS preferred_raw_post_id;`, '
 const context = $('Create run context').isExecuted
   ? $('Create run context').first().json
   : ($('Create sample run context').isExecuted ? $('Create sample run context').first().json : $('Create stale recompute context').first().json);
-const selected = String($env.PLAYER_ENRICHMENT_MODE ?? 'off').trim().toLowerCase();
-const mode = ['shadow', 'active'].includes(selected) ? selected : 'off';
-return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at, mode] } }];`),
+const selectedProbability = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
+const probabilityMode = ['shadow', 'active'].includes(selectedProbability) ? selectedProbability : 'off';
+const selectedEnrichment = String($env.PLAYER_ENRICHMENT_MODE ?? 'off').trim().toLowerCase();
+const enrichmentMode = ['shadow', 'active'].includes(selectedEnrichment) ? selectedEnrichment : 'off';
+return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at, probabilityMode, enrichmentMode] } }];`),
     postgresNode('Find undelivered revisions', [5160, -180], candidatesSql()),
     codeNode('Build bounded Discord digest', [5380, -180], digestCode()),
     postgresNode('Reserve digest before delivery', [5600, -180], reserveDigestSql()),

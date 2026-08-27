@@ -63,16 +63,16 @@ SELECT pg_temp.assert_true('off mode or one instant before H1 expiry settled cla
     AND settlement_outcome IS NOT NULL));
 SELECT settle_expired_probability_v1_cases(
   'shadow', '2026-07-15 00:00:00+00', 2) AS first_batch \gset
-SELECT pg_temp.assert_true('fixed H1 batch did not settle exactly two cases at eligibility',
-  :first_batch = 2
+SELECT pg_temp.assert_true('one H1 settlement call did not drain every eligible case',
+  :first_batch = 3
   AND (SELECT count(*) FROM transfer_cases
-    WHERE id IN (:h1_a, :h1_b, :h1_c) AND status = 'closed') = 2);
+    WHERE id IN (:h1_a, :h1_b, :h1_c) AND status = 'closed') = 3);
 SELECT settle_expired_probability_v1_cases(
   'shadow', '2026-07-15 00:00:00.000001+00', 100) AS remaining_batch \gset
 SELECT settle_expired_probability_v1_cases(
   'shadow', '2026-07-15 00:00:00.000001+00', 100) AS replay_batch \gset
-SELECT pg_temp.assert_true('remaining H1 case was not settled once or replay was not idempotent',
-  :remaining_batch = 1 AND :replay_batch = 0
+SELECT pg_temp.assert_true('settlement replay was not idempotent',
+  :remaining_batch = 0 AND :replay_batch = 0
   AND NOT EXISTS (SELECT 1 FROM source_claim_outcomes
     WHERE transfer_case_id IN (:h1_a, :h1_b, :h1_c)
       AND (settlement_outcome <> 'failure' OR settlement_basis <> 'window_expiry'
@@ -82,7 +82,7 @@ SELECT pg_temp.assert_true('fixed batch snapshots did not include every settled 
   (SELECT effective_resolved_count = 1.5 AND alpha = 7.92 AND beta = 1.58
     FROM source_reliability_snapshots
     WHERE source_account_id = :high_source_id
-      AND calculated_at = '2026-07-15 00:00:00.000001+00'
+      AND calculated_at = '2026-07-15 00:00:00+00'
     ORDER BY id DESC LIMIT 1));
 SELECT pg_temp.assert_true('H2 settled before its exact grace boundary',
   settle_expired_probability_v1_cases('active', '2027-01-14 23:59:59.999999+00', 100) = 0

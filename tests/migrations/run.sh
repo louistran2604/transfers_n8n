@@ -132,7 +132,7 @@ concurrent_versions=$(docker exec "$main_container" psql \
   --tuples-only \
   --no-align \
   --command "SELECT count(*) FROM app_schema_migrations;")
-test "$concurrent_versions" = "9"
+test "$concurrent_versions" = "10"
 
 for test_file in \
   /database/tests/001_dedup_restart_safety.sql \
@@ -149,7 +149,8 @@ for test_file in \
   /database/tests/020_probability_outcome_boundaries.sql \
   /database/tests/021_probability_reliability_time_travel.sql \
   /database/tests/024_probability_settlement_round1.sql \
-  /database/tests/028_probability_active_terminal_settlement.sql; do
+  /database/tests/028_probability_active_terminal_settlement.sql \
+  /database/tests/029_probability_final_review.sql; do
   psql_file "$main_container" transfers "$test_file"
 done
 
@@ -160,6 +161,12 @@ done
 "$root_dir/tests/migrations/probability-settlement-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/probability-same-time-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/fee-context-concurrency.sh" "$main_container"
+
+node "$root_dir/tests/migrations/generated-probability-candidates.mjs" \
+  "$temporary/generated-probability-candidates.sql"
+docker cp "$temporary/generated-probability-candidates.sql" \
+  "$main_container:/tmp/generated-probability-candidates.sql" >/dev/null
+psql_file "$main_container" transfers /tmp/generated-probability-candidates.sql
 
 node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \
   "$temporary/generated-enrichment-persistence.sql"
