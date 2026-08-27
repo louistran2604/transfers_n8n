@@ -215,6 +215,28 @@ AFTER UPDATE ON transfer_reports
 REFERENCING NEW TABLE AS new_probability_reports
 FOR EACH STATEMENT EXECUTE FUNCTION sync_transfer_case_probability_status();
 
+UPDATE transfer_cases transfer_case
+SET status = CASE
+  WHEN EXISTS (
+    SELECT 1 FROM transfer_reports report
+    WHERE report.transfer_case_id = transfer_case.id
+      AND report.probability_explanation->>'terminal_kind' = 'official_confirmation'
+  ) THEN 'completed'
+  WHEN NOT EXISTS (
+    SELECT 1 FROM transfer_reports report
+    WHERE report.transfer_case_id = transfer_case.id
+      AND report.transfer_stage IS DISTINCT FROM 'collapsed'
+      AND report.probability_explanation->>'terminal_kind' IS DISTINCT FROM 'authoritative_collapse'
+  ) THEN 'collapsed'
+  ELSE 'open'
+END
+WHERE transfer_case.status <> 'closed'
+  AND EXISTS (
+    SELECT 1 FROM transfer_reports report
+    WHERE report.transfer_case_id = transfer_case.id
+      AND report.probability_status IN ('shadow_scored', 'active_scored')
+  );
+
 CREATE FUNCTION probability_v1_stale_cases(
   requested_evaluated_at timestamptz,
   requested_limit integer DEFAULT 100

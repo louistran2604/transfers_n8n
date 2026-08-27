@@ -70,6 +70,7 @@ initialize_001() {
 
 start_postgres "$main_container" "$main_volume"
 initialize_001 "$main_container" transfers
+"$root_dir/tests/migrations/probability-lifecycle-upgrade.sh" "$main_container"
 
 docker exec -i "$main_container" psql \
   --username transfers \
