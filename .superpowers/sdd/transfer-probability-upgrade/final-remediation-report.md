@@ -74,4 +74,25 @@
 
 ## Local commit
 
-- Exact SHA: the Git object ID of the single commit containing this report, returned in the completion status and by `git rev-parse HEAD` (the object ID is assigned after this report becomes commit content).
+- Initial remediation: `bd08421640e2dfc704fe42107b3b54fcb64c7a9a`.
+- Review-fix round 1: `4cf56744fc7417fd9f6d0903568782aa19fae28b`.
+
+## Independent review outcome
+
+- Initial remediation review: REQUEST CHANGES, Critical 0 / Important 2 / Minor 0.
+- Scoped fix re-review: PASS, Critical 0 / Important 0 / Minor 0.
+- Both accepted findings are addressed: attribution-aware source resolution now matches migration 004, and settlement source locking is globally ordered across the full multi-chunk call.
+
+## Parent verification
+
+- SQL 030 passed; the strengthened shared-reporter concurrency harness passed twice with `8:8:2:4:4:8:0`.
+- Affected SQL tests 006, 007, 019, 020, 021, 024, 028, 029, and 030 passed.
+- Full Node unit suite passed 88/88; workflow generation checked 78 sources and 3 workflow files.
+- All documented Compose variants parsed successfully with non-secret placeholders.
+- Isolated mock E2E passed after importing the main, error, and manual probability-backfill workflows.
+- A fresh explicit 001–010 → 011 upgrade returned `11:011_probability_final_remediation` and both preserved public function signatures.
+- The full migration runner passed lifecycle upgrade, fresh/repeat/concurrent migration, numbered probability tests, all probability concurrency harnesses, and generated probability candidates before reaching the unchanged baseline:
+
+  `tests/migrations/run.sh → pre-existing generated-enrichment old_unresolved_ multi-row \gset failure → unchanged/deferred`
+
+- Whole implementation-range audit: `git diff --check` passed; 0 `.omx` paths, 0 dependency manifests, and 0 new secret-assignment lines were changed.
