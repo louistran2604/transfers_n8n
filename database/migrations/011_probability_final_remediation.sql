@@ -21,31 +21,59 @@ WITH base AS MATERIALIZED (
   SELECT evidence.id, evidence.raw_post_id, evidence.destination_club_name,
     evidence.stage_signal, evidence.claim_stance, evidence.wording_strength,
     evidence.club_agreement_state, evidence.personal_terms_state,
-    evidence.completion_claim, evidence.extraction_confidence,
+    evidence.completion_claim, evidence.attribution_kind, evidence.named_originator,
+    evidence.extraction_confidence,
     evidence.resolved_independence_key, evidence.raw_normalized_extraction,
     post.posted_at,
+    COALESCE(evidence.resolved_independence_key, CASE
+      WHEN originator.id IS NOT NULL THEN COALESCE(originator.publisher_group_key, 'source:' || originator.id)
+      WHEN evidence.attribution_kind IN ('original', 'unknown')
+        THEN COALESCE(posting.publisher_group_key, 'source:' || posting.id)
+      ELSE 'unknown'
+    END) AS independence_key,
     COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,account_id}', '')::bigint,
+      originator.id,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.id END,
       posting.id) AS resolved_account_id,
-    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,source_kind}', posting.source_kind)
-      AS source_kind,
-    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,username}', posting.username)
-      AS source_username,
+    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,source_kind}',
+      originator.source_kind,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.source_kind END
+    ) AS resolved_source_kind,
+    COALESCE(evidence.raw_normalized_extraction #>> '{_resolved_source,username}',
+      originator.username,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.username END,
+      posting.username) AS source_username,
     COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,seed_reliability}', '')::numeric,
-      posting.seed_reliability, posting.reliability_score, 0.70)::numeric AS seed_reliability,
-    COALESCE(evidence.resolved_independence_key,
-      posting.publisher_group_key, 'source:' || posting.id) AS independence_key,
+      originator.seed_reliability,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.seed_reliability END
+    ) AS resolved_seed_reliability,
+    COALESCE(NULLIF(evidence.raw_normalized_extraction #>> '{_resolved_source,reliability_score}', '')::numeric,
+      originator.reliability_score,
+      CASE WHEN evidence.attribution_kind IN ('original', 'unknown') THEN posting.reliability_score END
+    ) AS resolved_reliability_score,
     GREATEST(0, EXTRACT(epoch FROM (requested_evaluated_at - post.posted_at)) / 86400)::numeric
       AS age_days
   FROM transfer_evidence evidence
   JOIN raw_posts post ON post.id = evidence.raw_post_id
   JOIN source_accounts posting ON posting.id = post.source_account_id
+  LEFT JOIN LATERAL (
+    SELECT account.*
+    FROM source_accounts account
+    WHERE evidence.named_originator IS NOT NULL
+      AND lower(account.username) = lower(regexp_replace(evidence.named_originator, '^@', ''))
+      AND account.is_active
+    ORDER BY account.id
+    LIMIT 1
+  ) originator ON true
   WHERE evidence.transfer_report_id = requested_transfer_report_id
     AND evidence.extraction_confidence >= 0.50
     AND post.posted_at <= requested_evaluated_at
 ), accepted AS (
   SELECT resolved.*,
     COALESCE(snapshot.posterior_reliability,
-      GREATEST(0.55, LEAST(0.95, seed_reliability)))::numeric AS reliability,
+      GREATEST(0.55, LEAST(0.95, COALESCE(
+        resolved_seed_reliability, resolved_reliability_score, 0.70
+      ))))::numeric AS reliability,
     CASE wording_strength
       WHEN 'hedged' THEN 0.75 WHEN 'reported' THEN 0.90
       WHEN 'direct' THEN 1.00 WHEN 'definitive' THEN 1.10
@@ -73,7 +101,7 @@ WITH base AS MATERIALIZED (
 ), ranked AS (
   SELECT accepted.*,
     CASE
-      WHEN source_kind IN ('club_official', 'league_official')
+      WHEN resolved_source_kind IN ('club_official', 'league_official')
         AND (completion_claim = 'official_announcement'
           OR stage_signal = 'collapsed' OR club_agreement_state = 'collapsed') THEN 1::numeric
       ELSE power(2::numeric, -age_days / half_life_days)
@@ -93,12 +121,12 @@ WITH base AS MATERIALIZED (
   FROM accepted
 ), official AS (
   SELECT 1 AS present FROM ranked
-  WHERE source_kind IN ('club_official', 'league_official')
+  WHERE resolved_source_kind IN ('club_official', 'league_official')
     AND completion_claim = 'official_announcement'
   LIMIT 1
 ), collapse AS (
   SELECT ranked.* FROM ranked
-  WHERE source_kind IN ('club_official', 'league_official')
+  WHERE resolved_source_kind IN ('club_official', 'league_official')
     AND (stage_signal = 'collapsed' OR club_agreement_state = 'collapsed')
   ORDER BY posted_at DESC, raw_post_id DESC, id DESC LIMIT 1
 ), later_advanced AS (
@@ -244,12 +272,24 @@ CREATE OR REPLACE FUNCTION settle_expired_probability_v1_cases(
 RETURNS integer
 LANGUAGE plpgsql
 AS $$
-DECLARE selected_case_ids bigint[]; changed_sources bigint[];
+DECLARE eligible_case_ids bigint[]; selected_case_ids bigint[]; changed_sources bigint[];
   all_changed_sources bigint[] := '{}'::bigint[];
-  batch_count integer; processed integer := 0;
+  batch_count integer; processed integer := 0; sources_locked boolean := false;
 BEGIN
   IF requested_mode NOT IN ('shadow', 'active') THEN RETURN 0; END IF;
   IF requested_limit <= 0 THEN RETURN 0; END IF;
+
+  SELECT array_agg(transfer_case.id ORDER BY transfer_case.id)
+  INTO eligible_case_ids
+  FROM transfer_cases transfer_case
+  WHERE transfer_case.status IN ('open', 'collapsed')
+    AND requested_evaluated_at >= probability_v1_window_expiry_at(
+      transfer_case.transfer_window_key)
+    AND EXISTS (SELECT 1 FROM source_claim_outcomes outcome
+      WHERE outcome.transfer_case_id = transfer_case.id
+        AND outcome.settlement_outcome IS NULL);
+
+  IF eligible_case_ids IS NULL THEN RETURN 0; END IF;
 
   LOOP
     SELECT array_agg(claimed.id ORDER BY claimed.id)
@@ -257,7 +297,8 @@ BEGIN
     FROM (
       SELECT transfer_case.id
       FROM transfer_cases transfer_case
-      WHERE transfer_case.status IN ('open', 'collapsed')
+      WHERE transfer_case.id = ANY(eligible_case_ids)
+        AND transfer_case.status IN ('open', 'collapsed')
         AND requested_evaluated_at >= probability_v1_window_expiry_at(
           transfer_case.transfer_window_key)
         AND EXISTS (SELECT 1 FROM source_claim_outcomes outcome
@@ -271,14 +312,17 @@ BEGIN
     batch_count := COALESCE(cardinality(selected_case_ids), 0);
     EXIT WHEN batch_count = 0;
 
-    PERFORM 1 FROM source_accounts source
-    WHERE source.id IN (
-      SELECT DISTINCT outcome.source_account_id
-      FROM source_claim_outcomes outcome
-      WHERE outcome.transfer_case_id = ANY(selected_case_ids)
-        AND outcome.settlement_outcome IS NULL
-    )
-    ORDER BY source.id FOR UPDATE;
+    IF NOT sources_locked THEN
+      PERFORM 1 FROM source_accounts source
+      WHERE source.id IN (
+        SELECT DISTINCT outcome.source_account_id
+        FROM source_claim_outcomes outcome
+        WHERE outcome.transfer_case_id = ANY(eligible_case_ids)
+          AND outcome.settlement_outcome IS NULL
+      )
+      ORDER BY source.id FOR UPDATE;
+      sources_locked := true;
+    END IF;
 
     WITH changed AS (
       UPDATE source_claim_outcomes

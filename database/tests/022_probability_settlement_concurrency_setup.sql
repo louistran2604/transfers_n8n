@@ -22,7 +22,7 @@ BEGIN
     source_ids := array_append(source_ids, source_id);
   END LOOP;
 
-  FOR fixture_number IN 1..6 LOOP
+  FOR fixture_number IN 1..8 LOOP
     INSERT INTO players (identity_key, display_name, normalized_name)
     VALUES ('settlement-lock-' || fixture_number, 'Settlement Lock', 'settlement lock')
     RETURNING id INTO player_id;
@@ -40,7 +40,7 @@ BEGIN
       source_account_id, transfer_case_id, transfer_report_id,
       first_eligible_stage, claimed_at, outcome_weight
     ) VALUES (
-      source_ids[CASE WHEN fixture_number IN (1, 3, 5) THEN 2 ELSE 1 END],
+      source_ids[CASE WHEN fixture_number IN (1, 2, 7, 8) THEN 2 ELSE 1 END],
       case_id, report_id, 'advanced', '2026-01-01', 0.5
     );
   END LOOP;
@@ -50,7 +50,15 @@ $$;
 CREATE FUNCTION probability_settlement_concurrency_audit_trigger()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM pg_advisory_lock(940009);
+  IF EXISTS (SELECT 1 FROM transfer_cases
+      WHERE id = NEW.transfer_case_id
+        AND case_key IN ('settlement-lock-1|2026-H1', 'settlement-lock-2|2026-H1')) THEN
+    PERFORM pg_advisory_lock(940009);
+  ELSIF EXISTS (SELECT 1 FROM transfer_cases
+      WHERE id = NEW.transfer_case_id
+        AND case_key IN ('settlement-lock-3|2026-H1', 'settlement-lock-4|2026-H1')) THEN
+    PERFORM pg_advisory_lock(940010);
+  END IF;
   INSERT INTO probability_settlement_concurrency_audit (transfer_case_id, backend_pid)
   VALUES (NEW.transfer_case_id, pg_backend_pid());
   RETURN NEW;

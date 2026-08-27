@@ -18,7 +18,9 @@ INSERT INTO source_accounts (
   ('996000000000000001', 'remedreporter', 'Remediation Reporter', 'individual', 2,
     0.850, 0.850, 'reporter:remediation', 'journalist'),
   ('996000000000000002', 'remedclub', 'Remediation Club', 'organization', 1,
-    1.000, 1.000, 'club:remediation', 'club_official');
+    1.000, 1.000, 'club:remediation', 'club_official'),
+  ('996000000000000003', 'remedorigin', 'Remediation Originator', 'individual', 2,
+    0.620, NULL, 'reporter:remediation-origin', 'journalist');
 SELECT id AS reporter_id FROM source_accounts WHERE username = 'remedreporter' \gset
 SELECT id AS official_id FROM source_accounts WHERE username = 'remedclub' \gset
 
@@ -54,7 +56,8 @@ $$;
 CREATE FUNCTION pg_temp.apply_evidence(
   report_id bigint, source_id bigint, posted_at timestamptz, evaluated_at timestamptz,
   stage text, stance text DEFAULT 'supports', club_state text DEFAULT 'talks',
-  personal_state text DEFAULT 'talks', completion text DEFAULT 'none'
+  personal_state text DEFAULT 'talks', completion text DEFAULT 'none',
+  attribution text DEFAULT 'original', named_originator text DEFAULT NULL
 ) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE raw_id bigint; destination text; result_id bigint;
 BEGIN
@@ -73,8 +76,8 @@ BEGIN
       'normalized_evidence', jsonb_build_object(
         'stage_signal', stage, 'claim_stance', stance, 'wording_strength', 'direct',
         'club_agreement_state', club_state, 'personal_terms_state', personal_state,
-        'completion_claim', completion, 'attribution_kind', 'original',
-        'named_originator', NULL, 'extraction_confidence', 0.95))
+        'completion_claim', completion, 'attribution_kind', attribution,
+        'named_originator', named_originator, 'extraction_confidence', 0.95))
   ))) INTO result_id;
   RETURN result_id;
 END;
@@ -175,6 +178,31 @@ SELECT pg_temp.replay_latest(:reliability_report, '2026-08-09 10:00+00');
 SELECT pg_temp.assert_true('same-time replay changed the posterior fingerprint',
   (SELECT count(*) FROM transfer_probability_revisions
     WHERE transfer_report_id = :reliability_report) = :posterior_revision);
+
+-- Cited evidence uses the named originator's compatibility reliability, not the poster's.
+SELECT pg_temp.make_report('cited-reopen') AS cited_report \gset
+SELECT pg_temp.apply_evidence(:cited_report, :official_id,
+  '2026-09-01 09:00+00', '2026-09-01 10:00+00', 'collapsed',
+  club_state => 'collapsed');
+SELECT pg_temp.apply_evidence(:cited_report, :official_id,
+  '2026-09-02 09:00+00', '2026-09-02 10:00+00', 'advanced',
+  attribution => 'cites_named_source', named_originator => '@remedorigin');
+SELECT pg_temp.assert_true('cited reopen inherited posting-account reliability',
+  (SELECT transfer_stage = 'advanced'
+    AND (probability_explanation #>> '{primary,reliability}')::numeric = 0.62
+    AND probability_explanation #>> '{primary,independence_key}' = 'reporter:remediation-origin'
+  FROM transfer_reports WHERE id = :cited_report));
+
+-- An unresolved aggregation remains unknown/non-official and uses the 0.70 fallback.
+SELECT pg_temp.make_report('unresolved-aggregate') AS aggregate_report \gset
+SELECT pg_temp.apply_evidence(:aggregate_report, :official_id,
+  '2026-09-03 09:00+00', '2026-09-03 10:00+00', 'not_reported', 'contradicts',
+  attribution => 'aggregation');
+SELECT pg_temp.assert_true('unresolved aggregation inherited posting-account identity',
+  (SELECT transfer_stage = 'link'
+    AND (probability_explanation #>> '{contradictions,0,reliability}')::numeric = 0.70
+    AND probability_explanation #>> '{contradictions,0,independence_key}' = 'unknown'
+  FROM transfer_reports WHERE id = :aggregate_report));
 
 ROLLBACK;
 
