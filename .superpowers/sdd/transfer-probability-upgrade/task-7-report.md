@@ -79,3 +79,34 @@ Status: complete.
 
 - The known generated-enrichment `old_unresolved_`/line-524 `\gset` baseline failure remains after every Task 7 probability and concurrency check passes.
 - No deployment, push, merge, rebase, Task 8 fee/value work, scoring-weight change, Qwen evidence change, or dependency addition was performed.
+
+## Fix round 2 (pre-007 lifecycle synchronization)
+
+Status: complete.
+
+### Changed files
+
+- `database/migrations/007_probability_active_digest.sql`
+- `database/tests/015_probability_lifecycle_upgrade_setup.sql`
+- `database/tests/016_probability_lifecycle_upgrade_assert.sql`
+- `tests/migrations/probability-lifecycle-upgrade.sh`
+- `tests/migrations/run.sh`
+
+### RED evidence
+
+- `tests/migrations/run.sh` on the pre-fix migration created official, fully collapsed, mixed live/collapsed, and manually closed probability cases after migration 006 and before migration 007. The upgrade assertion failed with `pre-007 probability lifecycle was not synchronized; stale cases={lifecycle-upgrade-collapsed|old|2026-H2,lifecycle-upgrade-mixed|old|2026-H2,lifecycle-upgrade-official|old|2026-H2}` (exit 3). This proved the old migration left terminal cases open and stale-eligible.
+
+### GREEN verification
+
+- `tests/migrations/run.sh` — the focused pre-007 upgrade fixture printed `probability lifecycle upgrade test passed`; SQL 012 passed; probability-v1 concurrency passed; `tests/migrations/probability-stale-concurrency.sh` passed twice with cleanup. The runner then reached only the unchanged generated-enrichment SQL line 524 `\gset` baseline failure.
+- `sh -n tests/migrations/probability-lifecycle-upgrade.sh` — passed.
+- `git diff --check` and cached diff check — passed.
+
+### Commits
+
+- `8da893b` — Sync probability case lifecycle on upgrade.
+
+### Concerns
+
+- Migration-time synchronization is limited to existing non-`closed` cases that contain `shadow_scored` or `active_scored` reports. Manually closed cases remain closed; mixed live/collapsed cases remain open.
+- The unrelated generated-enrichment `old_unresolved_`/line-524 `\gset` baseline failure remains unchanged.
