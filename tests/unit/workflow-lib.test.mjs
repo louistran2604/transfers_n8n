@@ -1355,6 +1355,65 @@ test('digest displays every meaningful non-null transfer detail', () => {
   assert.doesNotMatch(value, /Identity:/);
 });
 
+test('digest renders fresh same-currency fee context compactly and fails open otherwise', () => {
+  const base = validReport({
+    fee_amount: 25000000,
+    fee_currency: 'EUR',
+    add_ons_amount: 5000000,
+    add_ons_currency: 'EUR',
+  });
+  const fresh = buildDiscordDigest([{
+    ...base,
+    fee_context: {
+      profile_snapshot_id: '42',
+      market_value: 20000000,
+      market_value_currency: 'EUR',
+      market_value_as_of: '2026-08-27T00:00:00Z',
+      stale: false,
+      guaranteed_fee_ratio: 1.25,
+      fee_plus_add_ons_ratio: 1.5,
+    },
+  }]).embeds[0].fields[0].value;
+  assert.match(fresh, /Fee: €25m \+ €5m add-ons · Sofascore value €20m \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
+  assert.doesNotMatch(fresh, /^Add-ons:/m);
+
+  for (const fee_context of [
+    { profile_snapshot_id: '43', market_value: 20000000, market_value_currency: 'EUR', stale: true, guaranteed_fee_ratio: 1.25, fee_plus_add_ons_ratio: 1.5 },
+    { profile_snapshot_id: '44', market_value: 20000000, market_value_currency: 'GBP', stale: false },
+  ]) {
+    const value = buildDiscordDigest([{ ...base, fee_context }]).embeds[0].fields[0].value;
+    assert.match(value, /^Fee: 25,000,000 EUR$/m);
+    assert.match(value, /^Add-ons: 5,000,000 EUR$/m);
+    assert.doesNotMatch(value, /Sofascore value/);
+  }
+
+  const partial = buildDiscordDigest([{
+    ...base,
+    add_ons_currency: 'GBP',
+    fee_context: {
+      profile_snapshot_id: '45', market_value: 20000000,
+      market_value_currency: 'EUR', stale: false, guaranteed_fee_ratio: 1.25,
+    },
+  }]).embeds[0].fields[0].value;
+  assert.match(partial, /^Fee: €25m · Sofascore value €20m \(1\.25x guaranteed, fresh\)$/m);
+  assert.match(partial, /^Add-ons: 5,000,000 GBP$/m);
+  assert.doesNotMatch(partial, /incl\. add-ons/);
+});
+
+test('fee context alone does not make a delivered report material', () => {
+  const delivered = validReport({ fee_amount: 25000000, fee_currency: 'EUR' });
+  const enriched = {
+    ...delivered,
+    revision_id: 'fee-context-only',
+    fee_context: {
+      profile_snapshot_id: '42', market_value: 20000000,
+      market_value_currency: 'EUR', stale: false, guaranteed_fee_ratio: 1.25,
+    },
+    sent_history: [{ snapshot: delivered, sent_at: '2026-08-27T00:00:00Z' }],
+  };
+  assert.equal(selectDigestReports([enriched], { now: Date.parse('2026-08-27T01:00:00Z') }).length, 0);
+});
+
 test('digest appends rich enrichment in whole groups and keeps the journalist link last', () => {
   const postUrl = 'https://x.com/David_Ornstein/status/999000000000000002';
   const report = {
@@ -2045,12 +2104,23 @@ test('library and generated Discord formatters match across rich, sparse, null, 
   for (const [index, enrichment] of cases.entries()) {
     const postUrl = `https://x.com/David_Ornstein/status/${999000000000000200n + BigInt(index)}`;
     const report = {
-      ...validReport({ player_name: `Parity ${index}` }),
+      ...validReport({
+        player_name: `Parity ${index}`,
+        ...(index === 0 ? {
+          fee_amount: 25000000, fee_currency: 'EUR',
+          add_ons_amount: 5000000, add_ons_currency: 'EUR',
+        } : {}),
+      }),
       revision_id: `parity-${index}`,
       dedupe_key: `parity-${index}|test-fc|destination-fc`,
       preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
       sources: [{ post_url: postUrl }],
       enrichment,
+      ...(index === 0 ? { fee_context: {
+        profile_snapshot_id: '42', market_value: 20000000,
+        market_value_currency: 'EUR', market_value_as_of: '2026-08-27T00:00:00Z',
+        stale: false, guaranteed_fee_ratio: 1.25, fee_plus_add_ons_ratio: 1.5,
+      } } : {}),
     };
     const generatedInput = [{ json: {
       row_type: 'candidate',
@@ -2069,6 +2139,7 @@ test('library and generated Discord formatters match across rich, sparse, null, 
     const generatedPayload = JSON.parse(generated[0].json.params[0]).discord_payload;
     const libraryPayload = buildDiscordDigest([report]);
     assert.deepEqual(generatedPayload, libraryPayload);
+    if (index === 0) assert.match(generatedPayload.embeds[0].fields[0].value, /1\.5x incl\. add-ons/);
   }
 });
 
@@ -2469,6 +2540,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /pending_candidates/);
   assert.match(candidatesNode.parameters.query, /dd\.request_payload AS pending_request_payload/);
   assert.match(candidatesNode.parameters.query, /current_player_enrichment/);
+  assert.match(candidatesNode.parameters.query, /CASE WHEN \$3::text = 'active'\s+THEN project_transfer_fee_context\(\s*CURRENT_TIMESTAMP, \$1::timestamptz, \$2::timestamptz\s*\) ELSE 0 END/);
   assert.match(candidatesNode.parameters.query, /CASE WHEN \$3::text = 'active' THEN/);
   assert.match(candidatesNode.parameters.query, /'canonical_name'/);
   assert.match(candidatesNode.parameters.query, /'current_club_name'/);

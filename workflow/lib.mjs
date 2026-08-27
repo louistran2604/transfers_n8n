@@ -1098,11 +1098,12 @@ function isNewDigestUpdate(report, entityAliases, now) {
 
 function storyLines(report) {
   const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
+  const feeComparison = feeContextLine(report);
   const details = [
     `Classification: ${report.classification.replaceAll('_', ' ')}`,
     report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
-    formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null,
-    formatAmount(report.add_ons_amount, report.add_ons_currency) ? `Add-ons: ${formatAmount(report.add_ons_amount, report.add_ons_currency)}` : null,
+    feeComparison?.line ?? (formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null),
+    !feeComparison?.includesAddOns && formatAmount(report.add_ons_amount, report.add_ons_currency) ? `Add-ons: ${formatAmount(report.add_ons_amount, report.add_ons_currency)}` : null,
     formatAmount(report.release_clause_amount, report.release_clause_currency) ? `Release clause: ${formatAmount(report.release_clause_amount, report.release_clause_currency)}` : null,
     report.contract_length_months !== null && report.contract_length_months !== undefined ? `Contract length: ${report.contract_length_months} months` : null,
     report.contract_expires_on ? `Contract expires: ${report.contract_expires_on}` : null,
@@ -1196,6 +1197,26 @@ function compactValue(value, currency) {
     : (amount >= 1_000 ? `${Number((amount / 1_000).toFixed(1))}k` : String(amount));
   const symbols = { EUR: '€', GBP: '£', USD: '$' };
   return symbols[code] ? `${symbols[code]}${units}` : `${units} ${code}`;
+}
+
+function feeContextLine(report) {
+  const context = report.fee_context;
+  const fee = compactValue(report.fee_amount, report.fee_currency);
+  const marketValue = compactValue(context?.market_value, context?.market_value_currency);
+  const ratio = finiteNumber(context?.guaranteed_fee_ratio);
+  if (!context || context.stale !== false || !fee || !marketValue || ratio === null
+      || finiteNumber(context.market_value) <= 0
+      || String(report.fee_currency ?? '') !== String(context.market_value_currency ?? '')) return null;
+  const addOns = compactValue(report.add_ons_amount, report.add_ons_currency);
+  const totalRatio = finiteNumber(context.fee_plus_add_ons_ratio);
+  const includesAddOns = Boolean(addOns && totalRatio !== null
+    && String(report.add_ons_currency ?? '') === String(context.market_value_currency ?? ''));
+  const ratios = [`${Number(ratio.toFixed(2))}x guaranteed`];
+  if (includesAddOns) ratios.push(`${Number(totalRatio.toFixed(2))}x incl. add-ons`);
+  return {
+    line: `Fee: ${fee}${includesAddOns ? ` + ${addOns} add-ons` : ''} · Sofascore value ${marketValue} (${ratios.join(', ')}, fresh)`,
+    includesAddOns,
+  };
 }
 
 function integerStatistic(value, label) {

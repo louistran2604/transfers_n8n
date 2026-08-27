@@ -914,7 +914,12 @@ FROM input;`.trim();
 
 function candidatesSql() {
   return `
-WITH pending_candidates AS (
+WITH fee_projection AS (
+  SELECT CASE WHEN $3::text = 'active'
+    THEN project_transfer_fee_context(
+      CURRENT_TIMESTAMP, $1::timestamptz, $2::timestamptz
+    ) ELSE 0 END
+), pending_candidates AS (
   SELECT r.id::text AS revision_id, r.snapshot,
     s.priority_rank, s.reliability_score, s.is_official, s.username AS source_username, s.display_name AS source_name,
     p.post_url, p.posted_at,
@@ -934,7 +939,7 @@ WITH pending_candidates AS (
 ),
 latest_revisions AS (
   SELECT DISTINCT ON (transfer_report_id) id, transfer_report_id, snapshot
-  FROM transfer_report_revisions
+  FROM transfer_report_revisions, fee_projection
   ORDER BY transfer_report_id, revision_number DESC, id DESC
 ),
 fresh_candidates AS (
@@ -1717,6 +1722,22 @@ const compactValue = (value, currency) => {
   const symbols = { EUR: '€', GBP: '£', USD: '$' };
   return symbols[code] ? symbols[code] + units : units + ' ' + code;
 };
+const feeContextLine = (report) => {
+  const context = report.fee_context;
+  const fee = compactValue(report.fee_amount, report.fee_currency);
+  const marketValue = compactValue(context?.market_value, context?.market_value_currency);
+  const ratio = finiteNumber(context?.guaranteed_fee_ratio);
+  if (!context || context.stale !== false || !fee || !marketValue || ratio === null
+      || finiteNumber(context.market_value) <= 0
+      || String(report.fee_currency ?? '') !== String(context.market_value_currency ?? '')) return null;
+  const addOns = compactValue(report.add_ons_amount, report.add_ons_currency);
+  const totalRatio = finiteNumber(context.fee_plus_add_ons_ratio);
+  const includesAddOns = Boolean(addOns && totalRatio !== null
+    && String(report.add_ons_currency ?? '') === String(context.market_value_currency ?? ''));
+  const ratios = [Number(ratio.toFixed(2)) + 'x guaranteed'];
+  if (includesAddOns) ratios.push(Number(totalRatio.toFixed(2)) + 'x incl. add-ons');
+  return { line: 'Fee: ' + fee + (includesAddOns ? ' + ' + addOns + ' add-ons' : '') + ' · Sofascore value ' + marketValue + ' (' + ratios.join(', ') + ', fresh)', includesAddOns };
+};
 const integerStatistic = (value, label) => {
   const number = finiteNumber(value);
   return number === null ? null : Math.trunc(number).toLocaleString('en-US') + ' ' + label;
@@ -1878,12 +1899,13 @@ for (const report of selected) {
   if (fields.length >= 25) break;
   const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);
   const sourceLine = report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name;
+  const feeComparison = feeContextLine(report);
   const lines = [
     report.current_club_name + ' → ' + report.destination_club_name,
     'Classification: ' + report.classification.replaceAll('_', ' '),
     report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
-    amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null,
-    amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,
+    feeComparison?.line ?? (amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null),
+    !feeComparison?.includesAddOns && amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,
     amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,
     report.contract_length_months !== null && report.contract_length_months !== undefined ? 'Contract length: ' + report.contract_length_months + ' months' : null,
     report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,

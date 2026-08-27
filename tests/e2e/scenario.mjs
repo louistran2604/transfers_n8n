@@ -216,6 +216,15 @@ const reports = Array.from({ length: 20 }, (_, index) => ({
   preferred_source: { ...sourceMetadata({ username: index > 14 ? 'someone' : 'David_Ornstein', display_name: 'Mock Source', external_account_id: String(900000000000000000n + BigInt(index)), account_type: 'individual', source_kind: 'journalist', publisher_group_key: index > 14 ? 'reporter:someone' : 'reporter:david-ornstein', is_aggregator: false, seed_reliability: index > 14 ? 0.7 : 0.95 }), display_name: 'Mock Source' },
   sources: [{ post_url: `https://x.com/mock/status/${900000000000000000n + BigInt(index)}` }],
   ...(index === 0 ? {
+    fee_amount: 25000000,
+    fee_currency: 'EUR',
+    add_ons_amount: 5000000,
+    add_ons_currency: 'EUR',
+    fee_context: {
+      profile_snapshot_id: '42', market_value: 20000000,
+      market_value_currency: 'EUR', market_value_as_of: '2026-08-27T00:00:00Z',
+      stale: false, guaranteed_fee_ratio: 1.25, fee_plus_add_ons_ratio: 1.5,
+    },
     probability_status: 'active_scored',
     probability: {
       engine_version: 'probability-v1', normalized_probability: 0.62,
@@ -232,6 +241,7 @@ assert.equal(new Set(digest.embeds[0].fields.map((field) => field.name)).size, 1
 const activeField = digest.embeds[0].fields.find((field) => field.name.includes('Mock Player 0'));
 assert.match(activeField.value, /Probability: 62% \(▲ \+11\)/);
 assert.match(activeField.value, /Stage: Advanced talks/);
+assert.match(activeField.value, /Fee: €25m \+ €5m add-ons · Sofascore value €20m \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
 assert.doesNotMatch(activeField.value, /Confidence:/);
 const discordBeforeNormal = (await json('/state')).body.discordRequests;
 const sent = await json('/discord/receive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(digest) });

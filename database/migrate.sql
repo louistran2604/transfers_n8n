@@ -115,4 +115,18 @@ END AS migration_007_pending \gset
   COMMIT;
 \endif
 
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM app_schema_migrations
+    WHERE version = '008_fee_context'
+  ) THEN 'false' ELSE 'true'
+END AS migration_008_pending \gset
+
+\if :migration_008_pending
+  BEGIN;
+  \i /database/migrations/008_fee_context.sql
+  INSERT INTO app_schema_migrations (version) VALUES ('008_fee_context');
+  COMMIT;
+\endif
+
 SELECT pg_advisory_unlock(hashtext('transfers_net_schema_migrations'));
