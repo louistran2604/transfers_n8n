@@ -149,6 +149,7 @@ done
 "$root_dir/tests/migrations/probability-backfill-repeatability.sh" \
   "$main_container" "$root_dir/tests/migrations/probability-backfill-concurrency.sh"
 "$root_dir/tests/migrations/probability-v1-concurrency.sh" "$main_container"
+"$root_dir/tests/migrations/probability-stale-concurrency.sh" "$main_container"
 
 node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \
   "$temporary/generated-enrichment-persistence.sql"

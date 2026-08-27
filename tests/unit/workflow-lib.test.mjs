@@ -1206,6 +1206,7 @@ test('digest renders active probability details and labels legacy confidence hon
         contradictions: [],
         story_staleness_adjustment: 0,
         competition_adjustment: -0.06,
+        change_classification: 'raw_score_change',
       },
     },
   };
@@ -1218,7 +1219,8 @@ test('digest renders active probability details and labels legacy confidence hon
   const values = buildDiscordDigest([active, legacy]).embeds[0].fields.map((field) => field.value);
   assert.match(values[0], /Probability: 62% \(▲ \+11\)/);
   assert.match(values[0], /Stage: Advanced talks/);
-  assert.match(values[0], /Why: strong primary report \(87% reliability\); \+1 independent source; -6 pts from competition/);
+  assert.match(values[0], /Why: strong primary report \(87% reliability\); \+1 independent source/);
+  assert.doesNotMatch(values[0], /competition/);
   assert.doesNotMatch(values[0], /Confidence:/);
   assert.match(values[1], /Legacy extraction confidence: 73%/);
   assert.doesNotMatch(values[1], /Probability:/);
@@ -1230,6 +1232,34 @@ test('digest renders active probability details and labels legacy confidence hon
     ...active,
     sent_history: [{ snapshot: prior, sent_at: '2026-08-27T00:00:00.000Z' }],
   }]).embeds[0].fields.length, 1);
+});
+
+test('competition reason is causal, negative-only, and wins the single negative slot', () => {
+  const render = (probability_delta, explanation) => buildDiscordDigest([{
+    ...validReport({ player_name: `Competition ${probability_delta}` }),
+    preferred_source: source('David_Ornstein'), revision_id: String(probability_delta),
+    probability_status: 'active_scored',
+    probability: {
+      engine_version: 'probability-v1', normalized_probability: 0.40,
+      previous_probability: 0.46, probability_delta, current_stage: 'talks', terminal_state: 'open',
+      explanation: {
+        primary: { reliability: 0.87 },
+        corroboration: [{ independence_key: 'reporter:second' }, { independence_key: 'reporter:third' }],
+        ...explanation,
+      },
+    },
+  }]).embeds[0].fields[0].value;
+  const competitionOnly = render(-0.06, {
+    change_classification: 'competition_only', competition_adjustment: -0.06,
+    contradictions: [{}], story_staleness_adjustment: -0.35,
+  });
+  assert.match(competitionOnly, /Why: strong primary report \(87% reliability\); \+2 independent sources; -6 pts from competition/);
+  assert.doesNotMatch(competitionOnly, /contradictory|stale/);
+  const positive = render(0.06, {
+    change_classification: 'competition_only', competition_adjustment: -0.06,
+    contradictions: [], story_staleness_adjustment: 0,
+  });
+  assert.doesNotMatch(positive, /competition/);
 });
 
 test('active probability rendering covers initial, down, zero, done, official, and collapsed states', () => {
@@ -2290,6 +2320,15 @@ test('generated workflow carries fail-closed shadow and active probability evide
   assert.equal(workflow.connections['Daily probability decay'].main[0][0].node, 'Recover interrupted stale deliveries');
   assert.equal(workflow.connections['Recompute stale probability cases'].main[0][0].node, 'Prepare digest candidates query');
   assert.match(workflow.nodes.find((node) => node.name === 'Recompute stale probability cases').parameters.query, /recompute_stale_probability_v1_cases/);
+  const staleContextNode = workflow.nodes.find((node) => node.name === 'Create stale recompute context');
+  const runStaleContext = new AsyncFunction('$env', '$execution', staleContextNode.parameters.jsCode);
+  for (const configured of [undefined, '', 'off', 'invalid']) {
+    assert.deepEqual(await runStaleContext({ PROBABILITY_MODE: configured }, { id: 'stale-off' }), []);
+  }
+  const activeStale = await runStaleContext({ PROBABILITY_MODE: ' ACTIVE ' }, { id: 'stale-active' });
+  assert.equal(activeStale.length, 1);
+  assert.equal(activeStale[0].json.probability_mode, 'active');
+  assert.equal(workflow.connections['Create stale recompute context'].main[0][0].node, 'Register stale workflow run');
 });
 
 test('standard n8n deployment exposes probability mode to main and runner services', async () => {

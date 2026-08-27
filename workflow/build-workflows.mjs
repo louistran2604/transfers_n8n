@@ -1684,9 +1684,11 @@ const probabilityLines = (report) => {
   const corroborators = Array.isArray(explanation.corroboration) ? explanation.corroboration.length : 0;
   if (corroborators) positives.push('+' + corroborators + ' independent source' + (corroborators === 1 ? '' : 's'));
   let negative = null;
-  if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
+  if (explanation.change_classification === 'competition_only'
+    && finiteNumber(probability.probability_delta) < 0
+    && finiteNumber(explanation.competition_adjustment) < 0) negative = '-' + Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100) + ' pts from competition';
+  else if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
   else if (finiteNumber(explanation.story_staleness_adjustment) < 0) negative = 'stale evidence';
-  else if (finiteNumber(explanation.competition_adjustment) < 0) negative = '-' + Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100) + ' pts from competition';
   const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
   if (reasons.length) lines.push('Why: ' + reasons.join('; '));
   return lines;
@@ -1961,7 +1963,8 @@ return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stri
     codeNode('Create stale recompute context', [-700, -340], `
 const now = new Date();
 const selected = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
-const probabilityMode = ['shadow', 'active'].includes(selected) ? selected : 'off';
+if (!['shadow', 'active'].includes(selected)) return [];
+const probabilityMode = selected;
 const start = new Date(now); start.setHours(0, 0, 0, 0);
 return [{ json: { params: [String($execution.id), 'probability-stale|' + start.toISOString(), JSON.stringify({ trigger: 'daily_probability_decay', started_at: now.toISOString(), probability_mode: probabilityMode })], logical_run_key: 'probability-stale|' + start.toISOString(), collection_started_at: now.toISOString(), collection_cutoff_at: new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString(), probability_mode: probabilityMode } }];`),
     postgresNode('Register workflow run', [-500, -40], runRegistrationSql()),

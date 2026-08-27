@@ -1137,9 +1137,12 @@ function storyLines(report) {
     const corroborators = Array.isArray(explanation.corroboration) ? explanation.corroboration.length : 0;
     if (corroborators) positives.push(`+${corroborators} independent source${corroborators === 1 ? '' : 's'}`);
     let negative = null;
-    if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
+    if (explanation.change_classification === 'competition_only'
+      && finiteNumber(probability.probability_delta) < 0
+      && finiteNumber(explanation.competition_adjustment) < 0) {
+      negative = `-${Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100)} pts from competition`;
+    } else if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
     else if (finiteNumber(explanation.story_staleness_adjustment) < 0) negative = 'stale evidence';
-    else if (finiteNumber(explanation.competition_adjustment) < 0) negative = `-${Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100)} pts from competition`;
     const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
     if (reasons.length) probabilityLines.push(`Why: ${reasons.join('; ')}`);
   } else {

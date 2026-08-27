@@ -11,8 +11,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   IF NEW.probability_engine_version = 'probability-v1'
-      AND NEW.normalized_probability IS NOT NULL
-      AND NEW.probability_status <> 'active_scored' THEN
+      AND NEW.normalized_probability IS NOT NULL THEN
     NEW.probability_status := 'shadow_scored';
   END IF;
   RETURN NEW;
@@ -34,10 +33,14 @@ DECLARE
 BEGIN
   SELECT revision.transfer_report_id
   INTO previous_leader_id
-  FROM transfer_probability_revisions revision
-  WHERE revision.transfer_case_id = requested_transfer_case_id
-    AND revision.evaluated_at = requested_evaluated_at
-    AND revision.previous_probability IS NOT NULL
+  FROM (
+    SELECT DISTINCT ON (candidate.transfer_report_id) candidate.*
+    FROM transfer_probability_revisions candidate
+    WHERE candidate.transfer_case_id = requested_transfer_case_id
+      AND candidate.evaluated_at = requested_evaluated_at
+    ORDER BY candidate.transfer_report_id, candidate.revision_number DESC, candidate.id DESC
+  ) revision
+  WHERE revision.previous_probability IS NOT NULL
   ORDER BY revision.previous_probability DESC, revision.transfer_report_id
   LIMIT 1;
 
@@ -81,12 +84,8 @@ BEGIN
       previous.current_stage AS previous_stage,
       previous.terminal_state AS previous_terminal_state,
       latest_material.snapshot AS base_snapshot,
-      NOT EXISTS (
-        SELECT 1
-        FROM transfer_report_revisions material
-        WHERE material.transfer_report_id = report.id
-          AND material.snapshot->>'probability_status' = 'active_scored'
-      ) AS initial_active
+      latest_material.snapshot->>'probability_status' IS DISTINCT FROM 'active_scored'
+        AS latest_material_is_not_active
     FROM transfer_reports report
     JOIN current_probability current ON current.transfer_report_id = report.id
     LEFT JOIN previous_probability previous ON previous.transfer_report_id = report.id
@@ -115,7 +114,7 @@ BEGIN
         )
       ) AS snapshot
     FROM candidates
-    WHERE initial_active
+    WHERE latest_material_is_not_active
       OR current_stage IS DISTINCT FROM previous_stage
       OR terminal_state IS DISTINCT FROM previous_terminal_state
       OR abs(COALESCE(probability_delta, 0)) >= 0.05
@@ -170,9 +169,51 @@ BEGIN
     requested_transfer_case_id,
     (payload->>'evaluated_at')::timestamptz
   );
+  UPDATE transfer_reports
+  SET probability_status = 'active_scored'
+  WHERE transfer_case_id = requested_transfer_case_id
+    AND probability_engine_version = 'probability-v1'
+    AND normalized_probability IS NOT NULL;
   RETURN probability_revision_id;
 END;
 $$;
+
+CREATE FUNCTION sync_transfer_case_probability_status()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE transfer_cases transfer_case
+  SET status = CASE
+    WHEN EXISTS (
+      SELECT 1 FROM transfer_reports report
+      WHERE report.transfer_case_id = transfer_case.id
+        AND report.probability_explanation->>'terminal_kind' = 'official_confirmation'
+    ) THEN 'completed'
+    WHEN NOT EXISTS (
+      SELECT 1 FROM transfer_reports report
+      WHERE report.transfer_case_id = transfer_case.id
+        AND report.transfer_stage IS DISTINCT FROM 'collapsed'
+        AND report.probability_explanation->>'terminal_kind' IS DISTINCT FROM 'authoritative_collapse'
+    ) THEN 'collapsed'
+    ELSE 'open'
+  END
+  FROM (SELECT DISTINCT transfer_case_id FROM new_probability_reports) changed
+  WHERE transfer_case.id = changed.transfer_case_id
+    AND transfer_case.status <> 'closed';
+  RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER transfer_reports_sync_probability_case_status_after_insert
+AFTER INSERT ON transfer_reports
+REFERENCING NEW TABLE AS new_probability_reports
+FOR EACH STATEMENT EXECUTE FUNCTION sync_transfer_case_probability_status();
+
+CREATE TRIGGER transfer_reports_sync_probability_case_status_after_update
+AFTER UPDATE ON transfer_reports
+REFERENCING NEW TABLE AS new_probability_reports
+FOR EACH STATEMENT EXECUTE FUNCTION sync_transfer_case_probability_status();
 
 CREATE FUNCTION probability_v1_stale_cases(
   requested_evaluated_at timestamptz,
@@ -180,10 +221,9 @@ CREATE FUNCTION probability_v1_stale_cases(
 )
 RETURNS TABLE (transfer_case_id bigint)
 LANGUAGE sql
-STABLE
+VOLATILE
 AS $$
-  SELECT transfer_case_id
-  FROM (
+  WITH candidate AS (
     SELECT transfer_case.id AS transfer_case_id,
       newest.posted_at,
       newest.half_life_days,
@@ -209,22 +249,23 @@ AS $$
       ORDER BY post.posted_at DESC, post.id DESC, evidence.id DESC
       LIMIT 1
     ) newest ON true
-    WHERE report.probability_status IN ('shadow_scored', 'active_scored')
-      AND NOT EXISTS (
-        SELECT 1
-        FROM transfer_reports closed_report
-        WHERE closed_report.transfer_case_id = transfer_case.id
-          AND (closed_report.transfer_stage = 'collapsed'
-            OR COALESCE(closed_report.probability_explanation->>'terminal_kind', '') <> '')
-      )
+    WHERE transfer_case.status = 'open'
+      AND report.probability_status IN ('shadow_scored', 'active_scored')
     GROUP BY transfer_case.id, newest.posted_at, newest.half_life_days
-  ) candidate
-  WHERE last_evaluated_at < requested_evaluated_at
-    AND floor(EXTRACT(epoch FROM (requested_evaluated_at - posted_at)) / 86400 / half_life_days)
-      > floor(EXTRACT(epoch FROM (last_evaluated_at - posted_at)) / 86400 / half_life_days)
-    AND EXTRACT(epoch FROM (requested_evaluated_at - posted_at)) / 86400 > half_life_days
-  ORDER BY transfer_case_id
-  LIMIT LEAST(GREATEST(requested_limit, 0), 100);
+  ), eligible AS (
+    SELECT transfer_case.id AS transfer_case_id
+    FROM transfer_cases transfer_case
+    JOIN candidate ON candidate.transfer_case_id = transfer_case.id
+    WHERE transfer_case.status = 'open'
+      AND candidate.last_evaluated_at <
+        candidate.posted_at + candidate.half_life_days * interval '1 day'
+      AND requested_evaluated_at >=
+        candidate.posted_at + candidate.half_life_days * interval '1 day'
+    ORDER BY transfer_case.id
+    FOR UPDATE OF transfer_case SKIP LOCKED
+    LIMIT LEAST(GREATEST(requested_limit, 0), 100)
+  )
+  SELECT transfer_case_id FROM eligible ORDER BY transfer_case_id;
 $$;
 
 CREATE FUNCTION recompute_stale_probability_v1_cases(
@@ -275,6 +316,8 @@ BEGIN
     ) evidence ON true
     JOIN raw_posts post ON post.id = evidence.raw_post_id
     WHERE report.transfer_case_id = selected_case.transfer_case_id
+      AND transfer_case.status = 'open'
+      AND report.probability_status IN ('shadow_scored', 'active_scored')
     ORDER BY report.id
     LIMIT 1;
 
