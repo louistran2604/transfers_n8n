@@ -8,9 +8,10 @@ CREATE TABLE probability_settlement_concurrency_audit (
 );
 
 DO $$
-DECLARE source_id bigint; player_id bigint; case_id bigint; report_id bigint;
+DECLARE source_ids bigint[] := '{}'::bigint[]; source_id bigint;
+  player_id bigint; case_id bigint; report_id bigint;
 BEGIN
-  FOR fixture_number IN 1..6 LOOP
+  FOR fixture_number IN 1..2 LOOP
     INSERT INTO source_accounts (
       external_account_id, username, display_name, account_type, priority_rank,
       reliability_score, seed_reliability, publisher_group_key, source_kind
@@ -18,6 +19,10 @@ BEGIN
       'settlementlk' || fixture_number, 'Settlement Lock', 'individual', 1,
       0.75, 0.75, 'reporter:settlement-lock-' || fixture_number, 'journalist')
     RETURNING id INTO source_id;
+    source_ids := array_append(source_ids, source_id);
+  END LOOP;
+
+  FOR fixture_number IN 1..6 LOOP
     INSERT INTO players (identity_key, display_name, normalized_name)
     VALUES ('settlement-lock-' || fixture_number, 'Settlement Lock', 'settlement lock')
     RETURNING id INTO player_id;
@@ -34,7 +39,10 @@ BEGIN
     INSERT INTO source_claim_outcomes (
       source_account_id, transfer_case_id, transfer_report_id,
       first_eligible_stage, claimed_at, outcome_weight
-    ) VALUES (source_id, case_id, report_id, 'advanced', '2026-01-01', 0.5);
+    ) VALUES (
+      source_ids[CASE WHEN fixture_number IN (1, 3, 5) THEN 2 ELSE 1 END],
+      case_id, report_id, 'advanced', '2026-01-01', 0.5
+    );
   END LOOP;
 END;
 $$;

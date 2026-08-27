@@ -49,7 +49,7 @@ run_once() {
   attempts=0
   until docker exec "$container" psql --username transfers --dbname transfers --tuples-only --no-align \
     --command "SELECT count(*) FROM pg_stat_activity
-      WHERE application_name = 'prob-settlement-b' AND wait_event = 'advisory';" | grep -q '^1$'; do
+      WHERE application_name = 'prob-settlement-b' AND wait_event_type = 'Lock';" | grep -q '^1$'; do
     attempts=$((attempts + 1)); test "$attempts" -lt 50; sleep 0.1
   done
 
@@ -66,12 +66,22 @@ run_once() {
   fi
 
   result=$(docker exec "$container" psql --username transfers --dbname transfers --tuples-only --no-align \
-    --command "SELECT count(*) || ':' || count(DISTINCT transfer_case_id) || ':' || count(DISTINCT backend_pid)
-      FROM probability_settlement_concurrency_audit;")
-  case "$result" in
-    6:6:*) ;;
-    *) echo "unexpected settlement audit result: $result" >&2; exit 1 ;;
-  esac
+    --command "SELECT
+      (SELECT count(*) FROM probability_settlement_concurrency_audit) || ':' ||
+      (SELECT count(DISTINCT transfer_case_id) FROM probability_settlement_concurrency_audit) || ':' ||
+      (SELECT count(DISTINCT backend_pid) FROM probability_settlement_concurrency_audit) || ':' ||
+      (SELECT count(*) FROM source_claim_outcomes outcome
+        JOIN transfer_cases transfer_case ON transfer_case.id = outcome.transfer_case_id
+        WHERE transfer_case.case_key LIKE 'settlement-lock-%'
+          AND outcome.settlement_outcome = 'failure') || ':' ||
+      (SELECT count(*) FROM source_claim_outcomes outcome
+        JOIN transfer_cases transfer_case ON transfer_case.id = outcome.transfer_case_id
+        WHERE transfer_case.case_key LIKE 'settlement-lock-%'
+          AND outcome.settlement_outcome IS NULL);")
+  test "$result" = "6:6:2:6:0" || {
+    echo "unexpected settlement audit result: $result" >&2
+    exit 1
+  }
 
   docker exec "$container" psql --username transfers --dbname transfers --set ON_ERROR_STOP=1 \
     --file /database/tests/023_probability_settlement_concurrency_cleanup.sql >/dev/null
