@@ -340,7 +340,7 @@ VALUES (
   0.8500,
   '2026-08-27 00:04:00+00'
 )
-ON CONFLICT (source_account_id, engine_version, calculated_at) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 INSERT INTO source_claim_outcomes (
   source_account_id,

@@ -147,7 +147,9 @@ for test_file in \
   /database/tests/013_fee_context.sql \
   /database/tests/019_probability_outcome_settlement.sql \
   /database/tests/020_probability_outcome_boundaries.sql \
-  /database/tests/021_probability_reliability_time_travel.sql; do
+  /database/tests/021_probability_reliability_time_travel.sql \
+  /database/tests/024_probability_settlement_round1.sql \
+  /database/tests/028_probability_active_terminal_settlement.sql; do
   psql_file "$main_container" transfers "$test_file"
 done
 
@@ -156,6 +158,7 @@ done
 "$root_dir/tests/migrations/probability-v1-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/probability-stale-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/probability-settlement-concurrency.sh" "$main_container"
+"$root_dir/tests/migrations/probability-same-time-concurrency.sh" "$main_container"
 "$root_dir/tests/migrations/fee-context-concurrency.sh" "$main_container"
 
 node "$root_dir/tests/migrations/generated-enrichment-persistence.mjs" \

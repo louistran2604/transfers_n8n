@@ -27,6 +27,7 @@ ALTER TABLE source_claim_outcomes
     OR
     (settlement_outcome IS NOT NULL
       AND settlement_basis IN ('official_completion', 'authoritative_collapse')
+      AND (settlement_basis <> 'authoritative_collapse' OR settlement_outcome = 'failure')
       AND settled_at IS NOT NULL
       AND (authoritative_raw_post_id IS NOT NULL
         OR authoritative_transfer_report_revision_id IS NOT NULL))
@@ -41,6 +42,18 @@ ALTER TABLE source_claim_outcomes
 CREATE INDEX source_claim_outcomes_pending_case_idx
   ON source_claim_outcomes (transfer_case_id, transfer_report_id)
   WHERE settlement_outcome IS NULL;
+
+ALTER TABLE source_reliability_snapshots
+  ADD COLUMN posterior_fingerprint text
+    CHECK (posterior_fingerprint IS NULL OR posterior_fingerprint ~ '^[a-f0-9]{64}$'),
+  DROP CONSTRAINT source_reliability_snapshots_source_account_id_engine_versi_key,
+  ADD CONSTRAINT source_reliability_snapshots_state_unique UNIQUE (
+    source_account_id, engine_version, calculated_at, posterior_fingerprint
+  );
+
+CREATE UNIQUE INDEX source_reliability_snapshots_legacy_time_unique
+  ON source_reliability_snapshots (source_account_id, engine_version, calculated_at)
+  WHERE posterior_fingerprint IS NULL;
 
 CREATE FUNCTION probability_v1_register_claims(
   requested_transfer_case_id bigint,
@@ -67,7 +80,7 @@ BEGIN
         WHEN evidence.completion_claim = 'reporter_done' OR evidence.stage_signal = 'done'
           THEN 'done'
         WHEN evidence.stage_signal = 'agreed'
-          OR evidence.club_agreement_state IN ('agreed', 'not_applicable')
+          OR evidence.club_agreement_state = 'agreed'
           OR evidence.personal_terms_state = 'agreed' THEN 'agreed'
         WHEN evidence.stage_signal = 'advanced' THEN 'advanced'
       END AS eligible_stage,
@@ -75,7 +88,7 @@ BEGIN
         WHEN evidence.completion_claim = 'reporter_done' OR evidence.stage_signal = 'done'
           THEN 1.00::numeric
         WHEN evidence.stage_signal = 'agreed'
-          OR evidence.club_agreement_state IN ('agreed', 'not_applicable')
+          OR evidence.club_agreement_state = 'agreed'
           OR evidence.personal_terms_state = 'agreed' THEN 0.75::numeric
         WHEN evidence.stage_signal = 'advanced' THEN 0.50::numeric
       END AS eligible_weight
@@ -94,6 +107,24 @@ BEGIN
       AND evidence.completion_claim <> 'official_announcement'
       AND evidence.extraction_confidence >= 0.50
       AND post.posted_at <= requested_evaluated_at
+      AND NOT EXISTS (
+        SELECT 1
+        FROM transfer_evidence terminal
+        JOIN raw_posts terminal_post ON terminal_post.id = terminal.raw_post_id
+        JOIN source_accounts terminal_source
+          ON terminal_source.id = terminal_post.source_account_id
+        WHERE terminal.transfer_case_id = evidence.transfer_case_id
+          AND terminal.extraction_confidence >= 0.50
+          AND terminal_post.posted_at <= post.posted_at
+          AND COALESCE(terminal.raw_normalized_extraction #>> '{_resolved_source,source_kind}',
+            terminal_source.source_kind) IN ('club_official', 'league_official')
+          AND (
+            terminal.completion_claim = 'official_announcement'
+            OR ((terminal.stage_signal = 'collapsed'
+                OR terminal.club_agreement_state = 'collapsed')
+              AND terminal.transfer_report_id = evidence.transfer_report_id)
+          )
+      )
   ), eligible AS (
     SELECT source_account_id, transfer_report_id,
       (array_agg(eligible_stage ORDER BY posted_at, eligible_weight, transfer_report_id))[1]
@@ -146,17 +177,21 @@ BEGIN
     FROM source_accounts source
     LEFT JOIN source_claim_outcomes outcome ON outcome.source_account_id = source.id
       AND outcome.settlement_basis IS NOT NULL
+      AND outcome.settled_at <= requested_calculated_at
     WHERE source.id = ANY(requested_source_account_ids)
     GROUP BY source.id, source.seed_reliability, source.reliability_score
   ), inserted AS (
     INSERT INTO source_reliability_snapshots (
       source_account_id, engine_version, alpha, beta, effective_resolved_count,
-      posterior_reliability, calculated_at
+      posterior_reliability, calculated_at, posterior_fingerprint
     )
     SELECT source_account_id, 'probability-v1', alpha, beta, resolved_count,
-      GREATEST(0.55, LEAST(0.95, alpha / (alpha + beta))), requested_calculated_at
+      GREATEST(0.55, LEAST(0.95, alpha / (alpha + beta))), requested_calculated_at,
+      encode(sha256(convert_to(jsonb_build_object(
+        'alpha', alpha, 'beta', beta, 'effective_resolved_count', resolved_count
+      )::text, 'UTF8')), 'hex')
     FROM posterior
-    ON CONFLICT (source_account_id, engine_version, calculated_at) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING 1
   )
   SELECT count(*) INTO inserted_count FROM inserted;
@@ -338,33 +373,48 @@ CREATE FUNCTION recompute_probability_v1_reporter_cases(
 RETURNS integer
 LANGUAGE plpgsql
 AS $$
-DECLARE selected_case record; selected_report_id bigint; payload jsonb; processed integer := 0;
+DECLARE selected_case record; selected_report_id bigint; payload jsonb;
+  batch_count integer; processed integer := 0;
 BEGIN
   IF requested_mode NOT IN ('shadow', 'active') THEN RETURN 0; END IF;
 
-  FOR selected_case IN
-    SELECT transfer_case.id
-    FROM transfer_cases transfer_case
-    WHERE transfer_case.status = 'open'
-      AND transfer_case.id IS DISTINCT FROM excluded_transfer_case_id
-      AND EXISTS (
-        SELECT 1
-        FROM transfer_reports report
-        JOIN transfer_evidence evidence ON evidence.transfer_report_id = report.id
-        JOIN source_reliability_snapshots snapshot
-          ON snapshot.source_account_id = NULLIF(
-            evidence.raw_normalized_extraction #>> '{_resolved_source,account_id}', '')::bigint
-         AND snapshot.engine_version = 'probability-v1'
-         AND snapshot.calculated_at = requested_evaluated_at
-        WHERE report.transfer_case_id = transfer_case.id
-          AND report.probability_status IN ('shadow_scored', 'active_scored')
-          AND report.probability_updated_at < requested_evaluated_at
-      )
-    ORDER BY transfer_case.id
-    FOR UPDATE OF transfer_case SKIP LOCKED
-    LIMIT LEAST(GREATEST(requested_limit, 0), 100)
   LOOP
-    SELECT report.id, jsonb_build_object(
+    batch_count := 0;
+    FOR selected_case IN
+      SELECT transfer_case.id
+      FROM transfer_cases transfer_case
+      WHERE transfer_case.status = 'open'
+        AND transfer_case.id IS DISTINCT FROM excluded_transfer_case_id
+        AND EXISTS (
+          SELECT 1
+          FROM transfer_reports report
+          JOIN transfer_evidence evidence ON evidence.transfer_report_id = report.id
+          JOIN source_reliability_snapshots snapshot
+            ON snapshot.source_account_id = NULLIF(
+              evidence.raw_normalized_extraction #>> '{_resolved_source,account_id}', '')::bigint
+           AND snapshot.engine_version = 'probability-v1'
+           AND snapshot.calculated_at = requested_evaluated_at
+          WHERE report.transfer_case_id = transfer_case.id
+            AND report.probability_status IN ('shadow_scored', 'active_scored')
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM probability_v1_case_scores(transfer_case.id, requested_evaluated_at) score
+          LEFT JOIN LATERAL (
+            SELECT revision.input_fingerprint
+            FROM transfer_probability_revisions revision
+            WHERE revision.transfer_report_id = score.transfer_report_id
+              AND revision.engine_version = 'probability-v1'
+            ORDER BY revision.revision_number DESC, revision.id DESC
+            LIMIT 1
+          ) latest ON true
+          WHERE score.input_fingerprint IS DISTINCT FROM latest.input_fingerprint
+        )
+      ORDER BY transfer_case.id
+      FOR UPDATE OF transfer_case SKIP LOCKED
+      LIMIT LEAST(GREATEST(requested_limit, 0), 100)
+    LOOP
+      SELECT report.id, jsonb_build_object(
       'probability_mode', requested_mode,
       '_skip_reporter_recompute', true,
       'evaluated_at', requested_evaluated_at,
@@ -377,24 +427,27 @@ BEGIN
         'report_ordinal', evidence.report_ordinal,
         'extraction_schema_version', evidence.extraction_schema_version,
         'normalized_evidence', evidence.raw_normalized_extraction - '_resolved_source')))
-    INTO selected_report_id, payload
-    FROM transfer_reports report
-    JOIN transfer_cases transfer_case ON transfer_case.id = report.transfer_case_id
-    JOIN LATERAL (
-      SELECT evidence.* FROM transfer_evidence evidence
-      WHERE evidence.transfer_report_id = report.id
-      ORDER BY evidence.created_at, evidence.id LIMIT 1
-    ) evidence ON true
-    JOIN raw_posts post ON post.id = evidence.raw_post_id
-    WHERE report.transfer_case_id = selected_case.id
-    ORDER BY report.id LIMIT 1;
+      INTO selected_report_id, payload
+      FROM transfer_reports report
+      JOIN transfer_cases transfer_case ON transfer_case.id = report.transfer_case_id
+      JOIN LATERAL (
+        SELECT evidence.* FROM transfer_evidence evidence
+        WHERE evidence.transfer_report_id = report.id
+        ORDER BY evidence.created_at, evidence.id LIMIT 1
+      ) evidence ON true
+      JOIN raw_posts post ON post.id = evidence.raw_post_id
+      WHERE report.transfer_case_id = selected_case.id
+      ORDER BY report.id LIMIT 1;
 
-    IF requested_mode = 'active' THEN
-      PERFORM apply_probability_v1_active(selected_report_id, payload);
-    ELSE
-      PERFORM apply_probability_v1_shadow(selected_report_id, payload);
-    END IF;
-    processed := processed + 1;
+      IF requested_mode = 'active' THEN
+        PERFORM apply_probability_v1_active(selected_report_id, payload);
+      ELSE
+        PERFORM apply_probability_v1_shadow(selected_report_id, payload);
+      END IF;
+      batch_count := batch_count + 1;
+      processed := processed + 1;
+    END LOOP;
+    EXIT WHEN batch_count = 0;
   END LOOP;
   RETURN processed;
 END;
@@ -420,6 +473,11 @@ BEGIN
   SELECT transfer_case_id INTO requested_transfer_case_id
   FROM transfer_reports WHERE id = requested_transfer_report_id;
   IF requested_transfer_case_id IS NULL THEN RETURN probability_revision_id; END IF;
+
+  IF payload->>'_settlement_mode' = 'active' THEN
+    PERFORM promote_probability_v1_case(
+      requested_transfer_case_id, (payload->>'evaluated_at')::timestamptz);
+  END IF;
 
   outcome_change_count := probability_v1_process_case_outcomes(
     requested_transfer_case_id, (payload->>'evaluated_at')::timestamptz);
