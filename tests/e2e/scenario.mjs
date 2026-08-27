@@ -215,11 +215,24 @@ const reports = Array.from({ length: 20 }, (_, index) => ({
   fee_amount: null, fee_currency: null, medical_status: 'not_reported', is_huge_rumor: false, is_digest_worthy: true,
   preferred_source: { ...sourceMetadata({ username: index > 14 ? 'someone' : 'David_Ornstein', display_name: 'Mock Source', external_account_id: String(900000000000000000n + BigInt(index)), account_type: 'individual', source_kind: 'journalist', publisher_group_key: index > 14 ? 'reporter:someone' : 'reporter:david-ornstein', is_aggregator: false, seed_reliability: index > 14 ? 0.7 : 0.95 }), display_name: 'Mock Source' },
   sources: [{ post_url: `https://x.com/mock/status/${900000000000000000n + BigInt(index)}` }],
+  ...(index === 0 ? {
+    probability_status: 'active_scored',
+    probability: {
+      engine_version: 'probability-v1', normalized_probability: 0.62,
+      previous_probability: 0.51, probability_delta: 0.11,
+      current_stage: 'advanced', terminal_state: 'open',
+      explanation: { primary: { reliability: 0.87 }, corroboration: [{ independence_key: 'reporter:second' }], contradictions: [], competition_adjustment: -0.06 },
+    },
+  } : {}),
 }));
 reports.push(...reports.slice(0, 3));
 const digest = buildDiscordDigest(reports);
 assert.equal(digest.embeds[0].fields.length, 18);
 assert.equal(new Set(digest.embeds[0].fields.map((field) => field.name)).size, 18);
+const activeField = digest.embeds[0].fields.find((field) => field.name.includes('Mock Player 0'));
+assert.match(activeField.value, /Probability: 62% \(▲ \+11\)/);
+assert.match(activeField.value, /Stage: Advanced talks/);
+assert.doesNotMatch(activeField.value, /Confidence:/);
 const discordBeforeNormal = (await json('/state')).body.discordRequests;
 const sent = await json('/discord/receive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(digest) });
 assert.equal(sent.response.status, 200);

@@ -1074,7 +1074,11 @@ const DIGEST_UPDATE_FIELDS = Object.freeze([
 ]);
 
 function digestMaterialKey(report) {
-  return JSON.stringify(Object.fromEntries(DIGEST_UPDATE_FIELDS.map((field) => [field, report[field] ?? null])));
+  return JSON.stringify({
+    ...Object.fromEntries(DIGEST_UPDATE_FIELDS.map((field) => [field, report[field] ?? null])),
+    probability_status: report.probability_status ?? null,
+    probability: report.probability ?? null,
+  });
 }
 
 function sameDigestStory(left, right) {
@@ -1111,7 +1115,37 @@ function storyLines(report) {
   ];
   const source = report.preferred_source?.display_name ?? report.source?.display_name ?? 'Source';
   const sourceUrl = report.sources?.[0]?.post_url ?? report.post_url;
-  return [clubDirection, ...details, `Confidence: ${Math.round(report.confidence * 100)}%`, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
+  const probability = report.probability_status === 'active_scored' ? report.probability : null;
+  const probabilityValue = finiteNumber(probability?.normalized_probability);
+  const previousProbability = finiteNumber(probability?.previous_probability);
+  const delta = finiteNumber(probability?.probability_delta);
+  const terminal = probability?.terminal_state;
+  const stageLabels = {
+    link: 'Link', interest: 'Interest', talks: 'Talks', advanced: 'Advanced talks',
+    agreed: 'Agreed', done: 'Done · awaiting official announcement', collapsed: 'Collapsed',
+  };
+  const probabilityLines = [];
+  if (probabilityValue !== null) {
+    const points = delta === null ? null : Math.round(delta * 100);
+    const deltaLabel = points === null ? '' : ` (${points > 0 ? `▲ +${points}` : points < 0 ? `▼ ${points}` : '— 0'})`;
+    probabilityLines.push(`Probability: ${terminal === 'official' ? 100 : Math.round(probabilityValue * 100)}%${previousProbability === null ? '' : deltaLabel}`);
+    probabilityLines.push(`Stage: ${terminal === 'collapsed' ? 'Collapsed' : terminal === 'official' ? 'Official confirmation' : stageLabels[probability.current_stage] ?? probability.current_stage}`);
+    const explanation = probability.explanation ?? {};
+    const positives = [];
+    const reliability = finiteNumber(explanation.primary?.reliability);
+    if (reliability !== null) positives.push(`strong primary report (${Math.round(reliability * 100)}% reliability)`);
+    const corroborators = Array.isArray(explanation.corroboration) ? explanation.corroboration.length : 0;
+    if (corroborators) positives.push(`+${corroborators} independent source${corroborators === 1 ? '' : 's'}`);
+    let negative = null;
+    if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
+    else if (finiteNumber(explanation.story_staleness_adjustment) < 0) negative = 'stale evidence';
+    else if (finiteNumber(explanation.competition_adjustment) < 0) negative = `-${Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100)} pts from competition`;
+    const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
+    if (reasons.length) probabilityLines.push(`Why: ${reasons.join('; ')}`);
+  } else {
+    probabilityLines.push(`Legacy extraction confidence: ${Math.round(report.confidence * 100)}%`);
+  }
+  return [clubDirection, ...details, ...probabilityLines, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
 }
 
 function truncate(value, maximum) {

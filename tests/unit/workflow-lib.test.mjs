@@ -1183,8 +1183,67 @@ test('digest keeps distinct destinations from one post and uses the fresh profil
   const value = buildDiscordDigest(reports, { entityAliases }).embeds[0].fields.map((field) => field.value).join('\n');
   assert.match(value, /Chelsea → Atlético Madrid/);
   assert.match(value, /Chelsea → Aston Villa/);
-  assert.match(value, /Confidence: 95%/);
-  assert.match(value, /Confidence: 90%/);
+  assert.match(value, /Legacy extraction confidence: 95%/);
+  assert.match(value, /Legacy extraction confidence: 90%/);
+});
+
+test('digest renders active probability details and labels legacy confidence honestly', () => {
+  const active = {
+    ...validReport({ player_name: 'Active Player' }),
+    preferred_source: source('David_Ornstein'),
+    revision_id: 'active-probability',
+    probability_status: 'active_scored',
+    probability: {
+      engine_version: 'probability-v1',
+      normalized_probability: 0.62,
+      previous_probability: 0.51,
+      probability_delta: 0.11,
+      current_stage: 'advanced',
+      terminal_state: 'open',
+      explanation: {
+        primary: { reliability: 0.87 },
+        corroboration: [{ independence_key: 'reporter:second' }],
+        contradictions: [],
+        story_staleness_adjustment: 0,
+        competition_adjustment: -0.06,
+      },
+    },
+  };
+  const legacy = {
+    ...validReport({ player_name: 'Legacy Example', confidence: 0.73 }),
+    preferred_source: source('someone'),
+    revision_id: 'legacy-confidence',
+    probability_status: 'legacy_unscored',
+  };
+  const values = buildDiscordDigest([active, legacy]).embeds[0].fields.map((field) => field.value);
+  assert.match(values[0], /Probability: 62% \(▲ \+11\)/);
+  assert.match(values[0], /Stage: Advanced talks/);
+  assert.match(values[0], /Why: strong primary report \(87% reliability\); \+1 independent source; -6 pts from competition/);
+  assert.doesNotMatch(values[0], /Confidence:/);
+  assert.match(values[1], /Legacy extraction confidence: 73%/);
+  assert.doesNotMatch(values[1], /Probability:/);
+  const prior = {
+    ...active,
+    probability: { ...active.probability, normalized_probability: 0.51, previous_probability: null, probability_delta: null },
+  };
+  assert.equal(buildDiscordDigest([{
+    ...active,
+    sent_history: [{ snapshot: prior, sent_at: '2026-08-27T00:00:00.000Z' }],
+  }]).embeds[0].fields.length, 1);
+});
+
+test('active probability rendering covers initial, down, zero, done, official, and collapsed states', () => {
+  const render = (probability) => buildDiscordDigest([{
+    ...validReport({ player_name: `State ${probability.terminal_state ?? probability.current_stage}` }),
+    preferred_source: source('David_Ornstein'), revision_id: JSON.stringify(probability),
+    probability_status: 'active_scored', probability: { engine_version: 'probability-v1', explanation: {}, ...probability },
+  }]).embeds[0].fields[0].value;
+  assert.match(render({ normalized_probability: 0.18, previous_probability: null, probability_delta: null, current_stage: 'interest', terminal_state: 'open' }), /Probability: 18%\nStage: Interest/);
+  assert.match(render({ normalized_probability: 0.44, previous_probability: 0.55, probability_delta: -0.11, current_stage: 'talks', terminal_state: 'open' }), /Probability: 44% \(▼ -11\)/);
+  assert.match(render({ normalized_probability: 0.55, previous_probability: 0.55, probability_delta: 0, current_stage: 'advanced', terminal_state: 'open' }), /Probability: 55% \(— 0\)/);
+  assert.match(render({ normalized_probability: 0.98, previous_probability: 0.96, probability_delta: 0.02, current_stage: 'done', terminal_state: 'open' }), /Stage: Done · awaiting official announcement/);
+  assert.match(render({ normalized_probability: 0.99, previous_probability: 0.98, probability_delta: 0.01, current_stage: 'done', terminal_state: 'official' }), /Probability: 100%.*\nStage: Official confirmation/);
+  assert.match(render({ normalized_probability: 0.02, previous_probability: 0.30, probability_delta: -0.28, current_stage: 'collapsed', terminal_state: 'collapsed' }), /Stage: Collapsed/);
 });
 
 test('generated digest applies presentation fallback without changing the frozen snapshot', async () => {
@@ -1282,7 +1341,7 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   };
   const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
   const value = embed.fields[0].value;
-  assert.match(value, /Confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
+  assert.match(value, /Legacy extraction confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
   assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
   assert.match(value, /LaLiga 2025\/26 - all clubs: 31 app · 2,604 min · 25 G · 5 A · 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating · stale 18h/);
   assert.doesNotMatch(value, /Advanced:/);
@@ -1338,6 +1397,15 @@ test('goalkeeper statistics render only for goalkeeper profiles in library and g
       preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
       sources: [{ post_url: postUrl }],
       enrichment,
+      ...(index === 0 ? {
+        probability_status: 'active_scored',
+        probability: {
+          engine_version: 'probability-v1', normalized_probability: 0.62,
+          previous_probability: 0.51, probability_delta: 0.11,
+          current_stage: 'advanced', terminal_state: 'open',
+          explanation: { primary: { reliability: 0.87 }, corroboration: [], contradictions: [] },
+        },
+      } : {}),
     };
     const libraryPayload = buildDiscordDigest([report]);
     const output = await runDigest({ all: () => [{ json: {
@@ -2156,7 +2224,7 @@ test('generated pending delivery preserves the stored JSONB payload structurally
   assert.deepEqual(deliveryOutput[0].json.body, storedPayload);
 });
 
-test('generated workflow carries shadow-only probability evidence without changing the off path', async () => {
+test('generated workflow carries fail-closed shadow and active probability evidence', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const requestNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
   const parserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
@@ -2170,7 +2238,7 @@ test('generated workflow carries shadow-only probability evidence without changi
   } }] };
   const lookup = () => ({ first: () => ({ json: { collection_started_at: '2026-08-27T01:05:00.000Z' } }) });
 
-  for (const [configured, expected] of [[undefined, 'off'], ['', 'off'], ['active', 'off'], ['invalid', 'off'], [' SHADOW ', 'shadow']]) {
+  for (const [configured, expected] of [[undefined, 'off'], ['', 'off'], ['active', 'active'], ['invalid', 'off'], [' SHADOW ', 'shadow']]) {
     const [request] = await runRequest(input, { PROBABILITY_MODE: configured }, lookup);
     assert.equal(request.json.probability_mode, expected, String(configured));
     assert.equal(request.json.evaluated_at, '2026-08-27T01:05:00.000Z');
@@ -2210,14 +2278,18 @@ test('generated workflow carries shadow-only probability evidence without changi
     }
   }
 
-  const [offRequest] = await runRequest(input, { PROBABILITY_MODE: 'active' }, lookup);
-  const offParsed = await runParser({ all: () => [response] }, () => ({ all: () => [offRequest] }));
-  const [offMerged] = await runMerge({ all: () => offParsed });
-  assert.equal(JSON.parse(offMerged.json.params[0]).probability_mode, 'off');
+  const [activeRequest] = await runRequest(input, { PROBABILITY_MODE: 'active' }, lookup);
+  const activeParsed = await runParser({ all: () => [response] }, () => ({ all: () => [activeRequest] }));
+  const [activeMerged] = await runMerge({ all: () => activeParsed });
+  assert.equal(JSON.parse(activeMerged.json.params[0]).probability_mode, 'active');
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
   assert.equal(persistNode.typeVersion, 2.6);
   assert.match(persistNode.parameters.query, /probability_mode.*shadow/is);
   assert.match(persistNode.parameters.query, /apply_probability_v1_shadow/);
+  assert.match(persistNode.parameters.query, /apply_probability_v1_active/);
+  assert.equal(workflow.connections['Daily probability decay'].main[0][0].node, 'Recover interrupted stale deliveries');
+  assert.equal(workflow.connections['Recompute stale probability cases'].main[0][0].node, 'Prepare digest candidates query');
+  assert.match(workflow.nodes.find((node) => node.name === 'Recompute stale probability cases').parameters.query, /recompute_stale_probability_v1_cases/);
 });
 
 test('standard n8n deployment exposes probability mode to main and runner services', async () => {
@@ -2365,8 +2437,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(candidatesNode.parameters.query, /'statistics'/);
   assert.match(candidatesNode.parameters.query, /current\.season_state = 'latest_completed'/);
   assert.match(candidatesNode.parameters.query, /DISTINCT ON \(transfer_report_id\)/);
-  assert.match(candidatesNode.parameters.query, /tr\.last_reported_at >= \$1::timestamptz/);
-  assert.match(candidatesNode.parameters.query, /tr\.last_reported_at <= \$2::timestamptz/);
+  assert.match(candidatesNode.parameters.query, /r\.created_at >= \$1::timestamptz/);
+  assert.match(candidatesNode.parameters.query, /r\.created_at <= \$2::timestamptz/);
   assert.match(candidatesNode.parameters.query, /sent_delivery\.sent_at >= CURRENT_TIMESTAMP - interval '7 days'/);
   assert.match(contextNode.parameters.query, /SELECT DISTINCT value::text::bigint AS transfer_report_id/);
   assert.match(contextNode.parameters.query, /requested_input\.transfer_report_id = tr\.id/);

@@ -249,8 +249,9 @@ SELECT report.id::text AS transfer_report_id,
     WHERE revision.transfer_report_id = report.id
       AND revision.content_sha256 = input.payload->>'content_sha256') AS revision_id,
   input.payload->>'preferred_raw_post_id' AS preferred_raw_post_id,
-  CASE WHEN input.payload->>'probability_mode' = 'shadow'
-    THEN apply_probability_v1_shadow(report.id, input.payload)::text
+  CASE input.payload->>'probability_mode'
+    WHEN 'shadow' THEN apply_probability_v1_shadow(report.id, input.payload)::text
+    WHEN 'active' THEN apply_probability_v1_active(report.id, input.payload)::text
   END AS probability_revision_id
 FROM input CROSS JOIN report;`.trim();
 }
@@ -1027,8 +1028,8 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) latest_attempt ON true
 WHERE di.id IS NULL
-  AND tr.last_reported_at >= $1::timestamptz
-  AND tr.last_reported_at <= $2::timestamptz
+  AND r.created_at >= $1::timestamptz
+  AND r.created_at <= $2::timestamptz
   AND NOT EXISTS (SELECT 1 FROM pending_candidates)
 ),
 candidates AS (
@@ -1339,7 +1340,7 @@ for (const reports of groups.values()) {
     last_reported_at: merged.last_reported_at,
     normalized_data: { conflicts, former_club_name: merged.former_club_name ?? null, reported_name_key: unicodeKey(merged.player_name), current_club_key: namedKey(merged.current_club_name), destination_club_key: namedKey(merged.destination_club_name) },
     evaluated_at: best.evaluated_at,
-    probability_mode: best.probability_mode === 'shadow' ? 'shadow' : 'off',
+    probability_mode: ['shadow', 'active'].includes(best.probability_mode) ? best.probability_mode : 'off',
     preferred_raw_post_id: String(best.raw_post_id),
     sources: reports.map((report) => ({
       raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source,
@@ -1662,6 +1663,34 @@ const finiteNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 };
+const probabilityLines = (report) => {
+  const probability = report.probability_status === 'active_scored' ? report.probability : null;
+  const value = finiteNumber(probability?.normalized_probability);
+  if (value === null) return ['Legacy extraction confidence: ' + Math.round(report.confidence * 100) + '%'];
+  const previous = finiteNumber(probability.previous_probability);
+  const delta = finiteNumber(probability.probability_delta);
+  const points = delta === null ? null : Math.round(delta * 100);
+  const deltaLabel = points === null ? '' : ' (' + (points > 0 ? '▲ +' + points : points < 0 ? '▼ ' + points : '— 0') + ')';
+  const terminal = probability.terminal_state;
+  const stageLabels = { link: 'Link', interest: 'Interest', talks: 'Talks', advanced: 'Advanced talks', agreed: 'Agreed', done: 'Done · awaiting official announcement', collapsed: 'Collapsed' };
+  const lines = [
+    'Probability: ' + (terminal === 'official' ? 100 : Math.round(value * 100)) + '%' + (previous === null ? '' : deltaLabel),
+    'Stage: ' + (terminal === 'collapsed' ? 'Collapsed' : terminal === 'official' ? 'Official confirmation' : (stageLabels[probability.current_stage] ?? probability.current_stage)),
+  ];
+  const explanation = probability.explanation ?? {};
+  const positives = [];
+  const reliability = finiteNumber(explanation.primary?.reliability);
+  if (reliability !== null) positives.push('strong primary report (' + Math.round(reliability * 100) + '% reliability)');
+  const corroborators = Array.isArray(explanation.corroboration) ? explanation.corroboration.length : 0;
+  if (corroborators) positives.push('+' + corroborators + ' independent source' + (corroborators === 1 ? '' : 's'));
+  let negative = null;
+  if (Array.isArray(explanation.contradictions) && explanation.contradictions.length) negative = 'contradictory reporting';
+  else if (finiteNumber(explanation.story_staleness_adjustment) < 0) negative = 'stale evidence';
+  else if (finiteNumber(explanation.competition_adjustment) < 0) negative = '-' + Math.round(Math.abs(Number(explanation.competition_adjustment)) * 100) + ' pts from competition';
+  const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
+  if (reasons.length) lines.push('Why: ' + reasons.join('; '));
+  return lines;
+};
 const namedEnrichmentValue = (value) => {
   if (typeof value !== 'string') return null;
   const text = value.trim();
@@ -1802,7 +1831,7 @@ const digestPlayerConflict = (left, right) => {
   return leftGiven.size === 0 || rightGiven.size === 0 || [...leftGiven].some((token) => rightGiven.has(token));
 };
 const digestUpdateFields = ['classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'confidence'];
-const digestMaterialKey = (report) => JSON.stringify(Object.fromEntries(digestUpdateFields.map((field) => [field, report[field] ?? null])));
+const digestMaterialKey = (report) => JSON.stringify({ ...Object.fromEntries(digestUpdateFields.map((field) => [field, report[field] ?? null])), probability_status: report.probability_status ?? null, probability: report.probability ?? null });
 const sameDigestStory = (left, right) => digestHistoryKey(left) === digestHistoryKey(right);
 const digestPriority = (report) => {
   if (report.classification === 'official_confirmed') return 0;
@@ -1862,7 +1891,7 @@ for (const report of selected) {
     report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? 'Sell-on: ' + report.sell_on_percentage + '%' : null,
     report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,
     report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,
-    'Confidence: ' + Math.round(report.confidence * 100) + '%',
+    ...probabilityLines(report),
     sourceLine,
   ].filter(Boolean);
   const source = lines.at(-1);
@@ -1909,10 +1938,14 @@ function mainWorkflow({ registry, prompt, schema }) {
     node('Every six hours', 'n8n-nodes-base.scheduleTrigger', [-1120, -140], {
       rule: { interval: [{ field: 'cronExpression', expression: '0 0,6,12,18 * * *' }] },
     }, { typeVersion: 1.2 }),
+    node('Daily probability decay', 'n8n-nodes-base.scheduleTrigger', [-1120, -340], {
+      rule: { interval: [{ field: 'cronExpression', expression: '15 0 * * *' }] },
+    }, { typeVersion: 1.2 }),
     node('Manual run', 'n8n-nodes-base.manualTrigger', [-1120, 40], {}, { typeVersion: 1 }),
     node('Manual sample run', 'n8n-nodes-base.manualTrigger', [-1120, 220], {}, { typeVersion: 1 }),
     postgresNode('Recover interrupted deliveries', [-900, -40], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
     postgresNode('Recover interrupted sample deliveries', [-900, 220], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
+    postgresNode('Recover interrupted stale deliveries', [-900, -340], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
     codeNode('Create run context', [-700, -40], `
 const now = new Date();
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
@@ -1925,8 +1958,16 @@ const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floo
 const collectionStartedAt = now.toISOString();
 const collectionCutoffAt = new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString();
 return [{ json: { params: [String($execution.id), start.toISOString(), JSON.stringify({ trigger: 'manual_sample', started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt, sample: true })], logical_run_key: start.toISOString(), collection_started_at: collectionStartedAt, collection_cutoff_at: collectionCutoffAt } }];`),
+    codeNode('Create stale recompute context', [-700, -340], `
+const now = new Date();
+const selected = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
+const probabilityMode = ['shadow', 'active'].includes(selected) ? selected : 'off';
+const start = new Date(now); start.setHours(0, 0, 0, 0);
+return [{ json: { params: [String($execution.id), 'probability-stale|' + start.toISOString(), JSON.stringify({ trigger: 'daily_probability_decay', started_at: now.toISOString(), probability_mode: probabilityMode })], logical_run_key: 'probability-stale|' + start.toISOString(), collection_started_at: now.toISOString(), collection_cutoff_at: new Date(now.valueOf() - 6 * 60 * 60 * 1000).toISOString(), probability_mode: probabilityMode } }];`),
     postgresNode('Register workflow run', [-500, -40], runRegistrationSql()),
     postgresNode('Register sample workflow run', [-500, 220], runRegistrationSql()),
+    postgresNode('Register stale workflow run', [-500, -340], runRegistrationSql()),
+    postgresNode('Recompute stale probability cases', [-280, -340], `SELECT recompute_stale_probability_v1_cases($1::text, $2::timestamptz, 100) AS recomputed_case_count;`, `={{ [$('Create stale recompute context').first().json.probability_mode, $('Create stale recompute context').first().json.collection_started_at] }}`),
     codeNode('Load generated sources', [-300, -40], `
 const sources = ${registryJson};
 return sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }));`),
@@ -1985,7 +2026,7 @@ const schema = ${schemaJson};
 const llamaSchema = JSON.parse(JSON.stringify(schema));
 delete llamaSchema.properties.reports.items.properties.player_name.minLength;
 const selectedProbabilityMode = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
-const probabilityMode = selectedProbabilityMode === 'shadow' ? 'shadow' : 'off';
+const probabilityMode = ['shadow', 'active'].includes(selectedProbabilityMode) ? selectedProbabilityMode : 'off';
 const runContext = $('Create run context').isExecuted
   ? $('Create run context').first().json
   : $('Create sample run context').first().json;
@@ -2044,7 +2085,9 @@ RETURNING $1::text AS transfer_report_id, $2::text AS preferred_raw_post_id;`, '
     codeNode('Normalize soccerdata enrichment result', [4500, -500], normalizeEnrichmentCode()),
     postgresNode('Persist soccerdata enrichment result', [4720, -500], persistEnrichmentSql(), undefined, { continueOnFail: true }),
     codeNode('Prepare digest candidates query', [4940, -180], `
-const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
+const context = $('Create run context').isExecuted
+  ? $('Create run context').first().json
+  : ($('Create sample run context').isExecuted ? $('Create sample run context').first().json : $('Create stale recompute context').first().json);
 const selected = String($env.PLAYER_ENRICHMENT_MODE ?? 'off').trim().toLowerCase();
 const mode = ['shadow', 'active'].includes(selected) ? selected : 'off';
 return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at, mode] } }];`),
@@ -2068,20 +2111,25 @@ const response = $json.body ?? $json;
 const status = Number($json.statusCode ?? $json.status ?? 0);
 const workflowRunId = $('Register workflow run').isExecuted
   ? $('Register workflow run').first().json.workflow_run_id
-  : $('Register sample workflow run').first().json.workflow_run_id;
+  : ($('Register sample workflow run').isExecuted ? $('Register sample workflow run').first().json.workflow_run_id : $('Register stale workflow run').first().json.workflow_run_id);
 return [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];`),
     postgresNode('Finalize delivery and run', [6700, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
   ];
   const connections = {
     'Every six hours': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
+    'Daily probability decay': { main: [[{ node: 'Recover interrupted stale deliveries', type: 'main', index: 0 }]] },
     'Manual run': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
     'Manual sample run': { main: [[{ node: 'Recover interrupted sample deliveries', type: 'main', index: 0 }]] },
     'Recover interrupted deliveries': { main: [[{ node: 'Create run context', type: 'main', index: 0 }]] },
     'Recover interrupted sample deliveries': { main: [[{ node: 'Create sample run context', type: 'main', index: 0 }]] },
+    'Recover interrupted stale deliveries': { main: [[{ node: 'Create stale recompute context', type: 'main', index: 0 }]] },
     'Create run context': { main: [[{ node: 'Register workflow run', type: 'main', index: 0 }]] },
     'Create sample run context': { main: [[{ node: 'Register sample workflow run', type: 'main', index: 0 }]] },
+    'Create stale recompute context': { main: [[{ node: 'Register stale workflow run', type: 'main', index: 0 }]] },
     'Register workflow run': { main: [[{ node: 'Load generated sources', type: 'main', index: 0 }]] },
     'Register sample workflow run': { main: [[{ node: 'Load sample source', type: 'main', index: 0 }]] },
+    'Register stale workflow run': { main: [[{ node: 'Recompute stale probability cases', type: 'main', index: 0 }]] },
+    'Recompute stale probability cases': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Load generated sources': { main: [[{ node: 'Upsert source accounts', type: 'main', index: 0 }]] },
     'Load sample source': { main: [[{ node: 'Upsert sample source account', type: 'main', index: 0 }]] },
     'Upsert source accounts': { main: [[{ node: 'Select X collector', type: 'main', index: 0 }]] },
