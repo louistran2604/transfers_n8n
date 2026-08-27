@@ -102,3 +102,89 @@ The error and manual probability-backfill workflows are unchanged.
 
 - No Stage 9 blocker.
 - The documented generated-enrichment `old_unresolved_` baseline failure remains intentionally unchanged.
+
+## Round 1 review fixes
+
+### Commit
+
+- Implementation and regression tests: `23b3e9c` (`Fix probability settlement edge cases`).
+
+### Findings resolved
+
+- Active mode now promotes the first authoritative terminal transition before a
+  posterior-triggered rescore. The later promotion remains idempotent, so the terminal
+  material revision is retained exactly once and pending delivery payloads/items stay frozen.
+- Reliability snapshots now carry a posterior-state fingerprint. Distinct serialized posterior
+  states may be appended at the same `calculated_at`; identical replay conflicts are ignored,
+  and the existing score lookup's `calculated_at DESC, id DESC` order deterministically selects
+  the newest same-time state.
+- Historical posterior aggregation includes only outcomes with
+  `settled_at <= requested_calculated_at`.
+- `not_applicable` no longer qualifies as an agreed gate without an actually agreed stage,
+  club agreement, or personal-terms gate.
+- Claim registration excludes claims at or after the earliest relevant official completion
+  case-wide, or authoritative collapse for the same destination report.
+- Affected open cases are drained in bounded 100-case `SKIP LOCKED` selections until no stale
+  score fingerprint remains, including cases already evaluated at the same timestamp.
+- The settlement constraint now requires `authoritative_collapse` outcomes to be failures.
+
+### Files changed
+
+- `database/migrations/009_probability_outcome_settlement.sql`
+- `database/tests/005_transfer_probability.sql`
+- `database/tests/024_probability_settlement_round1.sql`
+- `database/tests/025_probability_same_time_setup.sql`
+- `database/tests/026_probability_same_time_assert.sql`
+- `database/tests/027_probability_same_time_cleanup.sql`
+- `database/tests/028_probability_active_terminal_settlement.sql`
+- `tests/migrations/probability-same-time-concurrency.sh`
+- `tests/migrations/run.sh`
+
+### TDD RED evidence
+
+- `docker exec transfers-task9-round1 psql -U transfers -d transfers -v ON_ERROR_STOP=1 -f /database/tests/024_probability_settlement_round1.sql`
+  -> exit `3`; expected aggregate failure reported stranded cases after 100, non-idempotent
+  affected-case replay, collapse-success constraint acceptance, future settlement in a backdated
+  posterior, post-completion/post-collapse claim registration, and the `not_applicable` claim.
+- `docker exec transfers-task9-round1 psql -U transfers -d transfers -v ON_ERROR_STOP=1 -f /database/tests/028_probability_active_terminal_settlement.sql`
+  -> exit `3`; expected failure: `active official terminal transition was swallowed by posterior rescore`.
+- `sh tests/migrations/probability-same-time-concurrency.sh transfers-task9-round1`
+  -> exit `3`; expected incomplete posterior: one snapshot with alpha `6.5000`, beta `2.0000`,
+  effective count `0.5000` instead of the final two-outcome state.
+
+### GREEN and verification evidence
+
+- Focused clean-container SQL loop over `005`, `006`, `007`, `012`, `019`, `020`, `021`,
+  `024`, and `028` -> exit `0`; every file printed `PASS`.
+- Existing `probability-v1-concurrency.sh`, `probability-stale-concurrency.sh`, and
+  `probability-settlement-concurrency.sh`, plus new
+  `probability-same-time-concurrency.sh transfers-task9-round1` -> exit `0`; same-time harness
+  reported `same-time shared-reporter settlement concurrency passed`.
+- `docker exec transfers-task9-round1 psql -U transfers -d transfers -v ON_ERROR_STOP=1 -f /database/migrate.sql`
+  -> exit `0`; migration replay was idempotent.
+- `node --test tests/unit/workflow-lib.test.mjs tests/unit/probability-backfill-workflow.test.mjs`
+  -> exit `0`; both top-level suites passed (the existing 86 assertions remain green).
+- `node workflow/build-workflows.mjs --check` -> exit `0`; 78 sources and 3 workflows checked.
+- `node --check workflow/build-workflows.mjs` and shell syntax checks over migration/E2E scripts
+  -> exit `0`.
+- Production `docker compose -f deploy/n8n/compose.yaml config --quiet --no-interpolate` and
+  E2E `docker compose -f tests/e2e/compose.yaml config --quiet` -> exit `0`.
+- `sh tests/e2e/run.sh` -> exit `0`; `Mock E2E scenarios passed.`
+- `git diff --quiet d0416b2 -- workflow/football-transfer-monitor-errors.json workflow/football-transfer-probability-backfill.json`
+  -> exit `0`; auxiliary workflows remain unchanged.
+- `git diff --check` and staged diff check -> exit `0`.
+- `sh tests/migrations/run.sh` -> exit `3` only after migration upgrade/replay, all numbered
+  tests, and all concurrency harnesses passed. The final unchanged baseline remains
+  `generated-enrichment-persistence.sql:524 -> more than one row returned for \\gset`.
+
+### Round 1 self-review
+
+- Re-read all callers of the shared apply, posterior, and affected-case recompute functions.
+- Same-time snapshots remain immutable and state-idempotent; no prior snapshot or probability
+  revision is updated or deleted.
+- Every affected-case select remains bounded to at most 100 rows with `SKIP LOCKED`; the outer
+  loop only continues while a score fingerprint changes, so replay returns zero.
+- Qwen remains evidence-only. No service, dependency, reporter registry, manual workflow,
+  deployment, notification, or unrelated cleanup was added.
+- No Round 1 blocker or new known regression remains; only the documented generated-enrichment
+  baseline failure is outstanding and intentionally untouched.
