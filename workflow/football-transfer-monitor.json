@@ -264,7 +264,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT recompute_stale_probability_v1_cases($1::text, $2::timestamptz, 100) AS recomputed_case_count;",
+        "query": "SELECT\n  settle_expired_probability_v1_cases($1::text, $2::timestamptz, 100) AS settled_case_count,\n  recompute_stale_probability_v1_cases($1::text, $2::timestamptz, 100) AS recomputed_case_count;",
         "options": {
           "queryBatching": "transaction",
           "outputLargeFormatNumbers": "text",

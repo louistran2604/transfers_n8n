@@ -9,6 +9,9 @@ DROP TABLE IF EXISTS probability_stale_concurrency_audit;
 DELETE FROM transfer_probability_revisions WHERE transfer_case_id IN (
   SELECT id FROM transfer_cases WHERE case_key LIKE 'stale-concurrency-%|old|2026-H2'
 );
+DELETE FROM source_claim_outcomes WHERE transfer_case_id IN (
+  SELECT id FROM transfer_cases WHERE case_key LIKE 'stale-concurrency-%|old|2026-H2'
+);
 DELETE FROM transfer_evidence WHERE transfer_case_id IN (
   SELECT id FROM transfer_cases WHERE case_key LIKE 'stale-concurrency-%|old|2026-H2'
 );

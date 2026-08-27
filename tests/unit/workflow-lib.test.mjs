@@ -2391,6 +2391,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
   assert.equal(workflow.connections['Daily probability decay'].main[0][0].node, 'Recover interrupted stale deliveries');
   assert.equal(workflow.connections['Recompute stale probability cases'].main[0][0].node, 'Prepare digest candidates query');
   assert.match(workflow.nodes.find((node) => node.name === 'Recompute stale probability cases').parameters.query, /recompute_stale_probability_v1_cases/);
+  assert.match(workflow.nodes.find((node) => node.name === 'Recompute stale probability cases').parameters.query, /settle_expired_probability_v1_cases/);
   const staleContextNode = workflow.nodes.find((node) => node.name === 'Create stale recompute context');
   const runStaleContext = new AsyncFunction('$env', '$execution', staleContextNode.parameters.jsCode);
   for (const configured of [undefined, '', 'off', 'invalid']) {

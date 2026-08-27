@@ -1992,7 +1992,9 @@ return [{ json: { params: [String($execution.id), 'probability-stale|' + start.t
     postgresNode('Register workflow run', [-500, -40], runRegistrationSql()),
     postgresNode('Register sample workflow run', [-500, 220], runRegistrationSql()),
     postgresNode('Register stale workflow run', [-500, -340], runRegistrationSql()),
-    postgresNode('Recompute stale probability cases', [-280, -340], `SELECT recompute_stale_probability_v1_cases($1::text, $2::timestamptz, 100) AS recomputed_case_count;`, `={{ [$('Create stale recompute context').first().json.probability_mode, $('Create stale recompute context').first().json.collection_started_at] }}`),
+    postgresNode('Recompute stale probability cases', [-280, -340], `SELECT
+  settle_expired_probability_v1_cases($1::text, $2::timestamptz, 100) AS settled_case_count,
+  recompute_stale_probability_v1_cases($1::text, $2::timestamptz, 100) AS recomputed_case_count;`, `={{ [$('Create stale recompute context').first().json.probability_mode, $('Create stale recompute context').first().json.collection_started_at] }}`),
     codeNode('Load generated sources', [-300, -40], `
 const sources = ${registryJson};
 return sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }));`),

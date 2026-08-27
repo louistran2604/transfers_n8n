@@ -129,4 +129,18 @@ END AS migration_008_pending \gset
   COMMIT;
 \endif
 
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM app_schema_migrations
+    WHERE version = '009_probability_outcome_settlement'
+  ) THEN 'false' ELSE 'true'
+END AS migration_009_pending \gset
+
+\if :migration_009_pending
+  BEGIN;
+  \i /database/migrations/009_probability_outcome_settlement.sql
+  INSERT INTO app_schema_migrations (version) VALUES ('009_probability_outcome_settlement');
+  COMMIT;
+\endif
+
 SELECT pg_advisory_unlock(hashtext('transfers_net_schema_migrations'));
