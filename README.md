@@ -2,7 +2,7 @@
 
 Self-hosted n8n pipeline that collects football-transfer posts from X, extracts structured reports with a local Qwen model, stores restart-safe revisions in PostgreSQL, and sends Discord digests.
 
-The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh`. Each run reads the latest 20 posts from 78 configured sources.
+The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run reads the latest 20 posts from 78 configured sources.
 
 ## How it works
 
