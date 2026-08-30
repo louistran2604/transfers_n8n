@@ -367,37 +367,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();\nif (!['rapidapi', 'twscrape'].includes(collector)) throw new Error('X_COLLECTOR must be explicitly set to rapidapi or twscrape');\nreturn $input.all().map((item) => ({ json: { ...item.json, collector } }));"
-      }
-    },
-    {
-      "id": "use-twscrape-collector",
-      "name": "Use twscrape collector",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        280,
-        -40
-      ],
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "leftValue": "={{ $json.collector }}",
-              "rightValue": "twscrape",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
+        "jsCode": "const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();\nif (collector !== 'twscrape') throw new Error('X_COLLECTOR must be explicitly set to twscrape');\nreturn $input.all().map((item) => ({ json: { ...item.json, collector } }));"
       }
     },
     {
@@ -406,8 +376,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        440,
-        -160
+        280,
+        -40
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -420,8 +390,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        660,
-        -160
+        500,
+        -40
       ],
       "parameters": {
         "method": "POST",
@@ -448,70 +418,13 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
-        -160
+        720,
+        -40
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "const request = $('Build twscrape collect request').first().json;\nconst sources = new Map((request.sources ?? []).map((source) => [String(source.source_id), source]));\nconst response = $input.first()?.json?.body ?? $input.first()?.json ?? {};\nconst posts = Array.isArray(response?.posts) ? response.posts : [];\nconst errors = Array.isArray(response?.errors) ? response.errors : [];\nconst sourceIds = [...sources.keys()];\nconst failedSourceIds = new Set(errors.map((error) => String(error?.source_id ?? '')).filter(Boolean));\nif (!posts.length && sourceIds.length && sourceIds.every((sourceId) => failedSourceIds.has(sourceId))) {\n  const codes = [...new Set(errors.map((error) => String(error?.code ?? '')).filter(Boolean))].sort();\n  throw new Error('twscrape collection failed for ' + sourceIds.length + ' source(s)' + (codes.length ? ': ' + codes.join(', ') : ''));\n}\nconst context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;\nconst collectionCutoffAt = Date.parse(context.collection_cutoff_at);\nconst collectionStartedAt = Date.parse(context.collection_started_at);\nconst seen = new Set();\nreturn posts.flatMap((post) => {\n  const source = sources.get(String(post?.source_id ?? ''));\n  const externalPostId = String(post?.external_post_id ?? '');\n  const xUserId = String(post?.x_user_id ?? '');\n  const content = typeof post?.content === 'string' ? post.content.trim() : '';\n  const date = new Date(post?.posted_at);\n  if (!source || xUserId !== String(source.external_account_id) || !/^\\d+$/.test(externalPostId) || !content || seen.has(externalPostId) || /^RT\\s+@/i.test(content) || Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];\n  seen.add(externalPostId);\n  const postUrl = typeof post?.post_url === 'string' && post.post_url.startsWith('https://')\n    ? post.post_url\n    : 'https://x.com/' + source.username + '/status/' + externalPostId;\n  const rawPayload = post?.raw_payload && typeof post.raw_payload === 'object' ? post.raw_payload : {};\n  return [{ json: {\n    params: [String(source.external_account_id), externalPostId, postUrl, content, date.toISOString(), JSON.stringify(rawPayload), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official],\n  } }];\n});"
       }
-    },
-    {
-      "id": "build-rapidapi-request",
-      "name": "Build RapidAPI request",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        440,
-        -40
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "if (!String($env.RAPIDAPI_KEY ?? '').trim()) throw new Error('RAPIDAPI_KEY is required when X_COLLECTOR=rapidapi');\nreturn $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));"
-      }
-    },
-    {
-      "id": "collect-20-x-posts",
-      "name": "Collect 20 X posts",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        660,
-        -40
-      ],
-      "parameters": {
-        "method": "GET",
-        "url": "={{ ($env.RAPIDAPI_BASE_URL || \"https://twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com\") + $json.requestPath }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "x-rapidapi-host",
-              "value": "twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com"
-            },
-            {
-              "name": "x-rapidapi-key",
-              "value": "={{ $env.RAPIDAPI_KEY }}"
-            }
-          ]
-        },
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "neverError": true
-            }
-          }
-        }
-      },
-      "continueOnFail": true,
-      "retryOnFail": true,
-      "maxTries": 5,
-      "waitBetweenTries": 1000
     },
     {
       "id": "load-sample-collected-x-posts",
@@ -524,21 +437,121 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score), seed_reliability: Number($json.seed_reliability), publisher_group_key: $json.publisher_group_key, source_kind: $json.source_kind, is_aggregator: $json.is_aggregator };\nconst createdAt = new Date().toUTCString();\nconst tweet = (id, text) => ({ rest_id: id, legacy: { id_str: id, full_text: text, created_at: createdAt } });\nreturn [{ json: { source, body: { data: { entries: [\n  tweet('999000000000000001', 'TEST DATA: Alex Example has agreed to join Test United from Test FC for EUR 25 million. Medical scheduled.'),\n  tweet('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),\n  tweet('999000000000000003', 'RT @example: TEST DATA: this pure retweet must be ignored.'),\n] } } } }];"
+        "jsCode": "const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score), seed_reliability: Number($json.seed_reliability), publisher_group_key: $json.publisher_group_key, source_kind: $json.source_kind, is_aggregator: $json.is_aggregator };\nconst createdAt = new Date().toUTCString();\nconst sample = (id, content) => ({ json: { params: [source.external_account_id, id, 'https://x.com/' + source.username + '/status/' + id, content, createdAt, JSON.stringify({ id_str: id, full_text: content, created_at: createdAt }), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official] } });\nreturn [\n  sample('999000000000000001', 'TEST DATA: Alex Example has agreed to join Test United from Test FC for EUR 25 million. Medical scheduled.'),\n  sample('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),\n];"
       }
     },
     {
-      "id": "parse-rapidapi-posts",
-      "name": "Parse RapidAPI posts",
+      "id": "prepare-processed-post-redis-lookup",
+      "name": "Prepare processed-post Redis lookup",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
-        -40
+        900,
+        -220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const inputs = $input.all();\nconst requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];\nconst context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;\nconst collectionCutoffAt = Date.parse(context.collection_cutoff_at);\nconst collectionStartedAt = Date.parse(context.collection_started_at);\nreturn inputs.flatMap((item, index) => {\n  const requestIndex = item.pairedItem?.item ?? index;\n  const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;\n  if (!request?.source) throw new Error('Missing RapidAPI request metadata for response item ' + index);\n  const response = item.json.body ?? item.json;\n  const found = [], walked = new Set(), seen = new Set();\n  const walk = (value) => {\n    if (!value || typeof value !== 'object' || walked.has(value)) return;\n    walked.add(value);\n    const text = value?.note_tweet?.note_tweet_results?.result?.text ?? value?.legacy?.full_text ?? value?.legacy?.text;\n    const id = String(value?.rest_id ?? value?.legacy?.id_str ?? value?.id_str ?? '');\n    if (/^\\d+$/.test(id) && text) found.push(value);\n    Object.values(value).forEach(walk);\n  };\n  walk(response);\n  return found.flatMap((tweet) => {\n    const external_post_id = String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');\n    const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;\n    if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];\n    const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);\n    if (Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];\n    seen.add(external_post_id);\n    const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;\n    return [{ json: {\n      params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],\n    } }];\n  });\n});"
+        "jsCode": "const input = $input.all();\nconst mode = String($env.UPSTASH_REDIS_MODE ?? 'off').trim().toLowerCase();\nconst restUrl = String($env.UPSTASH_REDIS_REST_URL ?? '').trim().replace(/\\/+$/, '');\nconst token = String($env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();\nconst ttlText = String($env.UPSTASH_REDIS_POST_TTL_SECONDS ?? '86400').trim();\nconst ttl = /^\\d+$/.test(ttlText) ? Number(ttlText) : NaN;\nlet validUrl = false;\ntry {\n  const parsed = new URL(restUrl);\n  validUrl = ['http:', 'https:'].includes(parsed.protocol)\n    && Boolean(parsed.hostname)\n    && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;\n} catch {}\nconst active = mode === 'active' && validUrl && token\n  && Number.isSafeInteger(ttl) && ttl >= 1 && ttl <= 31536000;\nconst bypass = (post) => ({ json: { redis_lookup: false, posts: [post] } });\nif (!active) return input.map((item) => bypass(item.json));\nconst groups = new Map();\nconst invalid = [];\nfor (const item of input) {\n  const post = item.json ?? {};\n  const externalPostId = String(post.params?.[1] ?? '');\n  if (!/^\\d+$/.test(externalPostId)) {\n    invalid.push(bypass(post));\n    continue;\n  }\n  const group = groups.get(externalPostId) ?? { id: externalPostId, posts: [] };\n  group.posts.push(post);\n  groups.set(externalPostId, group);\n}\nconst uniqueGroups = [...groups.values()];\nconst batches = [];\nfor (let start = 0; start < uniqueGroups.length; start += 100) {\n  const batch = uniqueGroups.slice(start, start + 100);\n  batches.push({ json: {\n    redis_lookup: true,\n    rest_url: restUrl,\n    commands: batch.map(({ id }) => ['GET', 'ftm:v1:processed-post:x:' + id]),\n    groups: batch,\n  } });\n}\nreturn [...invalid, ...batches];"
+      }
+    },
+    {
+      "id": "processed-post-redis-cache-enabled-",
+      "name": "Processed-post Redis cache enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        -220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.redis_lookup === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "lookup-processed-posts-via-upstash",
+      "name": "Lookup processed-posts via Upstash",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        -380
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.rest_url + \"/pipeline\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.UPSTASH_REDIS_REST_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.commands) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "filter-processed-post-redis-hits",
+      "name": "Filter processed-post Redis hits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        -380
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prepared = $('Prepare processed-post Redis lookup').all().filter((item) => item.json?.redis_lookup === true);\nconst responses = $input.all();\nconst validStates = new Set(['ignored', 'merged']);\nconst emit = (groups) => (Array.isArray(groups) ? groups : []).flatMap((group) => (\n  Array.isArray(group?.posts) ? group.posts.map((post) => ({ json: post })) : []\n));\nif (responses.length !== prepared.length) return prepared.flatMap((item) => emit(item.json?.groups));\nconst output = [];\nfor (let index = 0; index < prepared.length; index += 1) {\n  const batch = prepared[index].json ?? {};\n  const groups = Array.isArray(batch.groups) ? batch.groups : [];\n  const commands = Array.isArray(batch.commands) ? batch.commands : [];\n  const response = responses[index]?.json ?? {};\n  let results = null;\n  const statusCode = Number(response.statusCode ?? response.status);\n  if (groups.length === commands.length && response && !response.error\n    && Number.isInteger(statusCode) && statusCode >= 200 && statusCode <= 299) {\n    let body = response.body ?? response;\n    try { if (typeof body === 'string') body = JSON.parse(body); } catch { body = null; }\n    if (Array.isArray(body) && body.length === commands.length) {\n      const parsed = body.map((entry) => {\n        if (!entry || typeof entry !== 'object' || Array.isArray(entry) || 'error' in entry) return undefined;\n        if (entry.result === null) return null;\n        const state = typeof entry.result === 'string' ? entry.result.trim().toLowerCase() : '';\n        return validStates.has(state) ? state : undefined;\n      });\n      if (parsed.every((result) => result !== undefined)) results = parsed;\n    }\n  }\n  if (!results) {\n    output.push(...emit(groups));\n    continue;\n  }\n  for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {\n    if (results[resultIndex] === null) output.push(...emit([groups[resultIndex]]));\n  }\n}\nreturn output;"
+      }
+    },
+    {
+      "id": "bypass-processed-post-redis-cache",
+      "name": "Bypass processed-post Redis cache",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        -120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().flatMap((item) => Array.isArray(item.json?.posts)\n  ? item.json.posts.map((post) => ({ json: post }))\n  : []);"
       }
     },
     {
@@ -1417,25 +1430,7 @@
       "main": [
         [
           {
-            "node": "Use twscrape collector",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Use twscrape collector": {
-      "main": [
-        [
-          {
             "node": "Build twscrape collect request",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Build RapidAPI request",
             "type": "main",
             "index": 0
           }
@@ -1468,6 +1463,57 @@
       "main": [
         [
           {
+            "node": "Prepare processed-post Redis lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare processed-post Redis lookup": {
+      "main": [
+        [
+          {
+            "node": "Processed-post Redis cache enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Processed-post Redis cache enabled?": {
+      "main": [
+        [
+          {
+            "node": "Lookup processed-posts via Upstash",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Bypass processed-post Redis cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup processed-posts via Upstash": {
+      "main": [
+        [
+          {
+            "node": "Filter processed-post Redis hits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter processed-post Redis hits": {
+      "main": [
+        [
+          {
             "node": "Persist raw posts",
             "type": "main",
             "index": 0
@@ -1475,22 +1521,11 @@
         ]
       ]
     },
-    "Build RapidAPI request": {
+    "Bypass processed-post Redis cache": {
       "main": [
         [
           {
-            "node": "Collect 20 X posts",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Collect 20 X posts": {
-      "main": [
-        [
-          {
-            "node": "Parse RapidAPI posts",
+            "node": "Persist raw posts",
             "type": "main",
             "index": 0
           }
@@ -1498,17 +1533,6 @@
       ]
     },
     "Load sample collected X posts": {
-      "main": [
-        [
-          {
-            "node": "Parse RapidAPI posts",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Parse RapidAPI posts": {
       "main": [
         [
           {

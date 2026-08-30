@@ -1255,6 +1255,101 @@ return posts.flatMap((post) => {
 });`;
 }
 
+function processedPostCacheLookupCode() {
+  return `
+const input = $input.all();
+const mode = String($env.UPSTASH_REDIS_MODE ?? 'off').trim().toLowerCase();
+const restUrl = String($env.UPSTASH_REDIS_REST_URL ?? '').trim().replace(/\\/+$/, '');
+const token = String($env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();
+const ttlText = String($env.UPSTASH_REDIS_POST_TTL_SECONDS ?? '86400').trim();
+const ttl = /^\\d+$/.test(ttlText) ? Number(ttlText) : NaN;
+let validUrl = false;
+try {
+  const parsed = new URL(restUrl);
+  validUrl = ['http:', 'https:'].includes(parsed.protocol)
+    && Boolean(parsed.hostname)
+    && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+} catch {}
+const active = mode === 'active' && validUrl && token
+  && Number.isSafeInteger(ttl) && ttl >= 1 && ttl <= 31536000;
+const bypass = (post) => ({ json: { redis_lookup: false, posts: [post] } });
+if (!active) return input.map((item) => bypass(item.json));
+const groups = new Map();
+const invalid = [];
+for (const item of input) {
+  const post = item.json ?? {};
+  const externalPostId = String(post.params?.[1] ?? '');
+  if (!/^\\d+$/.test(externalPostId)) {
+    invalid.push(bypass(post));
+    continue;
+  }
+  const group = groups.get(externalPostId) ?? { id: externalPostId, posts: [] };
+  group.posts.push(post);
+  groups.set(externalPostId, group);
+}
+const uniqueGroups = [...groups.values()];
+const batches = [];
+for (let start = 0; start < uniqueGroups.length; start += 100) {
+  const batch = uniqueGroups.slice(start, start + 100);
+  batches.push({ json: {
+    redis_lookup: true,
+    rest_url: restUrl,
+    commands: batch.map(({ id }) => ['GET', 'ftm:v1:processed-post:x:' + id]),
+    groups: batch,
+  } });
+}
+return [...invalid, ...batches];`;
+}
+
+function processedPostCacheFilterCode() {
+  return `
+const prepared = $('Prepare processed-post Redis lookup').all().filter((item) => item.json?.redis_lookup === true);
+const responses = $input.all();
+const validStates = new Set(['ignored', 'merged']);
+const emit = (groups) => (Array.isArray(groups) ? groups : []).flatMap((group) => (
+  Array.isArray(group?.posts) ? group.posts.map((post) => ({ json: post })) : []
+));
+if (responses.length !== prepared.length) return prepared.flatMap((item) => emit(item.json?.groups));
+const output = [];
+for (let index = 0; index < prepared.length; index += 1) {
+  const batch = prepared[index].json ?? {};
+  const groups = Array.isArray(batch.groups) ? batch.groups : [];
+  const commands = Array.isArray(batch.commands) ? batch.commands : [];
+  const response = responses[index]?.json ?? {};
+  let results = null;
+  const statusCode = Number(response.statusCode ?? response.status);
+  if (groups.length === commands.length && response && !response.error
+    && Number.isInteger(statusCode) && statusCode >= 200 && statusCode <= 299) {
+    let body = response.body ?? response;
+    try { if (typeof body === 'string') body = JSON.parse(body); } catch { body = null; }
+    if (Array.isArray(body) && body.length === commands.length) {
+      const parsed = body.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry) || 'error' in entry) return undefined;
+        if (entry.result === null) return null;
+        const state = typeof entry.result === 'string' ? entry.result.trim().toLowerCase() : '';
+        return validStates.has(state) ? state : undefined;
+      });
+      if (parsed.every((result) => result !== undefined)) results = parsed;
+    }
+  }
+  if (!results) {
+    output.push(...emit(groups));
+    continue;
+  }
+  for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
+    if (results[resultIndex] === null) output.push(...emit([groups[resultIndex]]));
+  }
+}
+return output;`;
+}
+
+function processedPostCacheBypassCode() {
+  return `
+return $input.all().flatMap((item) => Array.isArray(item.json?.posts)
+  ? item.json.posts.map((post) => ({ json: post }))
+  : []);`;
+}
+
 function qwenParseCode() {
   return `
 ${entityAliasHelpers()}
@@ -2023,10 +2118,9 @@ return [{ json: { source, params: [source.platform, source.external_account_id, 
     postgresNode('Upsert sample source account', [-100, 220], sourceUpsertSql()),
     codeNode('Select X collector', [100, -40], `
 const collector = String($env.X_COLLECTOR ?? '').trim().toLowerCase();
-if (!['rapidapi', 'twscrape'].includes(collector)) throw new Error('X_COLLECTOR must be explicitly set to rapidapi or twscrape');
+if (collector !== 'twscrape') throw new Error('X_COLLECTOR must be explicitly set to twscrape');
 return $input.all().map((item) => ({ json: { ...item.json, collector } }));`),
-    node('Use twscrape collector', 'n8n-nodes-base.if', [280, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.collector }}', rightValue: 'twscrape', operator: { type: 'string', operation: 'equals' } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    codeNode('Build twscrape collect request', [440, -160], `
+    codeNode('Build twscrape collect request', [280, -40], `
 const sources = $input.all().map((item) => ({
   source_id: String(item.json.source_account_id),
   username: String(item.json.username),
@@ -2038,32 +2132,31 @@ const sources = $input.all().map((item) => ({
   is_official: item.json.is_official,
 }));
 return [{ json: { sources, body: { sources: sources.map(({ source_id, username, x_user_id }) => ({ source_id, username, x_user_id })), limit: 20 } } }];`),
-    httpNode('Collect 20 X posts via twscrape', [660, -160], {
+    httpNode('Collect 20 X posts via twscrape', [500, -40], {
       method: 'POST', url: '={{ ($env.TWSCRAPE_BASE_URL || "http://twscrape:8080") + "/collect" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, requestOptions: { timeout: 310000 } }),
-    codeNode('Normalize twscrape posts', [880, -160], twscrapeParserCode()),
-    codeNode('Build RapidAPI request', [440, -40], `
-if (!String($env.RAPIDAPI_KEY ?? '').trim()) throw new Error('RAPIDAPI_KEY is required when X_COLLECTOR=rapidapi');
-return $input.all().map((item) => ({ json: { source: item.json, requestPath: '/user/' + item.json.external_account_id + '/tweets?count=20&username=' + encodeURIComponent(item.json.username), attempt: 1 } }));`),
-    httpNode('Collect 20 X posts', [660, -40], {
-      method: 'GET', url: '={{ ($env.RAPIDAPI_BASE_URL || "https://twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com") + $json.requestPath }}', sendHeaders: true,
-      headerParameters: { parameters: [
-        { name: 'Content-Type', value: 'application/json' },
-        { name: 'x-rapidapi-host', value: 'twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com' },
-        { name: 'x-rapidapi-key', value: '={{ $env.RAPIDAPI_KEY }}' },
-      ] },
-    }, { continueOnFail: true, retryOnFail: true, maxTries: 5, waitBetweenTries: 1000 }),
+    codeNode('Normalize twscrape posts', [720, -40], twscrapeParserCode()),
     codeNode('Load sample collected X posts', [320, 220], `
 const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score), seed_reliability: Number($json.seed_reliability), publisher_group_key: $json.publisher_group_key, source_kind: $json.source_kind, is_aggregator: $json.is_aggregator };
 const createdAt = new Date().toUTCString();
-const tweet = (id, text) => ({ rest_id: id, legacy: { id_str: id, full_text: text, created_at: createdAt } });
-return [{ json: { source, body: { data: { entries: [
-  tweet('999000000000000001', 'TEST DATA: Alex Example has agreed to join Test United from Test FC for EUR 25 million. Medical scheduled.'),
-  tweet('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),
-  tweet('999000000000000003', 'RT @example: TEST DATA: this pure retweet must be ignored.'),
-] } } } }];`),
-    codeNode('Parse RapidAPI posts', [880, -40], rapidApiParserCode()),
+const sample = (id, content) => ({ json: { params: [source.external_account_id, id, 'https://x.com/' + source.username + '/status/' + id, content, createdAt, JSON.stringify({ id_str: id, full_text: content, created_at: createdAt }), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official] } });
+return [
+  sample('999000000000000001', 'TEST DATA: Alex Example has agreed to join Test United from Test FC for EUR 25 million. Medical scheduled.'),
+  sample('999000000000000002', 'TEST DATA: Jamie Sample is in advanced talks to join Example City from Sample Athletic.'),
+];`),
+    codeNode('Prepare processed-post Redis lookup', [900, -220], processedPostCacheLookupCode()),
+    node('Processed-post Redis cache enabled?', 'n8n-nodes-base.if', [1120, -220], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.redis_lookup === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Lookup processed-posts via Upstash', [1340, -380], {
+      method: 'POST', url: '={{ $json.rest_url + "/pipeline" }}', sendHeaders: true,
+      headerParameters: { parameters: [
+        { name: 'Content-Type', value: 'application/json' },
+        { name: 'Authorization', value: '={{ "Bearer " + $env.UPSTASH_REDIS_REST_TOKEN }}' },
+      ] },
+      sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.commands) }}',
+    }, { continueOnFail: true, requestOptions: { timeout: 5000 } }),
+    codeNode('Filter processed-post Redis hits', [1560, -380], processedPostCacheFilterCode()),
+    codeNode('Bypass processed-post Redis cache', [1340, -120], processedPostCacheBypassCode()),
     postgresNode('Persist raw posts', [760, -40], rawPostUpsertSql()),
     codeNode('Build Qwen request', [980, -40], `
 const prompt = ${JSON.stringify(prompt)};
@@ -2181,15 +2274,16 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Load sample source': { main: [[{ node: 'Upsert sample source account', type: 'main', index: 0 }]] },
     'Upsert source accounts': { main: [[{ node: 'Select X collector', type: 'main', index: 0 }]] },
     'Upsert sample source account': { main: [[{ node: 'Load sample collected X posts', type: 'main', index: 0 }]] },
-    'Select X collector': { main: [[{ node: 'Use twscrape collector', type: 'main', index: 0 }]] },
-    'Use twscrape collector': { main: [[{ node: 'Build twscrape collect request', type: 'main', index: 0 }], [{ node: 'Build RapidAPI request', type: 'main', index: 0 }]] },
+    'Select X collector': { main: [[{ node: 'Build twscrape collect request', type: 'main', index: 0 }]] },
     'Build twscrape collect request': { main: [[{ node: 'Collect 20 X posts via twscrape', type: 'main', index: 0 }]] },
     'Collect 20 X posts via twscrape': { main: [[{ node: 'Normalize twscrape posts', type: 'main', index: 0 }]] },
-    'Normalize twscrape posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
-    'Build RapidAPI request': { main: [[{ node: 'Collect 20 X posts', type: 'main', index: 0 }]] },
-    'Collect 20 X posts': { main: [[{ node: 'Parse RapidAPI posts', type: 'main', index: 0 }]] },
-    'Load sample collected X posts': { main: [[{ node: 'Parse RapidAPI posts', type: 'main', index: 0 }]] },
-    'Parse RapidAPI posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
+    'Normalize twscrape posts': { main: [[{ node: 'Prepare processed-post Redis lookup', type: 'main', index: 0 }]] },
+    'Prepare processed-post Redis lookup': { main: [[{ node: 'Processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
+    'Processed-post Redis cache enabled?': { main: [[{ node: 'Lookup processed-posts via Upstash', type: 'main', index: 0 }], [{ node: 'Bypass processed-post Redis cache', type: 'main', index: 0 }]] },
+    'Lookup processed-posts via Upstash': { main: [[{ node: 'Filter processed-post Redis hits', type: 'main', index: 0 }]] },
+    'Filter processed-post Redis hits': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
+    'Bypass processed-post Redis cache': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
+    'Load sample collected X posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
     'Persist raw posts': { main: [[{ node: 'Build Qwen request', type: 'main', index: 0 }]] },
     'Build Qwen request': { main: [[{ node: 'Extract with Qwen', type: 'main', index: 0 }]] },
     'Extract with Qwen': { main: [[{ node: 'Validate Qwen response', type: 'main', index: 0 }]] },

@@ -26,8 +26,10 @@ test('generated twscrape topology checks processed-post Redis before PostgreSQL 
   nodeByName('Filter processed-post Redis hits');
   nodeByName('Bypass processed-post Redis cache');
   assert.equal(workflow.nodes.some((node) => /rapidapi/i.test(node.name)), false);
+  assert.doesNotMatch(JSON.stringify(workflow), /RAPIDAPI/i);
   assert.equal(target('Normalize twscrape posts'), 'Prepare processed-post Redis lookup');
-  assert.equal(target('Upsert source accounts'), 'Build twscrape collect request');
+  assert.equal(target('Upsert source accounts'), 'Select X collector');
+  assert.equal(target('Select X collector'), 'Build twscrape collect request');
   assert.equal(target('Prepare processed-post Redis lookup'), 'Processed-post Redis cache enabled?');
   assert.equal(target('Processed-post Redis cache enabled?', 0), 'Lookup processed-posts via Upstash');
   assert.equal(target('Processed-post Redis cache enabled?', 1), 'Bypass processed-post Redis cache');
@@ -40,9 +42,10 @@ test('generated twscrape topology checks processed-post Redis before PostgreSQL 
 
 test('generated Upstash lookup uses a bounded REST pipeline and keeps credentials in environment expressions', () => {
   const lookup = nodeByName('Lookup processed-posts via Upstash');
+  assert.match(nodeByName('Prepare processed-post Redis lookup').parameters.jsCode, /UPSTASH_REDIS_REST_URL/);
   assert.equal(lookup.type, 'n8n-nodes-base.httpRequest');
   assert.equal(lookup.parameters.method, 'POST');
-  assert.match(lookup.parameters.url, /UPSTASH_REDIS_REST_URL/);
+  assert.match(lookup.parameters.url, /\$json\.rest_url/);
   assert.match(lookup.parameters.url, /pipeline/);
   assert.match(lookup.parameters.jsonBody, /\$json\.commands/);
   assert.match(JSON.stringify(lookup.parameters.headerParameters), /UPSTASH_REDIS_REST_TOKEN/);
