@@ -96,6 +96,13 @@ const SOURCE_KINDS = new Set(['journalist', 'publisher', 'club_official', 'leagu
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const DECIMAL_ID = /^\d+$/;
+const PROCESSED_POST_CACHE_KEY_PREFIX = 'ftm:v1:processed-post:x:';
+const MAX_PIPELINE_COMMANDS = 1000;
+
+export const PROCESSED_POST_CACHE_DEFAULT_TTL_SECONDS = 86_400;
+export const PROCESSED_POST_CACHE_MAX_TTL_SECONDS = 31_536_000;
+export const PROCESSED_POST_CACHE_BATCH_SIZE = 100;
+export const PROCESSED_POST_CACHE_STATES = Object.freeze(['ignored', 'merged']);
 
 export function normalizeText(value) {
   return String(value ?? '')
@@ -225,6 +232,95 @@ export function enrichmentMode(value) {
   return ['shadow', 'active'].includes(String(value ?? '').trim().toLowerCase())
     ? String(value).trim().toLowerCase()
     : 'off';
+}
+
+export function normalizeProcessedPostCacheTtl(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 1 && value <= PROCESSED_POST_CACHE_MAX_TTL_SECONDS ? value : null;
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return null;
+  const ttl = Number(value.trim());
+  return Number.isSafeInteger(ttl) && ttl >= 1 && ttl <= PROCESSED_POST_CACHE_MAX_TTL_SECONDS ? ttl : null;
+}
+
+function normalizeProcessedPostCacheUrl(value) {
+  const candidate = String(value ?? '').trim();
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    return candidate.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeProcessedPostCacheConfig(config = {}) {
+  const settings = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+  const read = (key, environmentKey) => settings[key] ?? settings[environmentKey];
+  const mode = String(read('mode', 'UPSTASH_REDIS_MODE') ?? 'off').trim().toLowerCase();
+  const ttlInput = settings.postTtlSeconds === undefined && settings.UPSTASH_REDIS_POST_TTL_SECONDS === undefined
+    ? PROCESSED_POST_CACHE_DEFAULT_TTL_SECONDS
+    : read('postTtlSeconds', 'UPSTASH_REDIS_POST_TTL_SECONDS');
+  const ttl = normalizeProcessedPostCacheTtl(ttlInput);
+  const restUrl = normalizeProcessedPostCacheUrl(read('restUrl', 'UPSTASH_REDIS_REST_URL'));
+  const restToken = String(read('restToken', 'UPSTASH_REDIS_REST_TOKEN') ?? '').trim();
+  if (mode !== 'active' || !restUrl || !restToken || ttl === null) {
+    return { mode: 'off', restUrl: '', restToken: '', postTtlSeconds: PROCESSED_POST_CACHE_DEFAULT_TTL_SECONDS };
+  }
+  return { mode: 'active', restUrl, restToken, postTtlSeconds: ttl };
+}
+
+function normalizeProcessedPostId(value) {
+  const id = String(value ?? '').trim();
+  if (!DECIMAL_ID.test(id)) throw new Error('Processed-post cache requires a decimal external post ID');
+  return id;
+}
+
+function normalizePipelineBatchSize(value) {
+  const size = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_PIPELINE_COMMANDS) throw new Error('Processed-post cache batch size must be between 1 and 1000');
+  return size;
+}
+
+function chunkPipelineCommands(commands, maxBatchSize) {
+  const size = normalizePipelineBatchSize(maxBatchSize);
+  const batches = [];
+  for (let offset = 0; offset < commands.length; offset += size) batches.push(commands.slice(offset, offset + size));
+  return batches;
+}
+
+export function processedPostCacheKey(externalPostId) {
+  return PROCESSED_POST_CACHE_KEY_PREFIX + normalizeProcessedPostId(externalPostId);
+}
+
+export function buildProcessedPostLookupBatches(externalPostIds, maxBatchSize = PROCESSED_POST_CACHE_BATCH_SIZE) {
+  const seen = new Set();
+  const commands = [];
+  for (const externalPostId of externalPostIds ?? []) {
+    const id = normalizeProcessedPostId(externalPostId);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    commands.push(['GET', processedPostCacheKey(id)]);
+  }
+  return chunkPipelineCommands(commands, maxBatchSize);
+}
+
+export function buildProcessedPostSetBatches(entries, ttlSeconds = PROCESSED_POST_CACHE_DEFAULT_TTL_SECONDS, maxBatchSize = PROCESSED_POST_CACHE_BATCH_SIZE) {
+  const ttl = normalizeProcessedPostCacheTtl(ttlSeconds);
+  if (ttl === null) throw new Error('Processed-post cache TTL must be a positive integer between 1 and 31536000 seconds');
+  const seen = new Set();
+  const commands = [];
+  for (const entry of entries ?? []) {
+    const externalPostId = Array.isArray(entry) ? entry[0] : entry?.externalPostId ?? entry?.external_post_id;
+    const state = String(Array.isArray(entry) ? entry[1] : entry?.state ?? '').trim().toLowerCase();
+    const id = normalizeProcessedPostId(externalPostId);
+    if (!PROCESSED_POST_CACHE_STATES.includes(state)) throw new Error('Processed-post cache requires a terminal state');
+    if (seen.has(id)) continue;
+    seen.add(id);
+    commands.push(['SET', processedPostCacheKey(id), state, 'EX', String(ttl)]);
+  }
+  return chunkPipelineCommands(commands, maxBatchSize);
 }
 
 export function enrichmentUnicodeKey(value) {
