@@ -61,7 +61,41 @@ Remaining risks:
 
 Exact next step: Step 2 — read the ECC `tdd-workflow` instructions, add optional configuration and Redis helper primitives with focused unit tests, regenerate/check workflow output, then checkpoint.
 
-### Step 2 — Configuration and Redis primitives — pending
+### Step 2 — Configuration and Redis primitives — completed
+
+Files changed:
+
+- `workflow/lib.mjs`
+- `tests/unit/workflow-lib.test.mjs`
+- `deploy/n8n/compose.yaml`
+
+Important decisions:
+
+- Added `normalizeProcessedPostCacheConfig()` with `off` as the default. Active mode requires a valid HTTP(S) REST URL, a non-empty token, and a valid TTL; missing or invalid active settings normalize back to `{ mode: 'off' }` with no credential fields retained.
+- Added a positive integer TTL validator with a one-year upper bound (`31_536_000` seconds); the default remains `86_400` seconds.
+- Added the exact `ftm:v1:processed-post:x:<external_post_id>` key constructor, decimal X-ID validation, terminal states `ignored`/`merged`, and bounded pipeline command builders. Lookup and SET batches deduplicate IDs and default to 100 commands (never more than 1,000 when a caller supplies a batch size).
+- Passed the four Redis environment variables to both the n8n main and external-runner services using safe Compose defaults. No credentials or generated workflow JSON were added.
+- Followed ECC `tdd-workflow`: RED test checkpoint `bf82db9`, then the minimal GREEN implementation checkpoint `91334c0`. No Superpowers workflow was used.
+
+Tests/checks and results:
+
+- `node --test tests/unit/workflow-lib.test.mjs` after the test-only change → expected RED (module export missing).
+- `node --test tests/unit/workflow-lib.test.mjs` after implementation → passed (1 file, 0 failures).
+- `node --test tests/unit/*.test.mjs` → passed (2 files, 0 failures).
+- `node workflow/build-workflows.mjs` → passed (`Generated 78 sources and 3 workflow files.`; generated JSON unchanged).
+- `node workflow/build-workflows.mjs --check` → passed (`Checked 78 sources and 3 workflow files.`).
+- `node --check workflow/lib.mjs && node --check workflow/build-workflows.mjs` → passed.
+- `UPSTASH_REDIS_MODE=off PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet` → passed.
+- Same Compose validation with `--profile enrichment` → passed.
+- `git diff --check` → passed.
+
+Remaining risks:
+
+- The helpers are not yet connected to generated n8n lookup/write nodes; fail-open topology and terminal-only population are Step 3/4 work.
+- Active mode and real Upstash connectivity remain intentionally unverified; the default/off path has no Redis requests until those nodes are added and tested.
+- The one-year TTL ceiling is a local safety bound, not an Upstash service limit.
+
+Exact next step: Step 3 — add generated fail-open Redis lookup nodes before `Persist raw posts` for live collectors, preserve the manual sample bypass, and add topology/response-failure tests before implementation.
 
 ### Step 3 — Fail-open Redis lookup before PostgreSQL/Qwen — pending
 
