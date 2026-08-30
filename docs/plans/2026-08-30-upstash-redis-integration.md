@@ -21,7 +21,7 @@ When active, the generated n8n workflow uses Upstash's HTTPS REST API directly f
 ## Locked implementation design
 
 1. Normalize `UPSTASH_REDIS_MODE`, REST URL/token presence, and a positive bounded TTL using existing project-style helpers. Missing or invalid active configuration becomes an off/pass-through decision; no secret is committed. Use the key namespace `ftm:v1:processed-post:x:<external_post_id>` and terminal values `ignored` or `merged`.
-2. After both live X collectors normalize posts, batch lookup commands through Upstash `/pipeline` before `Persist raw posts`. A valid non-null marker skips that post. Off mode, manual sample runs, malformed responses, HTTP errors, timeouts, auth/rate-limit/server errors, unexpected cardinality, and any ambiguous result pass affected posts through unchanged.
+2. After the twscrape live collector normalizes posts, batch lookup commands through Upstash `/pipeline` before `Persist raw posts`. A valid non-null marker skips that post. Off mode, manual sample runs, malformed responses, HTTP errors, timeouts, auth/rate-limit/server errors, unexpected cardinality, and any ambiguous result pass affected posts through unchanged. RapidAPI is retired from the generated main workflow.
 3. After `Mark non-transfer ignored` succeeds, and after `Persist merged reports and revisions` (including its merge transaction) succeeds, deduplicate external IDs and batch `SET ... EX <TTL>` commands through `/pipeline`. Redis writes are non-fatal and cannot block preferred-source handling, enrichment, probability, digest reservation, or Discord. Failed Qwen validation and failed PostgreSQL/merge paths never write a processed key.
 4. Keep the existing PostgreSQL path authoritative and unchanged apart from the new optional cache branches. Do not modify Sofascore service caching or add a Redis lock/rate limiter. Regenerate all workflow JSON from `workflow/build-workflows.mjs`; never hand-edit generated JSON.
 5. Test in TDD order: unit configuration/key/batch helpers and generated topology first; then fail-open and terminal-write behavior; then extend the isolated mock E2E harness without contacting Upstash; finally run ECC review/security/E2E checks and the repository verification suite.
@@ -97,7 +97,41 @@ Remaining risks:
 
 Exact next step: Step 3 — add generated fail-open Redis lookup nodes before `Persist raw posts` for live collectors, preserve the manual sample bypass, and add topology/response-failure tests before implementation.
 
-### Step 3 — Fail-open Redis lookup before PostgreSQL/Qwen — pending
+### Step 3 — Fail-open Redis lookup before PostgreSQL/Qwen — completed
+
+Files changed:
+
+- `workflow/build-workflows.mjs`
+- `workflow/football-transfer-monitor.json` (regenerated)
+- `tests/unit/processed-post-cache-workflow.test.mjs`
+- `tests/unit/workflow-lib.test.mjs`
+
+Important decisions:
+
+- Incorporated the requirement update that RapidAPI is no longer used: the generated main workflow now has one live collector, twscrape. The selector rejects any value other than `twscrape`; the RapidAPI request/HTTP/parser nodes and branch were removed from generated output.
+- Manual sample data is produced directly as raw-post SQL items and connects straight to `Persist raw posts`, so it never enters the Redis preparation, IF, HTTP, or filter nodes.
+- Live twscrape posts are grouped by decimal external X ID, duplicate IDs share one GET command, and groups are emitted in bounded batches of 100 commands.
+- The Upstash node sends `POST <rest_url>/pipeline` with a JSON command array and a Bearer token read only from `$env`. The filter accepts only HTTP 2xx responses with exact result cardinality and `null`/`ignored`/`merged` result values. Any status, transport error, malformed body, pipeline entry error, invalid marker, or cardinality mismatch emits the affected groups unchanged.
+- Redis lookup is gated by normalized active configuration (valid HTTP(S) URL, non-empty token, and bounded positive TTL); all other configuration is routed through the bypass branch without an HTTP request.
+
+Tests/checks and results:
+
+- RED checkpoint `4188239 test: lock twscrape Redis lookup topology` → expected failures before generated nodes existed.
+- `node --test tests/unit/processed-post-cache-workflow.test.mjs` → passed (5 tests, 0 failures).
+- `node --test tests/unit/*.test.mjs` → passed (3 files, 0 failures).
+- `node workflow/build-workflows.mjs` → passed (`Generated 78 sources and 3 workflow files.`).
+- `node workflow/build-workflows.mjs --check` → passed (`Checked 78 sources and 3 workflow files.`).
+- `node --check workflow/build-workflows.mjs` → passed.
+- `git diff --check` → passed.
+- GREEN implementation commit `4f17f65 feat: add fail-open Redis lookup to twscrape flow`.
+
+Remaining risks:
+
+- Redis is not yet populated after terminal PostgreSQL `ignored`/`merged` transitions; that is Step 4.
+- Active Upstash behavior is covered by mocked code-level responses only; isolated mock-server E2E coverage remains Step 5.
+- Legacy library/test and documentation references to the retired RapidAPI path remain to be cleaned up in Step 6; the generated main workflow no longer references it.
+
+Exact next step: Step 4 — add terminal-only, deduplicated, batched, non-fatal Redis SET pipelines after successful PostgreSQL ignored/merge transitions, with RED → GREEN tests and no writes on Qwen or PostgreSQL failure paths.
 
 ### Step 4 — Populate Redis only after durable terminal success — pending
 
