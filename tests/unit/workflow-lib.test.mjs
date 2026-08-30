@@ -5,6 +5,8 @@ import test from 'node:test';
 import {
   buildEnrichmentRequest,
   buildDiscordDigest,
+  buildProcessedPostLookupBatches,
+  buildProcessedPostSetBatches,
   canonicalizeQwenResponse,
   canonicalizeReport,
   chooseClassification,
@@ -16,6 +18,9 @@ import {
   materialSnapshot,
   mergeReportGroup,
   normalizeEnrichmentResponse,
+  normalizeProcessedPostCacheConfig,
+  normalizeProcessedPostCacheTtl,
+  processedPostCacheKey,
   parseEntityAliases,
   parseSourceRegistry,
   parseRapidApiPosts,
@@ -133,6 +138,68 @@ const discordCharacterCount = (embed) => (
   + embed.footer.text.length
   + embed.fields.reduce((total, field) => total + field.name.length + field.value.length, 0)
 );
+
+test('processed-post cache configuration defaults off and normalizes active settings', () => {
+  assert.deepEqual(normalizeProcessedPostCacheConfig(), {
+    mode: 'off', restUrl: '', restToken: '', postTtlSeconds: 86400,
+  });
+  assert.deepEqual(normalizeProcessedPostCacheConfig({
+    mode: ' ACTIVE ', restUrl: 'https://example.upstash.io/', restToken: ' read-write-token ', postTtlSeconds: '3600',
+  }), {
+    mode: 'active', restUrl: 'https://example.upstash.io', restToken: 'read-write-token', postTtlSeconds: 3600,
+  });
+});
+
+test('processed-post cache configuration fails closed to off for missing or invalid active settings', () => {
+  for (const config of [
+    { mode: 'active' },
+    { mode: 'active', restUrl: 'not a URL', restToken: 'token' },
+    { mode: 'active', restUrl: 'https://example.upstash.io', restToken: '' },
+    { mode: 'active', restUrl: 'https://example.upstash.io', restToken: 'token', postTtlSeconds: 0 },
+    { mode: 'active', restUrl: 'https://example.upstash.io', restToken: 'token', postTtlSeconds: '1.5' },
+  ]) assert.deepEqual(normalizeProcessedPostCacheConfig(config), {
+    mode: 'off', restUrl: '', restToken: '', postTtlSeconds: 86400,
+  });
+  assert.equal(normalizeProcessedPostCacheConfig({ mode: 'unknown' }).mode, 'off');
+});
+
+test('processed-post cache TTL accepts bounded positive integer seconds only', () => {
+  assert.equal(normalizeProcessedPostCacheTtl(1), 1);
+  assert.equal(normalizeProcessedPostCacheTtl('86400'), 86400);
+  for (const value of [null, '', '1.5', 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 31_536_001, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(normalizeProcessedPostCacheTtl(value), null, String(value));
+  }
+});
+
+test('processed-post cache keys validate decimal X IDs and preserve the namespace', () => {
+  assert.equal(processedPostCacheKey('900000000000000001'), 'ftm:v1:processed-post:x:900000000000000001');
+  assert.equal(processedPostCacheKey(42), 'ftm:v1:processed-post:x:42');
+  for (const value of ['', '  ', 'abc', '1/2', null, undefined]) {
+    assert.throws(() => processedPostCacheKey(value), /external post ID/i);
+  }
+});
+
+test('processed-post lookup batches deduplicate IDs and stay bounded', () => {
+  assert.deepEqual(buildProcessedPostLookupBatches(['1', '2', '1', '3'], 2), [
+    [['GET', 'ftm:v1:processed-post:x:1'], ['GET', 'ftm:v1:processed-post:x:2']],
+    [['GET', 'ftm:v1:processed-post:x:3']],
+  ]);
+  assert.deepEqual(buildProcessedPostLookupBatches([], 2), []);
+  assert.throws(() => buildProcessedPostLookupBatches(['1'], 0), /batch size/i);
+});
+
+test('processed-post SET batches deduplicate IDs and include terminal state and EX TTL', () => {
+  assert.deepEqual(buildProcessedPostSetBatches([
+    { externalPostId: '1', state: 'ignored' },
+    { externalPostId: '2', state: 'merged' },
+    { externalPostId: '1', state: 'ignored' },
+  ], 900, 2), [
+    [['SET', 'ftm:v1:processed-post:x:1', 'ignored', 'EX', '900'], ['SET', 'ftm:v1:processed-post:x:2', 'merged', 'EX', '900']],
+  ]);
+  assert.deepEqual(buildProcessedPostSetBatches([], 900), []);
+  assert.throws(() => buildProcessedPostSetBatches([{ externalPostId: '1', state: 'pending' }]), /terminal state/i);
+  assert.throws(() => buildProcessedPostSetBatches([{ externalPostId: '1', state: 'ignored' }], 0), /TTL/i);
+});
 
 test('source registry exposes valid explicit metadata for all 78 unique decimal IDs', async () => {
   const registry = await loadSourceRegistry(new URL('../../docs/journalist_list.md', import.meta.url));
