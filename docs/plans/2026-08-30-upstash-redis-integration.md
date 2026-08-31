@@ -327,8 +327,9 @@ Tests/checks and results:
   published version. n8n `/healthz` returned `ok`; both `n8n` and `n8n-runner`
   report `UPSTASH_REDIS_MODE=off`.
 - Git was clean before the deployment-record edit; `git diff --check` passed
-  after it. The task-related deployment record was committed and pushed to
-  `origin/main` normally without force-pushing.
+  after it. The deployment-record commit was created locally. The first
+  normal push was rejected because `origin/main` advanced by one unrelated
+  README-only commit; no force-push, merge, or rebase was performed.
 
 Remaining risks:
 
@@ -341,5 +342,10 @@ Remaining risks:
   Redis is unavailable or compromised.
 - The unrelated migration harness `\gset` failure remains for a separate
   follow-up.
+- Git completion is blocked pending explicit authorization to merge the
+  fetched remote README-only commit into this branch. The deployed n8n state
+  is unaffected by this Git-history blocker.
 
-Exact next step: Task complete; no further numbered step.
+Exact next step: After explicit merge authorization, merge `origin/main`, rerun
+the final Git/diff checks, and push `main` normally; then record the final merge
+commit and push result here.
