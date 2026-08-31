@@ -16,7 +16,7 @@ Status: complete and committed after parent review and verification.
 - `workflow/build-workflows.mjs`
 - `workflow/football-transfer-monitor.json` (regenerated)
 - `workflow/lib.mjs`
-- `.superpowers/sdd/transfer-probability-upgrade/task-8-report.md`
+- `docs/reports/transfer-probability-upgrade/task-8-report.md`
 
 The error and probability-backfill workflow JSON files are unchanged.
 
@@ -52,7 +52,7 @@ The error and probability-backfill workflow JSON files are unchanged.
 - The unrelated generated-enrichment `old_unresolved_` multi-row `\gset` failure at generated SQL line 524 is unchanged and was not edited.
 - Stored ratios retain PostgreSQL numeric precision; Discord deterministically displays at most two decimal places.
 - No dependency, deployment, production mutation, push, merge, rebase, commit, Stage 9 work, or `.omx` change was made.
-- This report is force-added despite `.superpowers/sdd/.gitignore` so the reviewed Stage 8 evidence remains in branch history.
+- This report is tracked with the reviewed Stage 8 evidence so it remains available in branch history.
 
 ## Fix Round 1: concurrent projection stale snapshot
 
@@ -67,7 +67,7 @@ Status: complete; scoped re-review passed.
 - `tests/migrations/fee-context-concurrency.sh`
 - `tests/migrations/run.sh`
 - `tests/unit/workflow-lib.test.mjs`
-- `.superpowers/sdd/transfer-probability-upgrade/task-8-report.md`
+- `docs/reports/transfer-probability-upgrade/task-8-report.md`
 
 ### RED evidence
 

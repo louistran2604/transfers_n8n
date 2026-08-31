@@ -390,7 +390,7 @@ Refresh this snapshot from the repository root with `tree`. It omits Git data, l
 
 ```bash
 tree -a -L 4 \
-  -I '.git|.codex|.opencode|.agents|graphify-out|node_modules|__pycache__|*.pyc|.env'
+  -I '.git|.codex|.opencode|.superpowers|.agents|graphify-out|node_modules|__pycache__|*.pyc|.env'
 ```
 
 ```text
