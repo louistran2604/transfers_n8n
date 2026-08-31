@@ -1,12 +1,16 @@
 import { createServer } from 'node:http';
 
+const redisValues = new Map();
 const state = {
   rapidRate: 0,
   rapidFail: 0,
   twscrapeCalls: 0,
+  qwenCalls: 0,
   sofascoreCalls: 0,
   discordRequests: 0,
   discordPayloads: [],
+  redisPipelineRequests: 0,
+  redisCommandCount: 0,
 };
 
 const validExtraction = {
@@ -25,6 +29,59 @@ const validExtraction = {
 function json(response, status, body, headers = {}) {
   response.writeHead(status, { 'content-type': 'application/json', ...headers });
   response.end(JSON.stringify(body));
+}
+
+function clearExpiredRedisValues() {
+  const now = Date.now();
+  for (const [key, entry] of redisValues) {
+    if (entry.expiresAt !== null && entry.expiresAt <= now) redisValues.delete(key);
+  }
+}
+
+function stateSnapshot() {
+  clearExpiredRedisValues();
+  return { ...state, redisValues: Object.fromEntries([...redisValues].map(([key, entry]) => [key, entry.value])) };
+}
+
+function resetState() {
+  Object.assign(state, {
+    rapidRate: 0,
+    rapidFail: 0,
+    twscrapeCalls: 0,
+    qwenCalls: 0,
+    sofascoreCalls: 0,
+    discordRequests: 0,
+    discordPayloads: [],
+    redisPipelineRequests: 0,
+    redisCommandCount: 0,
+  });
+  redisValues.clear();
+}
+
+async function requestBody(request) {
+  let body = '';
+  for await (const chunk of request) body += chunk;
+  return body;
+}
+
+function redisPipelineResult(command) {
+  if (!Array.isArray(command) || command.length < 2) return { error: 'ERR invalid command' };
+  const operation = String(command[0]).toUpperCase();
+  const key = String(command[1] ?? '');
+  clearExpiredRedisValues();
+  if (operation === 'GET' && command.length === 2) return { result: redisValues.get(key)?.value ?? null };
+  if (operation !== 'SET' || command.length < 3) return { error: 'ERR unsupported command' };
+  const value = String(command[2]);
+  let expiresAt = null;
+  for (let index = 3; index < command.length; index += 1) {
+    if (String(command[index]).toUpperCase() !== 'EX' || !/^\d+$/.test(String(command[index + 1] ?? ''))) return { error: 'ERR invalid expiry' };
+    const ttl = Number(command[index + 1]);
+    if (!Number.isSafeInteger(ttl) || ttl < 1) return { error: 'ERR invalid expiry' };
+    expiresAt = Date.now() + ttl * 1000;
+    index += 1;
+  }
+  redisValues.set(key, { value, expiresAt });
+  return { result: 'OK' };
 }
 
 function discordPayloadWithinLimits(payload) {
@@ -129,17 +186,10 @@ function enrichmentItem(item, mode) {
 createServer(async (request, response) => {
   const url = new URL(request.url, 'http://mock');
   if (url.pathname === '/health') return json(response, 200, { ok: true });
-  if (url.pathname === '/state') return json(response, 200, state);
+  if (url.pathname === '/state') return json(response, 200, stateSnapshot());
   if (url.pathname === '/state/reset') {
-    Object.assign(state, {
-      rapidRate: 0,
-      rapidFail: 0,
-      twscrapeCalls: 0,
-      sofascoreCalls: 0,
-      discordRequests: 0,
-      discordPayloads: [],
-    });
-    return json(response, 200, state);
+    resetState();
+    return json(response, 200, stateSnapshot());
   }
   if (url.pathname === '/rapid/rate') {
     state.rapidRate += 1;
@@ -183,7 +233,24 @@ createServer(async (request, response) => {
       }],
     });
   }
+  if (url.pathname === '/upstash/pipeline') {
+    state.redisPipelineRequests += 1;
+    const body = await requestBody(request);
+    const responseMode = url.searchParams.get('response');
+    if (responseMode === '500') return json(response, 500, { error: 'mock Redis unavailable' });
+    if (responseMode === 'malformed') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{not json');
+      return;
+    }
+    let commands = [];
+    try { commands = JSON.parse(body); } catch { return json(response, 400, { error: 'invalid pipeline JSON' }); }
+    if (!Array.isArray(commands)) return json(response, 400, { error: 'pipeline body must be an array' });
+    state.redisCommandCount += commands.length;
+    return json(response, 200, commands.map(redisPipelineResult));
+  }
   if (url.pathname.startsWith('/qwen/')) {
+    state.qwenCalls += 1;
     const mode = url.pathname.split('/').at(-1);
     const content = mode === 'malformed' ? '{not json' : mode === 'invalid'
       ? JSON.stringify({ ...validExtraction, unexpected: true })

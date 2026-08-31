@@ -270,6 +270,7 @@ const outagePrepared = await runRedisPrepare([post(outageId)], activeRedisEnv);
 const outage = await callRedisPipeline(outagePrepared[0].json.commands, '500');
 assert.equal(outage.response.status, 500);
 assert.deepEqual((await runRedisFilter([{ statusCode: outage.response.status, body: outage.body }], outagePrepared)).map((item) => item.json), [post(outageId)]);
+assert.equal((await json('/state')).body.redisValues[redisKey(outageId)], undefined);
 
 const malformedId = '900000000000000304';
 const malformedPrepared = await runRedisPrepare([post(malformedId)], activeRedisEnv);
@@ -285,6 +286,12 @@ assert.deepEqual(qwenFailureLookup.body, [{ result: null }]);
 const qwenFailure = await json('/qwen/invalid');
 assert.equal(validateQwenResponse(JSON.parse(qwenFailure.body.choices[0].message.content)).valid, false);
 assert.equal((await json('/state')).body.redisValues[redisKey(qwenFailureId)], undefined);
+
+const mergeFailureId = '900000000000000306';
+const mergeFailurePrepared = await runRedisSetPrepare('Prepare merged processed-post Redis write', [], activeRedisEnv);
+assert.equal(mergeFailurePrepared.length, 1);
+assert.equal(mergeFailurePrepared[0].json.redis_write, false);
+assert.equal((await json('/state')).body.redisValues[redisKey(mergeFailureId)], undefined);
 
 const beforeSample = (await json('/state')).body.redisPipelineRequests;
 const sampleNode = nodeByName('Load sample collected X posts');
