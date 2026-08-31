@@ -20,7 +20,3 @@ test-results/
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
-
-# Local agent runtimes; project-shared Codex prompts/skills stay tracked above.
-.opencode/
-.superpowers/
