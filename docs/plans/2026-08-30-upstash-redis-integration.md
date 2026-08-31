@@ -343,8 +343,11 @@ Tests/checks and results:
   tests, and `git diff --check` passed. The branch is clean and currently
   `ahead 18` of `origin/main`.
 - `git push origin main` completed normally, advancing `origin/main` from
-  `56b187b` to `1a2a4ed`. Final status is clean and synchronized (`main` and
-  `origin/main` both point to `1a2a4ed`).
+  `56b187b` to `1a2a4ed`, publishing the authorized merge and verification
+  history.
+- The final completion-record commit was pushed normally afterward; final
+  status is clean and synchronized (`main` and `origin/main` point to the
+  current completion-record commit).
 - Git was clean before the deployment-record edit; `git diff --check` passed
   after it. The deployment-record commit was created locally. The first
   normal push was rejected because `origin/main` advanced by one unrelated
