@@ -249,6 +249,9 @@ SELECT report.id::text AS transfer_report_id,
     WHERE revision.transfer_report_id = report.id
       AND revision.content_sha256 = input.payload->>'content_sha256') AS revision_id,
   input.payload->>'preferred_raw_post_id' AS preferred_raw_post_id,
+  COALESCE((SELECT jsonb_agg(DISTINCT source->>'external_post_id')
+    FILTER (WHERE source->>'external_post_id' ~ '^[0-9]+$')
+    FROM jsonb_array_elements(COALESCE(input.payload->'sources', '[]'::jsonb)) AS source), '[]'::jsonb) AS processed_post_external_ids,
   CASE input.payload->>'probability_mode'
     WHEN 'shadow' THEN apply_probability_v1_shadow(report.id, input.payload)::text
     WHEN 'active' THEN apply_probability_v1_active(report.id, input.payload)::text
@@ -1350,7 +1353,71 @@ return $input.all().flatMap((item) => Array.isArray(item.json?.posts)
   : []);`;
 }
 
-function qwenParseCode() {
+function processedPostCacheSetPrepareCode(state) {
+  const sourceValues = state === 'ignored'
+    ? 'const values = [row.external_post_id];'
+    : `let values = row.processed_post_external_ids;
+  if (typeof values === 'string') {
+    try { values = JSON.parse(values); } catch { values = []; }
+  }
+  if (!Array.isArray(values)) values = [];`;
+  return `
+const mode = String($env.UPSTASH_REDIS_MODE ?? 'off').trim().toLowerCase();
+const restUrl = String($env.UPSTASH_REDIS_REST_URL ?? '').trim().replace(/\\/+$/, '');
+const token = String($env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();
+const ttlText = String($env.UPSTASH_REDIS_POST_TTL_SECONDS ?? '86400').trim();
+const ttl = /^\\d+$/.test(ttlText) ? Number(ttlText) : NaN;
+let validUrl = false;
+try {
+  const parsed = new URL(restUrl);
+  validUrl = ['http:', 'https:'].includes(parsed.protocol)
+    && Boolean(parsed.hostname)
+    && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+} catch {}
+const active = mode === 'active' && validUrl && token
+  && Number.isSafeInteger(ttl) && ttl >= 1 && ttl <= 31536000;
+const ids = [];
+const seen = new Set();
+const add = (value) => {
+  const id = String(value ?? '').trim();
+  if (!/^\\d+$/.test(id) || seen.has(id)) return;
+  seen.add(id);
+  ids.push(id);
+};
+for (const item of $input.all()) {
+  const row = item.json ?? {};
+  ${sourceValues}
+  values.forEach(add);
+}
+if (!active || !ids.length) return [{ json: { redis_write: false, rest_url: restUrl, commands: [], ttl: ttlText } }];
+const output = [];
+for (let start = 0; start < ids.length; start += 100) {
+  output.push({ json: {
+    redis_write: true,
+    rest_url: restUrl,
+    commands: ids.slice(start, start + 100).map((id) => ['SET', 'ftm:v1:processed-post:x:' + id, ${JSON.stringify(state)}, 'EX', String(ttl)]),
+  } });
+}
+return output;`;
+}
+
+function processedPostCacheSetHttpParameters() {
+  return {
+    method: 'POST', url: '={{ $json.rest_url + "/pipeline" }}', sendHeaders: true,
+    headerParameters: { parameters: [
+      { name: 'Content-Type', value: 'application/json' },
+      { name: 'Authorization', value: '={{ "Bearer " + $env.UPSTASH_REDIS_REST_TOKEN }}' },
+    ] },
+    sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.commands) }}',
+  };
+}
+
+function processedPostCacheResumeCode() {
+  return `
+return $('Persist merged reports and revisions').all().map((item) => ({ json: item.json }));`;
+}
+
+function qwenParseCode({ includeExternalPostId = false } = {}) {
   return `
 ${entityAliasHelpers()}
 const requests = $('Build Qwen request').all();
@@ -1390,7 +1457,7 @@ return $input.all().flatMap((item, index) => {
   return parsed.reports.map((report, reportIndex) => ({ json: { valid: true, ignored: false, report: {
     ...report,
     raw_post_id: request.raw_post_id,
-    post_url: request.post_url,
+${includeExternalPostId ? '    external_post_id: request.external_post_id,\n' : ''}    post_url: request.post_url,
     posted_at: request.posted_at,
     source: request.source,
     report_ordinal: reportIndex + 1,
@@ -1420,7 +1487,7 @@ for (const reports of groups.values()) {
   const merged = { ...best };
   const conflicts = {};
   for (const field of Object.keys(best)) {
-    if (['raw_post_id', 'post_url', 'posted_at', 'source'].includes(field)) continue;
+    if (['raw_post_id', 'external_post_id', 'post_url', 'posted_at', 'source'].includes(field)) continue;
     const values = reports.map((report) => report[field]).filter((value) => value !== null && value !== undefined && value !== '');
     if (values.length && !evidenceFields.has(field)) merged[field] = values[0];
     const conflictValues = evidenceFields.has(field) ? reports.map((report) => report[field] ?? null) : values;
@@ -1444,8 +1511,11 @@ for (const reports of groups.values()) {
     evaluated_at: best.evaluated_at,
     probability_mode: ['shadow', 'active'].includes(best.probability_mode) ? best.probability_mode : 'off',
     preferred_raw_post_id: String(best.raw_post_id),
+    processed_post_external_ids: [...new Set(reports
+      .map((report) => String(report.external_post_id ?? '').trim())
+      .filter((externalPostId) => /^\\d+$/.test(externalPostId)))],
     sources: reports.map((report) => ({
-      raw_post_id: String(report.raw_post_id), posted_at: report.posted_at, post_url: report.post_url, source: report.source,
+      raw_post_id: String(report.raw_post_id), external_post_id: String(report.external_post_id ?? ''), posted_at: report.posted_at, post_url: report.post_url, source: report.source,
       report_ordinal: report.report_ordinal, extraction_schema_version: report.extraction_schema_version,
       ...report.normalized_evidence,
       normalized_evidence: report.normalized_evidence,
@@ -2179,13 +2249,20 @@ return $input.all().map((item) => ({ json: {
       method: 'POST', url: '={{ $env.QWEN_CHAT_COMPLETIONS_URL || "http://llama:8080/v1/chat/completions" }}', sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
-    codeNode('Validate Qwen response', [1420, -40], qwenParseCode()),
+    codeNode('Validate Qwen response', [1420, -40], qwenParseCode({ includeExternalPostId: true })),
     node('Qwen response valid', 'n8n-nodes-base.if', [1640, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Record Qwen validation failure', [1640, 160], qwenFailureSql()),
     node('Transfer related', 'n8n-nodes-base.if', [1860, -100], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !$json.ignored }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id;`),
+    postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id, external_post_id::text AS external_post_id;`),
+    codeNode('Prepare ignored processed-post Redis write', [2080, 80], processedPostCacheSetPrepareCode('ignored')),
+    node('Ignored processed-post Redis cache enabled?', 'n8n-nodes-base.if', [2300, 80], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.redis_write === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Store ignored processed-post markers via Upstash', [2520, 80], processedPostCacheSetHttpParameters(), { continueOnFail: true, requestOptions: { timeout: 5000 } }),
     codeNode('Merge extracted reports', [2080, -180], mergeCode()),
     postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql(), undefined, { typeVersion: 2.6 }),
+    codeNode('Prepare merged processed-post Redis write', [2520, -380], processedPostCacheSetPrepareCode('merged')),
+    node('Merged processed-post Redis cache enabled?', 'n8n-nodes-base.if', [2740, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.redis_write === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Store merged processed-post markers via Upstash', [2960, -380], processedPostCacheSetHttpParameters(), { continueOnFail: true, requestOptions: { timeout: 5000 } }),
+    codeNode('Resume merged processing after Redis', [3180, -380], processedPostCacheResumeCode()),
     codeNode('Prepare preferred source reset', [2520, -180], `
 return $input.all().map((item) => {
   const reportId = String(item.json.transfer_report_id ?? '');
@@ -2290,8 +2367,15 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Validate Qwen response': { main: [[{ node: 'Qwen response valid', type: 'main', index: 0 }]] },
     'Qwen response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record Qwen validation failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
+    'Mark non-transfer ignored': { main: [[{ node: 'Prepare ignored processed-post Redis write', type: 'main', index: 0 }]] },
+    'Prepare ignored processed-post Redis write': { main: [[{ node: 'Ignored processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
+    'Ignored processed-post Redis cache enabled?': { main: [[{ node: 'Store ignored processed-post markers via Upstash', type: 'main', index: 0 }]] },
     'Merge extracted reports': { main: [[{ node: 'Persist merged reports and revisions', type: 'main', index: 0 }]] },
-    'Persist merged reports and revisions': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }]] },
+    'Persist merged reports and revisions': { main: [[{ node: 'Prepare merged processed-post Redis write', type: 'main', index: 0 }]] },
+    'Prepare merged processed-post Redis write': { main: [[{ node: 'Merged processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
+    'Merged processed-post Redis cache enabled?': { main: [[{ node: 'Store merged processed-post markers via Upstash', type: 'main', index: 0 }], [{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
+    'Store merged processed-post markers via Upstash': { main: [[{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
+    'Resume merged processing after Redis': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }]] },
     'Prepare preferred source reset': { main: [[{ node: 'Clear preferred report source', type: 'main', index: 0 }]] },
     'Clear preferred report source': { main: [[{ node: 'Set preferred report source', type: 'main', index: 0 }]] },
     'Set preferred report source': { main: [[{ node: 'Prepare enrichment batch query', type: 'main', index: 0 }]] },

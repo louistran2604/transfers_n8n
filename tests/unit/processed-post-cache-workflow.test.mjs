@@ -164,6 +164,10 @@ test('processed-post terminal writes are off by default, deduplicated, terminal-
     ['SET', 'ftm:v1:processed-post:x:3', 'merged', 'EX', '3600'],
   ]);
 
+  const bounded = await runSetPrepare('Prepare ignored processed-post Redis write', Array.from({ length: 205 }, (_, index) => ({ external_post_id: String(index + 1) })), activeEnv);
+  assert.deepEqual(bounded.map((item) => item.json.commands.length), [100, 100, 5]);
+  assert.ok(bounded.every((item) => item.json.commands.length <= 100));
+
   const off = await runSetPrepare('Prepare merged processed-post Redis write', [{ processed_post_external_ids: ['1'] }], { UPSTASH_REDIS_MODE: 'off' });
   assert.equal(off.length, 1);
   assert.equal(off[0].json.redis_write, false);

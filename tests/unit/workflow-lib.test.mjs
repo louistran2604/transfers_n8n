@@ -2488,8 +2488,11 @@ test('generated workflow carries fail-closed shadow and active probability evide
   const [activeRequest] = await runRequest(input, { PROBABILITY_MODE: 'active' }, lookup);
   const activeParsed = await runParser({ all: () => [response] }, () => ({ all: () => [activeRequest] }));
   const [activeMerged] = await runMerge({ all: () => activeParsed });
-  assert.equal(JSON.parse(activeMerged.json.params[0]).probability_mode, 'active');
-  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
+  const activePayload = JSON.parse(activeMerged.json.params[0]);
+  assert.equal(activePayload.probability_mode, 'active');
+  assert.deepEqual(activePayload.processed_post_external_ids, ['42']);
+  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare merged processed-post Redis write');
+  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Prepare preferred source reset');
   assert.equal(persistNode.typeVersion, 2.6);
   assert.match(persistNode.parameters.query, /probability_mode.*shadow/is);
   assert.match(persistNode.parameters.query, /apply_probability_v1_shadow/);
@@ -2674,7 +2677,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
-  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare preferred source reset');
+  assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare merged processed-post Redis write');
+  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Prepare preferred source reset');
   assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare enrichment batch query');
   assert.equal(workflow.connections['Prepare enrichment batch query'].main[0][0].node, 'Enrichment enabled?');
   assert.equal(workflow.connections['Enrichment enabled?'].main[1][0].node, 'Prepare digest candidates query');
