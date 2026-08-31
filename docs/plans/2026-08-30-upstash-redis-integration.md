@@ -285,4 +285,61 @@ invoke `$deploy-and-push` to regenerate, validate, import, publish, verify,
 inspect, stage task files, commit, and push normally without enabling Redis in
 production unless valid credentials already exist.
 
-### Step 7 — Deployment and Git completion — pending
+### Step 7 — Deployment and Git completion — completed
+
+Files changed:
+
+- `docs/plans/2026-08-30-upstash-redis-integration.md` (deployment record)
+
+Important decisions:
+
+- Reread the complete plan, `AGENTS.md`, deploy skill, changed implementation
+  files, and clean Git state before deployment. Used ECC only; no Superpowers
+  workflow was substituted. The requested `$deploy-and-push` procedure was run
+  only at this final step.
+- Regenerated and validated the stable `football-transfer-monitor` workflow,
+  imported it into the existing n8n instance, published the current version,
+  and restarted/recreated only `n8n` and `n8n-runner` so the new environment
+  defaults are loaded. Named volumes were preserved. The workflow remains
+  active as it was before deployment; Redis is still off.
+- No real Upstash connectivity check was attempted because no local Upstash
+  credentials are configured. No production credential or temporary database
+  was created. The ignored local `.env` may contain an obsolete unused
+  `RAPIDAPI_KEY` entry, but the Compose configuration and generated workflow do
+  not consume RapidAPI.
+
+Tests/checks and results:
+
+- Final pre-deploy generation/check, JavaScript syntax checks, 102 Node unit
+  tests, and all Compose configuration checks passed.
+- Final `tests/e2e/run.sh` passed, including disposable migrations, workflow
+  imports, mock services, and Redis scenarios.
+- Final migration run reached all existing suites but exited on the known
+  unrelated generated-enrichment SQL `\gset` cardinality error at
+  `/tmp/generated-enrichment-persistence.sql:524`; no migration or generated
+  persistence query changed.
+- Final secret scan found no generated credential literal. Final runtime and
+  documentation scan found no RapidAPI reference outside intentional regression
+  assertions, historical plan text, and the stale graphify snapshot.
+- Deployment import reported `Successfully imported 1 workflow.` and publish
+  reported the current version published. Post-deploy export verified workflow
+  ID `football-transfer-monitor`, active state `true`, 65 nodes, and the
+  published version. n8n `/healthz` returned `ok`; both `n8n` and `n8n-runner`
+  report `UPSTASH_REDIS_MODE=off`.
+- Git was clean before the deployment-record edit; `git diff --check` passed
+  after it. The task-related deployment record was committed and pushed to
+  `origin/main` normally without force-pushing.
+
+Remaining risks:
+
+- Redis remains intentionally inactive until valid production values are added
+  to the ignored deployment environment: `UPSTASH_REDIS_MODE=active`, an HTTPS
+  REST URL, a token, and an approved TTL. Recreate `n8n` and `n8n-runner` after
+  that controlled activation; no activation was performed here.
+- The mock E2E suite exercises generated Code-node contracts and HTTP behavior,
+  not a full live-trigger Redis subgraph. PostgreSQL remains authoritative if
+  Redis is unavailable or compromised.
+- The unrelated migration harness `\gset` failure remains for a separate
+  follow-up.
+
+Exact next step: Task complete; no further numbered step.
