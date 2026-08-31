@@ -9,6 +9,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app
+from twscrape.xclid import get_scripts_list
 
 
 def source(source_id="source-1", x_user_id="330262748"):
@@ -56,6 +57,13 @@ class FakeAccountPool:
 
 
 class TwscrapeServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_xclid_parser_accepts_current_sixteen_hex_chunk_hashes(self):
+        html = '<script>({346:"da4b24827ee0cd88"})</script>'
+        self.assertEqual(
+            get_scripts_list(html),
+            ["https://abs.twimg.com/responsive-web/client-web/346.da4b24827ee0cd88a.js"],
+        )
+
     def test_normalization_preserves_string_ids_handles_quotes_and_drops_retweets(self):
         direct = app.normalize_tweet(source(), FakeTweet("900000000000000001", "Direct transfer report"))
         self.assertIsNotNone(direct)

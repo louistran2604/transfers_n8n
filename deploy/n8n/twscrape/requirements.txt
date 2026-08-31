@@ -603,9 +603,9 @@ soupsieve==2.9.1 \
     --hash=sha256:4f4477399246b7a0c720a88ca2454b11cd6bb9ae4c9d170140786e916776c14c \
     --hash=sha256:c33e6605bbc71dd628b00c632d58ae607c22bade247e52553928f83bbb75b4ba
     # via beautifulsoup4
-twscrape==0.19.2 \
-    --hash=sha256:7f4d03c4531b0fe9ef6dea6a609626e6ff2056e58dffe0eb250c2fa3ca6b1533 \
-    --hash=sha256:98e8ad96c183cb3d0a20e58f4880e13c3b294f218606a167f457174162fae819
+twscrape==0.20.1 \
+    --hash=sha256:09b3b768e701fb71a6f785dba9744f60c96d03308c76abfa66cbf2cdb360eb63 \
+    --hash=sha256:bfad943020361fc882b09ac49685e11d65b88743723de419b3d7873fe09d56e3
     # via -r deploy/n8n/twscrape/requirements.in
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
