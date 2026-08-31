@@ -171,7 +171,36 @@ Remaining risks:
 
 Exact next step: Step 5 — extend the existing offline mock E2E harness with Upstash `/pipeline` GET/SET behavior and verify off, active hit/miss, outage, malformed response, Qwen/merge failure, and manual-sample bypass scenarios without contacting real Upstash.
 
-### Step 5 — Mock Redis and E2E failure testing — pending
+### Step 5 — Mock Redis and E2E failure testing — completed
+
+Files changed:
+
+- `tests/e2e/mock/server.mjs`
+- `tests/e2e/scenario.mjs`
+
+Important decisions:
+
+- Extended the existing offline mock server with an Upstash-compatible `POST /upstash/pipeline` endpoint. It supports ordered `GET`/`SET ... EX` commands, bounded in-memory TTL state, request/command counters, HTTP 500 injection, and malformed JSON responses; no real Upstash endpoint or credential is contacted.
+- The scenario executes the generated Redis preparation/filter/terminal-write Code nodes against that mock. It verifies mode-off zero-request pass-through, active empty-cache miss and successful terminal `merged` write, existing-marker hit filtering with no additional Qwen request, HTTP 500 and malformed-response fail-open, Qwen-invalid no-write, merge-no-output no-write, and manual sample bypass with no Redis request.
+- The mock tracks Qwen calls so a cache hit proves the downstream Qwen request count does not increase. The existing isolated harness does not execute a full n8n trigger, so PostgreSQL/merge failure is covered at the generated terminal-preparation boundary (no durable input means no Redis write) plus the Step 4 topology tests; this avoids inventing a fake PostgreSQL implementation.
+- Followed ECC `e2e-testing` guidance for deterministic mock-driven checks and retained the default offline Compose path. No Sofascore caching or RapidAPI behavior was added.
+
+Tests/checks and results:
+
+- Test-only RED checkpoint `2e82b9f test: add Upstash mock E2E scenarios` → expected failure before the mock fields/endpoint existed.
+- `node --check tests/e2e/mock/server.mjs && node --check tests/e2e/scenario.mjs` → passed.
+- Local mock scenario against the updated server → passed (`Mock E2E scenarios passed.`).
+- `tests/e2e/run.sh` → passed: disposable PostgreSQL migration/SQL checks, all three workflow imports, mock twscrape/Qwen/Discord/Sofascore checks, and the expanded Redis scenario.
+- `git diff --check` → passed.
+- GREEN implementation checkpoint `5c61327 feat: emulate Upstash in mock E2E harness`.
+
+Remaining risks:
+
+- The E2E harness validates generated Code-node behavior and HTTP interactions but does not run a complete live-trigger execution through n8n; full PostgreSQL/merge failure injection remains impractical without changing the harness architecture.
+- Active Upstash connectivity and production credentials remain intentionally unverified; Redis remains safe with the default `UPSTASH_REDIS_MODE=off`.
+- Legacy RapidAPI helper/library, tests, Compose environment, and documentation references remain outside the generated main workflow and must be reconciled in Step 6 per the user's collector-retirement requirement.
+
+Exact next step: Step 6 — update user/deployment/test documentation, reconcile retired RapidAPI references without changing twscrape behavior, add the Redis token to secret scanning, run ECC code review and security review, and execute the complete repository verification suite.
 
 ### Step 6 — Documentation, review, security, full verification — pending
 
