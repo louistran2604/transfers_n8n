@@ -133,7 +133,43 @@ Remaining risks:
 
 Exact next step: Step 4 — add terminal-only, deduplicated, batched, non-fatal Redis SET pipelines after successful PostgreSQL ignored/merge transitions, with RED → GREEN tests and no writes on Qwen or PostgreSQL failure paths.
 
-### Step 4 — Populate Redis only after durable terminal success — pending
+### Step 4 — Populate Redis only after durable terminal success — completed
+
+Files changed:
+
+- `workflow/build-workflows.mjs`
+- `workflow/football-transfer-monitor.json` (regenerated)
+- `tests/unit/processed-post-cache-workflow.test.mjs`
+- `tests/unit/workflow-lib.test.mjs`
+
+Important decisions:
+
+- The non-transfer PostgreSQL transition now returns the durable row's `external_post_id`; only its successful output reaches the ignored-marker preparation node.
+- Qwen transfer reports carry their source `external_post_id`. The merge payload and successful merge SQL output carry deduplicated `processed_post_external_ids`, so a post producing several reports can produce one cache entry.
+- Both terminal paths use environment-gated, terminal-state-specific SET preparation (`ignored` or `merged`), exact `ftm:v1:processed-post:x:<id>` keys, `EX <TTL>`, and batches of at most 100 commands.
+- The merged branch sends Redis writes through a `continueOnFail` HTTP Request node and resumes from the original durable merge output before preferred-source reset. Redis errors therefore cannot block preferred-source handling, enrichment, probability processing, digest reservation, or Discord. The ignored branch remains terminal after its optional write.
+- Qwen validation failures and PostgreSQL/merge failures have no path to a Redis write node. No PostgreSQL retry or deduplication semantics were changed.
+- The Qwen parser is parameterized so the external-ID propagation is limited to the live main workflow; the probability backfill generated JSON remains unchanged.
+
+Tests/checks and results:
+
+- RED checkpoint `a2dc207 test: lock terminal Redis population topology` → expected failures for missing terminal write nodes and resume path.
+- `node tests/unit/processed-post-cache-workflow.test.mjs` → passed (9 tests, 0 failures), including off mode, deduplication, 100-command batching, terminal states, and merge resume behavior.
+- `node tests/unit/workflow-lib.test.mjs` → passed (90 tests, 0 failures), including generated Qwen-to-merge external-ID propagation.
+- `node --test tests/unit/*.test.mjs` → passed (3 files, 0 failures).
+- `node workflow/build-workflows.mjs` → passed (`Generated 78 sources and 3 workflow files.`).
+- `node workflow/build-workflows.mjs --check` → passed (`Checked 78 sources and 3 workflow files.`).
+- `node --check workflow/build-workflows.mjs && node --check workflow/lib.mjs` → passed.
+- `git diff --check` → passed.
+- GREEN checkpoint `637afda feat: populate terminal processed-post Redis markers`.
+
+Remaining risks:
+
+- The isolated mock server does not yet emulate Upstash REST or assert request counts; active/off, hit, outage, malformed-response, and terminal-write E2E cases remain Step 5.
+- Active credentials and real Upstash connectivity remain intentionally unverified; default `UPSTASH_REDIS_MODE=off` is still safe.
+- Legacy RapidAPI helper/library/test and documentation references remain outside the generated main workflow and must be removed or reconciled during Step 6 after the user's collector retirement requirement.
+
+Exact next step: Step 5 — extend the existing offline mock E2E harness with Upstash `/pipeline` GET/SET behavior and verify off, active hit/miss, outage, malformed response, Qwen/merge failure, and manual-sample bypass scenarios without contacting real Upstash.
 
 ### Step 5 — Mock Redis and E2E failure testing — pending
 
