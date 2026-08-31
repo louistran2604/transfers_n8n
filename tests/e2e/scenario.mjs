@@ -196,6 +196,108 @@ assert.equal(twscrapeOutput[0].json.params[0], '330262748');
 assert.match(twscrapeOutput[0].json.params[3], /Mock quoted transfer report/);
 assert.equal((await json('/state')).body.twscrapeCalls, 1);
 
+await json('/state/reset');
+const nodeByName = (name) => {
+  const found = workflow.nodes.find((node) => node.name === name);
+  assert.ok(found, `missing generated node: ${name}`);
+  return found;
+};
+const target = (name, output = 0) => workflow.connections[name]?.main?.[output]?.[0]?.node;
+const post = (externalPostId, content = `post ${externalPostId}`) => ({
+  params: ['900000000000000001', externalPostId, `https://x.com/source/status/${externalPostId}`, content, '2026-08-30T00:00:00.000Z', '{}', 'source', 'Source', 1, 0.9, false],
+});
+const runRedisPrepare = (items, env) => new AsyncFunction('$input', '$env', nodeByName('Prepare processed-post Redis lookup').parameters.jsCode)(
+  { all: () => items.map((json) => ({ json })) }, env,
+);
+const runRedisFilter = (items, prepared) => new AsyncFunction('$input', '$', nodeByName('Filter processed-post Redis hits').parameters.jsCode)(
+  { all: () => items.map((json) => ({ json })) },
+  () => ({ all: () => prepared }),
+);
+const runRedisSetPrepare = (name, items, env) => new AsyncFunction('$input', '$env', nodeByName(name).parameters.jsCode)(
+  { all: () => items.map((json) => ({ json })) }, env,
+);
+const callRedisPipeline = (commands, response = '') => json(`/upstash/pipeline${response ? `?response=${response}` : ''}`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' },
+  body: JSON.stringify(commands),
+});
+const activeRedisEnv = {
+  UPSTASH_REDIS_MODE: 'active',
+  UPSTASH_REDIS_REST_URL: `${base}/upstash`,
+  UPSTASH_REDIS_REST_TOKEN: 'test-token',
+  UPSTASH_REDIS_POST_TTL_SECONDS: '3600',
+};
+const redisKey = (id) => `ftm:v1:processed-post:x:${id}`;
+
+const offPosts = [post('900000000000000301')];
+const offPrepared = await runRedisPrepare(offPosts, { UPSTASH_REDIS_MODE: 'off' });
+assert.equal(offPrepared.length, offPosts.length);
+assert.ok(offPrepared.every((item) => item.json.redis_lookup === false));
+assert.equal((await json('/state')).body.redisPipelineRequests, 0);
+
+const missId = '900000000000000302';
+const missPosts = [post(missId)];
+const missPrepared = await runRedisPrepare(missPosts, activeRedisEnv);
+assert.equal(missPrepared.length, 1);
+const emptyLookup = await callRedisPipeline(missPrepared[0].json.commands);
+assert.equal(emptyLookup.response.status, 200);
+assert.deepEqual(emptyLookup.body, [{ result: null }]);
+const missOutput = await runRedisFilter([{ statusCode: emptyLookup.response.status, body: emptyLookup.body }], missPrepared);
+assert.deepEqual(missOutput.map((item) => item.json), missPosts);
+const qwenBeforeMiss = (await json('/state')).body.qwenCalls;
+const qwenSuccess = await json('/qwen/valid');
+assert.equal(qwenSuccess.response.status, 200);
+assert.equal((await json('/state')).body.qwenCalls, qwenBeforeMiss + 1);
+assert.equal(validateQwenResponse(JSON.parse(qwenSuccess.body.choices[0].message.content)).valid, true);
+
+const terminalPrepared = await runRedisSetPrepare('Prepare merged processed-post Redis write', [{ processed_post_external_ids: [missId] }], activeRedisEnv);
+assert.equal(terminalPrepared.length, 1);
+const terminalWrite = await callRedisPipeline(terminalPrepared[0].json.commands);
+assert.equal(terminalWrite.response.status, 200);
+assert.deepEqual(terminalWrite.body, [{ result: 'OK' }]);
+assert.equal((await json('/state')).body.redisValues[redisKey(missId)], 'merged');
+
+const hitPrepared = await runRedisPrepare(missPosts, activeRedisEnv);
+const qwenBeforeHit = (await json('/state')).body.qwenCalls;
+const hitLookup = await callRedisPipeline(hitPrepared[0].json.commands);
+assert.equal(hitLookup.response.status, 200);
+const hitOutput = await runRedisFilter([{ statusCode: hitLookup.response.status, body: hitLookup.body }], hitPrepared);
+assert.deepEqual(hitOutput, []);
+assert.equal((await json('/state')).body.qwenCalls, qwenBeforeHit);
+
+const outageId = '900000000000000303';
+const outagePrepared = await runRedisPrepare([post(outageId)], activeRedisEnv);
+const outage = await callRedisPipeline(outagePrepared[0].json.commands, '500');
+assert.equal(outage.response.status, 500);
+assert.deepEqual((await runRedisFilter([{ statusCode: outage.response.status, body: outage.body }], outagePrepared)).map((item) => item.json), [post(outageId)]);
+
+const malformedId = '900000000000000304';
+const malformedPrepared = await runRedisPrepare([post(malformedId)], activeRedisEnv);
+const malformedRedis = await callRedisPipeline(malformedPrepared[0].json.commands, 'malformed');
+assert.equal(malformedRedis.response.status, 200);
+assert.equal(malformedRedis.body, null);
+assert.deepEqual((await runRedisFilter([{ statusCode: malformedRedis.response.status, body: malformedRedis.body }], malformedPrepared)).map((item) => item.json), [post(malformedId)]);
+
+const qwenFailureId = '900000000000000305';
+const qwenFailurePrepared = await runRedisPrepare([post(qwenFailureId)], activeRedisEnv);
+const qwenFailureLookup = await callRedisPipeline(qwenFailurePrepared[0].json.commands);
+assert.deepEqual(qwenFailureLookup.body, [{ result: null }]);
+const qwenFailure = await json('/qwen/invalid');
+assert.equal(validateQwenResponse(JSON.parse(qwenFailure.body.choices[0].message.content)).valid, false);
+assert.equal((await json('/state')).body.redisValues[redisKey(qwenFailureId)], undefined);
+
+const beforeSample = (await json('/state')).body.redisPipelineRequests;
+const sampleNode = nodeByName('Load sample collected X posts');
+const runSample = new AsyncFunction('$json', sampleNode.parameters.jsCode);
+const sampleOutput = await runSample({
+  external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton',
+  account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.7,
+  seed_reliability: 0.7, publisher_group_key: 'reporter:adam-crafton', source_kind: 'journalist', is_aggregator: false,
+});
+assert.equal(sampleOutput.length, 2);
+assert.equal(target('Load sample collected X posts'), 'Persist raw posts');
+assert.equal((await json('/state')).body.redisPipelineRequests, beforeSample);
+
 for (const mode of ['malformed', 'invalid']) {
   const result = await json(`/qwen/${mode}`);
   const content = result.body.choices[0].message.content;
