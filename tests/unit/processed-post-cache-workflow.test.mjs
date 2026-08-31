@@ -18,6 +18,11 @@ const runFilter = (items, prepared) => new AsyncFunction('$input', '$', nodeByNa
   { all: () => items.map((json) => ({ json })) },
   () => ({ all: () => prepared }),
 );
+const runSetPrepare = (name, items, env = {}) => new AsyncFunction('$input', '$env', nodeByName(name).parameters.jsCode)({ all: () => items.map((json) => ({ json })) }, env);
+const runResume = (durableRows) => new AsyncFunction('$input', '$', nodeByName('Resume merged processing after Redis').parameters.jsCode)(
+  { all: () => [{ json: { redis_write: true } }] },
+  () => ({ all: () => durableRows.map((json) => ({ json })) }),
+);
 
 test('generated twscrape topology checks processed-post Redis before PostgreSQL and keeps samples on a bypass path', () => {
   nodeByName('Prepare processed-post Redis lookup');
@@ -40,6 +45,33 @@ test('generated twscrape topology checks processed-post Redis before PostgreSQL 
   assert.equal(target('Persist raw posts'), 'Build Qwen request');
 });
 
+test('terminal PostgreSQL transitions populate Redis only after success and merged processing always resumes', () => {
+  for (const name of [
+    'Prepare ignored processed-post Redis write',
+    'Ignored processed-post Redis cache enabled?',
+    'Store ignored processed-post markers via Upstash',
+    'Prepare merged processed-post Redis write',
+    'Merged processed-post Redis cache enabled?',
+    'Store merged processed-post markers via Upstash',
+    'Resume merged processing after Redis',
+  ]) nodeByName(name);
+  assert.equal(target('Mark non-transfer ignored'), 'Prepare ignored processed-post Redis write');
+  assert.equal(target('Prepare ignored processed-post Redis write'), 'Ignored processed-post Redis cache enabled?');
+  assert.equal(target('Ignored processed-post Redis cache enabled?', 0), 'Store ignored processed-post markers via Upstash');
+  assert.equal(target('Prepare merged processed-post Redis write'), 'Merged processed-post Redis cache enabled?');
+  assert.equal(target('Merged processed-post Redis cache enabled?', 0), 'Store merged processed-post markers via Upstash');
+  assert.equal(target('Merged processed-post Redis cache enabled?', 1), 'Resume merged processing after Redis');
+  assert.equal(target('Store merged processed-post markers via Upstash'), 'Resume merged processing after Redis');
+  assert.equal(target('Resume merged processing after Redis'), 'Prepare preferred source reset');
+  assert.equal(target('Persist merged reports and revisions'), 'Prepare merged processed-post Redis write');
+  assert.equal(workflow.connections['Record Qwen validation failure'], undefined);
+  assert.equal(nodeByName('Mark non-transfer ignored').continueOnFail, undefined);
+  assert.equal(nodeByName('Persist merged reports and revisions').continueOnFail, undefined);
+  assert.match(nodeByName('Persist merged reports and revisions').parameters.query, /processed_post_external_ids/);
+  assert.match(nodeByName('Validate Qwen response').parameters.jsCode, /external_post_id: request\.external_post_id/);
+  assert.match(nodeByName('Merge extracted reports').parameters.jsCode, /processed_post_external_ids/);
+});
+
 test('generated Upstash lookup uses a bounded REST pipeline and keeps credentials in environment expressions', () => {
   const lookup = nodeByName('Lookup processed-posts via Upstash');
   assert.match(nodeByName('Prepare processed-post Redis lookup').parameters.jsCode, /UPSTASH_REDIS_REST_URL/);
@@ -54,6 +86,22 @@ test('generated Upstash lookup uses a bounded REST pipeline and keeps credential
   assert.equal(lookup.parameters.options.response.response.neverError, true);
   assert.ok(Number.isInteger(lookup.parameters.options.timeout) || Number.isInteger(lookup.parameters.options?.timeout));
   assert.doesNotMatch(JSON.stringify(lookup), /read-write-token|example\.upstash/);
+});
+
+test('generated Upstash terminal writes use bounded SET pipelines and environment-only credentials', () => {
+  for (const name of ['Store ignored processed-post markers via Upstash', 'Store merged processed-post markers via Upstash']) {
+    const store = nodeByName(name);
+    assert.equal(store.type, 'n8n-nodes-base.httpRequest');
+    assert.equal(store.parameters.method, 'POST');
+    assert.match(store.parameters.url, /\$json\.rest_url/);
+    assert.match(store.parameters.url, /pipeline/);
+    assert.match(store.parameters.jsonBody, /\$json\.commands/);
+    assert.match(JSON.stringify(store.parameters.headerParameters), /UPSTASH_REDIS_REST_TOKEN/);
+    assert.equal(store.continueOnFail, true);
+    assert.equal(store.parameters.options.response.response.fullResponse, true);
+    assert.equal(store.parameters.options.response.response.neverError, true);
+    assert.doesNotMatch(JSON.stringify(store), /read-write-token|example\.upstash/);
+  }
 });
 
 test('processed-post lookup preparation passes through when off and batches unique IDs when active', async () => {
@@ -84,6 +132,47 @@ test('processed-post lookup preparation passes through when off and batches uniq
   });
   assert.equal(invalid.length, posts.length);
   assert.ok(invalid.every((item) => item.json.redis_lookup === false));
+});
+
+test('processed-post terminal writes are off by default, deduplicated, terminal-only, and bounded', async () => {
+  const activeEnv = {
+    UPSTASH_REDIS_MODE: 'active',
+    UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
+    UPSTASH_REDIS_REST_TOKEN: 'test-token',
+    UPSTASH_REDIS_POST_TTL_SECONDS: '3600',
+  };
+  const ignored = await runSetPrepare('Prepare ignored processed-post Redis write', [
+    { external_post_id: '1' }, { external_post_id: '2' }, { external_post_id: '1' }, { external_post_id: 'not-an-id' },
+  ], activeEnv);
+  assert.equal(ignored.length, 1);
+  assert.equal(ignored[0].json.redis_write, true);
+  assert.deepEqual(ignored[0].json.commands, [
+    ['SET', 'ftm:v1:processed-post:x:1', 'ignored', 'EX', '3600'],
+    ['SET', 'ftm:v1:processed-post:x:2', 'ignored', 'EX', '3600'],
+  ]);
+
+  const merged = await runSetPrepare('Prepare merged processed-post Redis write', [
+    { processed_post_external_ids: ['1', '2'] },
+    { processed_post_external_ids: '["2", "3"]' },
+    { processed_post_external_ids: ['not-an-id'] },
+  ], activeEnv);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].json.redis_write, true);
+  assert.deepEqual(merged[0].json.commands, [
+    ['SET', 'ftm:v1:processed-post:x:1', 'merged', 'EX', '3600'],
+    ['SET', 'ftm:v1:processed-post:x:2', 'merged', 'EX', '3600'],
+    ['SET', 'ftm:v1:processed-post:x:3', 'merged', 'EX', '3600'],
+  ]);
+
+  const off = await runSetPrepare('Prepare merged processed-post Redis write', [{ processed_post_external_ids: ['1'] }], { UPSTASH_REDIS_MODE: 'off' });
+  assert.equal(off.length, 1);
+  assert.equal(off[0].json.redis_write, false);
+  assert.deepEqual(off[0].json.commands, []);
+});
+
+test('merged Redis write result is ignored so durable merge output resumes preferred-source processing', async () => {
+  const durableRows = [{ transfer_report_id: '41', preferred_raw_post_id: '51', processed_post_external_ids: ['61'] }];
+  assert.deepEqual(await runResume(durableRows), durableRows.map((json) => ({ json })));
 });
 
 test('processed-post Redis hits are filtered while misses and every ambiguous response fail open', async () => {
