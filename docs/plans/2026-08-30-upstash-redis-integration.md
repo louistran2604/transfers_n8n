@@ -285,7 +285,7 @@ invoke `$deploy-and-push` to regenerate, validate, import, publish, verify,
 inspect, stage task files, commit, and push normally without enabling Redis in
 production unless valid credentials already exist.
 
-### Step 7 — Deployment and Git completion — merge complete; push pending
+### Step 7 — Deployment and Git completion — completed
 
 Files changed:
 
@@ -342,6 +342,9 @@ Tests/checks and results:
   the task's Redis documentation. Post-merge generation/check, all 102 unit
   tests, and `git diff --check` passed. The branch is clean and currently
   `ahead 18` of `origin/main`.
+- `git push origin main` completed normally, advancing `origin/main` from
+  `56b187b` to `1a2a4ed`. Final status is clean and synchronized (`main` and
+  `origin/main` both point to `1a2a4ed`).
 - Git was clean before the deployment-record edit; `git diff --check` passed
   after it. The deployment-record commit was created locally. The first
   normal push was rejected because `origin/main` advanced by one unrelated
@@ -361,8 +364,7 @@ Remaining risks:
 - The workflow does not persist a separate cache hit-rate counter; use n8n
   execution item counts and the Upstash console for cache observability, with
   PostgreSQL queries as the durable processing check.
-- The normal push has not yet been run after the authorized merge. The deployed
-  n8n state is unaffected by this Git-history operation.
+- No further Git or deployment action is pending. The deployed n8n state is
+  unaffected by the merge/push and remains Redis-off by default.
 
-Exact next step: Push `main` normally, verify the remote is synchronized, then
-record the final push result and completion status here.
+Exact next step: None — Step 7 and the Upstash Redis integration are complete.
