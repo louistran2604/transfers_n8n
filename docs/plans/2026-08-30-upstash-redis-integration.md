@@ -285,7 +285,7 @@ invoke `$deploy-and-push` to regenerate, validate, import, publish, verify,
 inspect, stage task files, commit, and push normally without enabling Redis in
 production unless valid credentials already exist.
 
-### Step 7 — Deployment and Git completion — deployment complete; Git completion pending
+### Step 7 — Deployment and Git completion — merge complete; push pending
 
 Files changed:
 
@@ -337,10 +337,15 @@ Tests/checks and results:
   `node --test tests/unit/*.test.mjs` (102 tests, 0 failures). A live
   non-mutating container check confirmed both runtime containers report
   `mode=off ttl=86400`.
+- After explicit user authorization, `git merge origin/main --no-edit` completed
+  cleanly as merge commit `5f4227d`; it preserved the remote GMT+7 wording and
+  the task's Redis documentation. Post-merge generation/check, all 102 unit
+  tests, and `git diff --check` passed. The branch is clean and currently
+  `ahead 18` of `origin/main`.
 - Git was clean before the deployment-record edit; `git diff --check` passed
   after it. The deployment-record commit was created locally. The first
   normal push was rejected because `origin/main` advanced by one unrelated
-  README-only commit; no force-push, merge, or rebase was performed.
+  README-only commit. No force-push or rebase was performed.
 
 Remaining risks:
 
@@ -356,10 +361,8 @@ Remaining risks:
 - The workflow does not persist a separate cache hit-rate counter; use n8n
   execution item counts and the Upstash console for cache observability, with
   PostgreSQL queries as the durable processing check.
-- Git completion is blocked pending explicit authorization to merge the
-  fetched remote README-only commit into this branch. The deployed n8n state
-  is unaffected by this Git-history blocker.
+- The normal push has not yet been run after the authorized merge. The deployed
+  n8n state is unaffected by this Git-history operation.
 
-Exact next step: After explicit merge authorization, merge `origin/main`, rerun
-the final Git/diff checks, and push `main` normally; then record the final merge
-commit and push result here.
+Exact next step: Push `main` normally, verify the remote is synchronized, then
+record the final push result and completion status here.
