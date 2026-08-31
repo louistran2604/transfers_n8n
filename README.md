@@ -7,8 +7,9 @@ The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` in `Asia/Ho_Chi_Minh
 ## How it works
 
 ```text
-X accounts (twscrape or RapidAPI)
+X accounts (twscrape)
   -> n8n filtering and normalization
+  -> optional Upstash Redis processed-post lookup (live runs only)
   -> local Qwen3.8-27B extraction
   -> PostgreSQL merge, revision, and delivery reservation
   -> optional Sofascore player enrichment
@@ -22,8 +23,13 @@ The main workflow also has manual live and sample triggers. The sample trigger r
 | n8n `2.31.6` plus external runner | Orchestration and JavaScript/Python task execution |
 | PostgreSQL 16 | Source posts, merged reports, revisions, retries, and delivery state |
 | llama.cpp plus Qwen3.8-27B | Local structured transfer extraction |
-| `twscrape` or RapidAPI | X post collection |
+| `twscrape` | X post collection |
 | Sofascore service | Optional player profile and statistics enrichment |
+
+PostgreSQL is the authoritative durable state for raw posts, processing,
+deduplication, retries, reports, revisions, and delivery. Upstash Redis is an
+optional short-lived acceleration cache only; Redis is never required for
+correctness and is not used by the Sofascore service.
 
 ## Requirements
 
@@ -31,7 +37,7 @@ The main workflow also has manual live and sample triggers. The sample trigger r
 - NVIDIA Container Toolkit and a supported NVIDIA GPU. The supplied Qwen quantization targets 16 GB VRAM.
 - Node.js 20 or newer for workflow generation and JavaScript tests.
 - `curl`, `jq`, `sha256sum`, and `nvidia-smi` for model checks.
-- A dedicated X account's `auth_token` and `ct0` cookies, or a RapidAPI key, plus two Discord webhooks.
+- A dedicated X account's `auth_token` and `ct0` cookies, plus two Discord webhooks.
 
 ## Quick start
 
@@ -58,9 +64,15 @@ TWSCRAPE_CT0=<dedicated-x-ct0>
 PLAYER_ENRICHMENT_MODE=off
 DISCORD_TRANSFERS_WEBHOOK_URL=<transfer-digest-webhook>
 DISCORD_ERRORS_WEBHOOK_URL=<error-alert-webhook>
+UPSTASH_REDIS_MODE=off
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+UPSTASH_REDIS_POST_TTL_SECONDS=86400
 ```
 
-To use RapidAPI instead, set `X_COLLECTOR=rapidapi`, add `RAPIDAPI_KEY`, and keep non-secret placeholder values for both `TWSCRAPE_*` variables. Compose validates those variables while parsing the inactive profile.
+Redis remains disabled with `UPSTASH_REDIS_MODE=off`. To activate the
+acceleration cache, set `UPSTASH_REDIS_MODE=active` and provide the REST URL
+and token. Keep the token only in the ignored environment file.
 
 ### 2. Start PostgreSQL and apply migrations
 
@@ -91,7 +103,7 @@ node workflow/build-workflows.mjs
 docker compose -f deploy/n8n/compose.yaml --profile twscrape up -d --wait --build
 ```
 
-For RapidAPI, omit `--profile twscrape`. Open n8n at `http://localhost:5678`.
+Open n8n at `http://localhost:5678`.
 
 ### 5. Import both workflows
 
@@ -122,18 +134,38 @@ Assign it to every Postgres node in both workflows. Save the error workflow, sel
 
 ### 7. Test before activating
 
-Run **Manual sample run** first. It writes persistent sample rows and can send a real Discord message, so use test credentials if production data must stay clean. Run **Manual run** only after the selected live collector works. Activate the main workflow after both paths succeed.
+Run **Manual sample run** first. It writes persistent sample rows and can send a real Discord message, so use test credentials if production data must stay clean. Sample runs bypass the processed-post Redis lookup. Run **Manual run** only after the twscrape collector works. Activate the main workflow after both paths succeed.
 
 ## Configuration
 
 | Variable | Values | Purpose |
 | --- | --- | --- |
-| `X_COLLECTOR` | `twscrape`, `rapidapi` | Select the live X collector; it must be explicit. |
+| `X_COLLECTOR` | `twscrape` | Select the live X collector; it must be explicit. |
+| `UPSTASH_REDIS_MODE` | `off`, `active` | Enable the optional processed-post acceleration cache; defaults to `off`. |
+| `UPSTASH_REDIS_REST_URL` | HTTPS REST URL | Upstash Redis REST endpoint; used only in active mode. |
+| `UPSTASH_REDIS_REST_TOKEN` | Secret token | Upstash REST bearer token; never commit it. |
+| `UPSTASH_REDIS_POST_TTL_SECONDS` | Positive integer | Cache TTL; defaults to 86,400 seconds (24 hours). |
 | `PLAYER_ENRICHMENT_MODE` | `off`, `shadow`, `active` | Disable enrichment, persist it without rendering, or render it. Defaults safely to `off`. |
 | `DISCORD_TRANSFERS_WEBHOOK_URL` | Secret URL | Transfer digest destination. |
 | `DISCORD_ERRORS_WEBHOOK_URL` | Secret URL | Workflow failure destination. |
 
 Changing `PLAYER_ENRICHMENT_MODE` requires recreating n8n. Keep it `off` until the rollout gates in the [n8n deployment guide](deploy/n8n/README.md) have passed.
+
+### Processed-post acceleration cache
+
+In active mode, live twscrape posts are looked up in Upstash through bounded
+HTTPS REST `/pipeline` batches before PostgreSQL persistence. A valid terminal
+marker skips the post; misses and every Redis error fail open to the existing
+PostgreSQL/Qwen path. Keys use
+`ftm:v1:processed-post:x:<external_post_id>` and values are `ignored` or
+`merged`.
+
+Markers are written only after PostgreSQL has durably recorded the terminal
+state, with the configured TTL (24 hours by default). Failed Qwen validation,
+PostgreSQL, or merge operations never create a marker. Set
+`UPSTASH_REDIS_MODE=off` and recreate `n8n` plus `n8n-runner` before the
+next run to disable Redis; PostgreSQL behavior is unchanged. Sofascore
+continues using its existing local persistent cache and TTLs.
 
 Edit project behavior through these source files:
 

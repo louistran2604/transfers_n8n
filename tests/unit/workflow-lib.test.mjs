@@ -23,7 +23,6 @@ import {
   processedPostCacheKey,
   parseEntityAliases,
   parseSourceRegistry,
-  parseRapidApiPosts,
   recoverInterruptedDelivery,
   retryDelayMs,
   selectDigestReports,
@@ -154,6 +153,7 @@ test('processed-post cache configuration fails closed to off for missing or inva
   for (const config of [
     { mode: 'active' },
     { mode: 'active', restUrl: 'not a URL', restToken: 'token' },
+    { mode: 'active', restUrl: 'http://example.upstash.io', restToken: 'token' },
     { mode: 'active', restUrl: 'https://example.upstash.io', restToken: '' },
     { mode: 'active', restUrl: 'https://example.upstash.io', restToken: 'token', postTtlSeconds: 0 },
     { mode: 'active', restUrl: 'https://example.upstash.io', restToken: 'token', postTtlSeconds: '1.5' },
@@ -265,19 +265,6 @@ test('generated source upserts persist explicit reliability and independence met
     const output = Function(workflow.nodes.find((node) => node.name === name).parameters.jsCode)();
     assert.deepEqual(output[0].json.params, expectedParams);
   }
-});
-
-test('RapidAPI parser accepts direct and quoted tweets and ignores pure retweets', () => {
-  const payload = { data: { entries: [
-    { rest_id: '900000000000000101', legacy: { full_text: 'Direct transfer report', created_at: 'Sat Jul 26 00:00:00 +0000 2026' } },
-    { rest_id: '900000000000000102', legacy: { full_text: 'A quote comment', created_at: 'Sat Jul 26 00:01:00 +0000 2026' }, quoted_status_result: { result: { legacy: { full_text: 'Original transfer report' } } } },
-    { rest_id: '900000000000000103', legacy: { full_text: 'RT @source: old transfer report', created_at: 'Sat Jul 26 00:02:00 +0000 2026', retweeted_status_result: { result: {} } } },
-  ] } };
-  const posts = parseRapidApiPosts(payload, source('David_Ornstein'));
-  assert.equal(posts.length, 2);
-  assert.equal(posts[1].is_quote, true);
-  assert.match(posts[1].content, /Original transfer report/);
-  assert.equal(posts[0].external_post_id, '900000000000000101');
 });
 
 test('strict Qwen validation accepts the exact evidence contract and rejects unknown scoring fields', () => {
@@ -1150,7 +1137,7 @@ test('retry timing honors server headers within a bounded exponential backoff po
   assert.equal(retryDelayMs({ attempt: 3, retryAfter: null, now: 0 }), 4000);
   assert.equal(retryDelayMs({ attempt: 1, rateResetEpochSeconds: 10, now: 0 }), 10000);
   assert.equal(retryDelayMs({ attempt: 1, retryAfter: '99999', maximumMs: 300000, now: 0 }), 300000);
-  assert.equal(shouldRetry('rapidapi', 503), true);
+  assert.equal(shouldRetry('twscrape', 503), true);
   assert.equal(shouldRetry('qwen', 0), true);
   assert.equal(shouldRetry('discord', 400), false);
   assert.equal(shouldRetry('discord', 429), true);
@@ -2384,7 +2371,7 @@ test('generated collector selector permits only twscrape', async () => {
   const runSelector = new AsyncFunction('$input', '$env', selector.parameters.jsCode);
   const output = await runSelector({ all: () => [{ json: { source_account_id: '1' } }] }, { X_COLLECTOR: 'twscrape' });
   assert.equal(output[0].json.collector, 'twscrape');
-  await assert.rejects(() => runSelector({ all: () => [{ json: {} }] }, { X_COLLECTOR: 'rapidapi' }), /X_COLLECTOR/);
+  await assert.rejects(() => runSelector({ all: () => [{ json: {} }] }, { X_COLLECTOR: 'unsupported' }), /X_COLLECTOR/);
 });
 
 test('generated digest deduplicates repeated candidate rows before applying its 15/18 limit', async () => {

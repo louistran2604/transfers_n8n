@@ -51,7 +51,29 @@ docker compose exec -T n8n n8n import:workflow --input=/workflows/football-trans
 docker compose exec -T n8n n8n import:workflow --input=/workflows/football-transfer-monitor.json
 ```
 
-The ignored local `.env` supplies the runner token, `X_COLLECTOR`, Discord webhook URLs, and either the dedicated-account `TWSCRAPE_AUTH_TOKEN`/`TWSCRAPE_CT0` values or `RAPIDAPI_KEY`. `X_COLLECTOR` must explicitly be `twscrape` or `rapidapi`; only the selected collector is required at runtime. Create a Postgres credential named `Transfers PostgreSQL` in the n8n UI and map it to every Postgres node before activating the workflow. Collector credentials and Discord webhooks remain environment expressions, never stored in workflow JSON.
+The ignored local `.env` supplies the runner token, `X_COLLECTOR=twscrape`,
+Discord webhook URLs, and the dedicated-account
+`TWSCRAPE_AUTH_TOKEN`/`TWSCRAPE_CT0` values. It may also supply the optional
+`UPSTASH_REDIS_MODE`, `UPSTASH_REDIS_REST_URL`,
+`UPSTASH_REDIS_REST_TOKEN`, and `UPSTASH_REDIS_POST_TTL_SECONDS` values.
+Redis defaults to `off`; do not enable `active` without valid production
+credentials. Create a Postgres credential named `Transfers PostgreSQL` in the
+n8n UI and map it to every Postgres node before activating the workflow.
+Collector credentials, Redis tokens, and Discord webhooks remain environment
+expressions, never stored in workflow JSON.
+
+PostgreSQL is the authoritative durable state. Upstash Redis is only a
+short-lived processed-post acceleration cache. In active mode, live twscrape
+posts use bounded REST `/pipeline` lookups before raw-post persistence; manual
+sample runs bypass the cache. Keys are
+`ftm:v1:processed-post:x:<external_post_id>`, values are terminal `ignored` or
+`merged`, and the default TTL is 86,400 seconds (24 hours). Markers are written
+only after successful PostgreSQL terminal transitions. Redis errors are
+fail-open and never block PostgreSQL, Qwen, enrichment, digest reservation, or
+Discord. Set `UPSTASH_REDIS_MODE=off` and recreate both `n8n` and
+`n8n-runner` before the next run to disable it.
+The Sofascore service does not use Upstash; its existing local persistent cache
+and TTL behavior is unchanged.
 
 `PLAYER_ENRICHMENT_MODE` defaults to `off`. Keep it `off` until the documented provider-policy, fixture, test, and shadow gates pass. The other supported values are `shadow` (persist but do not render) and `active` (persist and render); changing the mode requires recreating n8n. The enrichment service itself needs no secrets.
 

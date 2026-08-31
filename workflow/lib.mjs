@@ -248,7 +248,7 @@ function normalizeProcessedPostCacheUrl(value) {
   if (!candidate) return null;
   try {
     const parsed = new URL(candidate);
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
     return candidate.replace(/\/+$/, '');
   } catch {
     return null;
@@ -816,72 +816,6 @@ export function sourceMetadata(account) {
     priority_rank,
     reliability_score: seed_reliability,
   };
-}
-
-function legacyText(tweet) {
-  return tweet?.note_tweet?.note_tweet_results?.result?.text
-    ?? tweet?.legacy?.full_text
-    ?? tweet?.legacy?.text
-    ?? null;
-}
-
-function tweetId(tweet) {
-  return String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');
-}
-
-function quotedText(tweet) {
-  const quoted = tweet?.quoted_status_result?.result
-    ?? tweet?.legacy?.quoted_status_result?.result
-    ?? null;
-  return legacyText(quoted);
-}
-
-function isPureRetweet(tweet, text) {
-  return Boolean(
-    tweet?.legacy?.retweeted_status_result
-    || tweet?.retweeted_status_result
-    || /^RT\s+@/i.test(text ?? ''),
-  );
-}
-
-function findTweets(value, found, seenObjects) {
-  if (!value || typeof value !== 'object' || seenObjects.has(value)) return;
-  seenObjects.add(value);
-  const text = legacyText(value);
-  const id = tweetId(value);
-  if (id && text) found.push(value);
-  for (const child of Object.values(value)) {
-    if (child && typeof child === 'object') findTweets(child, found, seenObjects);
-  }
-}
-
-export function parseRapidApiPosts(payload, source) {
-  const candidates = [];
-  findTweets(payload, candidates, new Set());
-  const posts = [];
-  const seenIds = new Set();
-  for (const tweet of candidates) {
-    const external_post_id = tweetId(tweet);
-    const content = legacyText(tweet)?.trim();
-    if (!DECIMAL_ID.test(external_post_id) || !content || seenIds.has(external_post_id)) continue;
-    seenIds.add(external_post_id);
-    if (isPureRetweet(tweet, content)) continue;
-    const rawDate = tweet?.legacy?.created_at ?? tweet?.created_at;
-    const parsedDate = rawDate ? new Date(rawDate) : null;
-    if (!parsedDate || Number.isNaN(parsedDate.valueOf())) continue;
-    const quote = quotedText(tweet);
-    posts.push({
-      platform: 'x',
-      external_post_id,
-      post_url: `https://x.com/${source.username}/status/${external_post_id}`,
-      content: quote ? `${content}\n\nQuoted post:\n${quote}` : content,
-      posted_at: parsedDate.toISOString(),
-      source,
-      is_quote: Boolean(quote),
-      raw_payload: tweet,
-    });
-  }
-  return posts.sort((a, b) => a.posted_at.localeCompare(b.posted_at));
 }
 
 function isNullableString(value) {

@@ -53,7 +53,6 @@ services:
       N8N_SECURE_COOKIE: "false"
       GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
       X_COLLECTOR: twscrape
-      RAPIDAPI_BASE_URL: http://mock-services:18081/rapid
       TWSCRAPE_BASE_URL: http://mock-services:18081/twscrape
       QWEN_CHAT_COMPLETIONS_URL: http://mock-services:18081/qwen/valid
       PLAYER_ENRICHMENT_MODE: "off"

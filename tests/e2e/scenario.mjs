@@ -6,8 +6,6 @@ import {
   loadEntityAliases,
   normalizeEnrichmentResponse,
   recoverInterruptedDelivery,
-  retryDelayMs,
-  shouldRetry,
   sourceMetadata,
   validateQwenResponse,
 } from '../../workflow/lib.mjs';
@@ -153,19 +151,6 @@ for (const invalidPayload of [
   })).response.status, 400);
 }
 
-const firstRate = await json('/rapid/rate');
-assert.equal(firstRate.response.status, 429);
-assert.equal(retryDelayMs({ attempt: 1, retryAfter: firstRate.response.headers.get('retry-after') }), 1000);
-assert.equal(shouldRetry('rapidapi', firstRate.response.status), true);
-assert.equal((await json('/rapid/rate')).response.status, 200);
-
-for (let attempt = 1; attempt <= 5; attempt += 1) {
-  const failure = await json('/rapid/fail');
-  assert.equal(failure.response.status, 503);
-  assert.equal(shouldRetry('rapidapi', failure.response.status), true);
-}
-assert.equal((await json('/state')).body.rapidFail, 5);
-
 const twscrapeRequest = {
   sources: [
     { source_id: 'source-1', username: 'mock_source', x_user_id: '330262748' },
@@ -226,6 +211,7 @@ const activeRedisEnv = {
   UPSTASH_REDIS_REST_URL: `${base}/upstash`,
   UPSTASH_REDIS_REST_TOKEN: 'test-token',
   UPSTASH_REDIS_POST_TTL_SECONDS: '3600',
+  NODE_ENV: 'test',
 };
 const redisKey = (id) => `ftm:v1:processed-post:x:${id}`;
 
@@ -269,7 +255,7 @@ const outageId = '900000000000000303';
 const outagePrepared = await runRedisPrepare([post(outageId)], activeRedisEnv);
 const outage = await callRedisPipeline(outagePrepared[0].json.commands, '500');
 assert.equal(outage.response.status, 500);
-assert.deepEqual((await runRedisFilter([{ statusCode: outage.response.status, body: outage.body }], outagePrepared)).map((item) => item.json), [post(outageId)]);
+assert.deepEqual((await runRedisFilter([{ statusCode: outage.response.status, body: outage.body }], outagePrepared)).map((item) => item.json), [{ ...post(outageId), redis_cache_diagnostic: 'fail_open' }]);
 assert.equal((await json('/state')).body.redisValues[redisKey(outageId)], undefined);
 
 const malformedId = '900000000000000304';
@@ -277,7 +263,7 @@ const malformedPrepared = await runRedisPrepare([post(malformedId)], activeRedis
 const malformedRedis = await callRedisPipeline(malformedPrepared[0].json.commands, 'malformed');
 assert.equal(malformedRedis.response.status, 200);
 assert.equal(malformedRedis.body, null);
-assert.deepEqual((await runRedisFilter([{ statusCode: malformedRedis.response.status, body: malformedRedis.body }], malformedPrepared)).map((item) => item.json), [post(malformedId)]);
+assert.deepEqual((await runRedisFilter([{ statusCode: malformedRedis.response.status, body: malformedRedis.body }], malformedPrepared)).map((item) => item.json), [{ ...post(malformedId), redis_cache_diagnostic: 'fail_open' }]);
 
 const qwenFailureId = '900000000000000305';
 const qwenFailurePrepared = await runRedisPrepare([post(qwenFailureId)], activeRedisEnv);

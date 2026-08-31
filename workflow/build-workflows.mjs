@@ -1186,43 +1186,6 @@ const canonicalizeReport = (report) => ({
 });`;
 }
 
-function rapidApiParserCode() {
-  return `
-const inputs = $input.all();
-const requests = inputs.some((item) => !item.json.source) ? $('Build RapidAPI request').all() : [];
-const context = $('Create run context').isExecuted ? $('Create run context').first().json : $('Create sample run context').first().json;
-const collectionCutoffAt = Date.parse(context.collection_cutoff_at);
-const collectionStartedAt = Date.parse(context.collection_started_at);
-return inputs.flatMap((item, index) => {
-  const requestIndex = item.pairedItem?.item ?? index;
-  const request = item.json.source ? { source: item.json.source } : requests[requestIndex]?.json;
-  if (!request?.source) throw new Error('Missing RapidAPI request metadata for response item ' + index);
-  const response = item.json.body ?? item.json;
-  const found = [], walked = new Set(), seen = new Set();
-  const walk = (value) => {
-    if (!value || typeof value !== 'object' || walked.has(value)) return;
-    walked.add(value);
-    const text = value?.note_tweet?.note_tweet_results?.result?.text ?? value?.legacy?.full_text ?? value?.legacy?.text;
-    const id = String(value?.rest_id ?? value?.legacy?.id_str ?? value?.id_str ?? '');
-    if (/^\\d+$/.test(id) && text) found.push(value);
-    Object.values(value).forEach(walk);
-  };
-  walk(response);
-  return found.flatMap((tweet) => {
-    const external_post_id = String(tweet?.rest_id ?? tweet?.legacy?.id_str ?? tweet?.id_str ?? '');
-    const text = tweet?.note_tweet?.note_tweet_results?.result?.text ?? tweet?.legacy?.full_text ?? tweet?.legacy?.text;
-    if (!external_post_id || !text || seen.has(external_post_id) || tweet?.legacy?.retweeted_status_result || /^RT\\s+@/i.test(text)) return [];
-    const date = new Date(tweet?.legacy?.created_at ?? tweet?.created_at);
-    if (Number.isNaN(date.valueOf()) || date.valueOf() < collectionCutoffAt || date.valueOf() > collectionStartedAt) return [];
-    seen.add(external_post_id);
-    const quote = tweet?.quoted_status_result?.result?.legacy?.full_text;
-    return [{ json: {
-      params: [request.source.external_account_id, external_post_id, 'https://x.com/' + request.source.username + '/status/' + external_post_id, quote ? text + '\\n\\nQuoted post:\\n' + quote : text, date.toISOString(), JSON.stringify(tweet), request.source.username, request.source.display_name, request.source.priority_rank, request.source.reliability_score, request.source.is_official],
-    } }];
-  });
-});`;
-}
-
 function twscrapeParserCode() {
   return `
 const request = $('Build twscrape collect request').first().json;
@@ -1266,10 +1229,12 @@ const restUrl = String($env.UPSTASH_REDIS_REST_URL ?? '').trim().replace(/\\/+$/
 const token = String($env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();
 const ttlText = String($env.UPSTASH_REDIS_POST_TTL_SECONDS ?? '86400').trim();
 const ttl = /^\\d+$/.test(ttlText) ? Number(ttlText) : NaN;
+// Test-only local mock boundary; real Upstash REST URLs must use HTTPS.
+const allowLocalHttpTestEndpoint = String($env.NODE_ENV ?? '').trim().toLowerCase() === 'test';
 let validUrl = false;
 try {
   const parsed = new URL(restUrl);
-  validUrl = ['http:', 'https:'].includes(parsed.protocol)
+  validUrl = (parsed.protocol === 'https:' || (allowLocalHttpTestEndpoint && parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname)))
     && Boolean(parsed.hostname)
     && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
 } catch {}
@@ -1309,10 +1274,10 @@ function processedPostCacheFilterCode() {
 const prepared = $('Prepare processed-post Redis lookup').all().filter((item) => item.json?.redis_lookup === true);
 const responses = $input.all();
 const validStates = new Set(['ignored', 'merged']);
-const emit = (groups) => (Array.isArray(groups) ? groups : []).flatMap((group) => (
-  Array.isArray(group?.posts) ? group.posts.map((post) => ({ json: post })) : []
+const emit = (groups, diagnostic = false) => (Array.isArray(groups) ? groups : []).flatMap((group) => (
+  Array.isArray(group?.posts) ? group.posts.map((post) => ({ json: diagnostic ? { ...post, redis_cache_diagnostic: 'fail_open' } : post })) : []
 ));
-if (responses.length !== prepared.length) return prepared.flatMap((item) => emit(item.json?.groups));
+if (responses.length !== prepared.length) return prepared.flatMap((item) => emit(item.json?.groups, true));
 const output = [];
 for (let index = 0; index < prepared.length; index += 1) {
   const batch = prepared[index].json ?? {};
@@ -1336,7 +1301,7 @@ for (let index = 0; index < prepared.length; index += 1) {
     }
   }
   if (!results) {
-    output.push(...emit(groups));
+    output.push(...emit(groups, true));
     continue;
   }
   for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
@@ -1367,10 +1332,12 @@ const restUrl = String($env.UPSTASH_REDIS_REST_URL ?? '').trim().replace(/\\/+$/
 const token = String($env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();
 const ttlText = String($env.UPSTASH_REDIS_POST_TTL_SECONDS ?? '86400').trim();
 const ttl = /^\\d+$/.test(ttlText) ? Number(ttlText) : NaN;
+// Test-only local mock boundary; real Upstash REST URLs must use HTTPS.
+const allowLocalHttpTestEndpoint = String($env.NODE_ENV ?? '').trim().toLowerCase() === 'test';
 let validUrl = false;
 try {
   const parsed = new URL(restUrl);
-  validUrl = ['http:', 'https:'].includes(parsed.protocol)
+  validUrl = (parsed.protocol === 'https:' || (allowLocalHttpTestEndpoint && parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname)))
     && Boolean(parsed.hostname)
     && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
 } catch {}

@@ -42,7 +42,16 @@ Run isolated mock E2E/import validation:
 tests/e2e/run.sh
 ```
 
-It starts disposable PostgreSQL, mock `twscrape`/RapidAPI/Qwen/Discord/Sofascore endpoints, and the pinned n8n image; runs SQL tests 001–004; imports both workflows; then verifies off/shadow/active enrichment, sparse/ambiguous/malformed/timeout/all-failure paths, transfer-only delivery, Discord limits, and interrupted-delivery recovery. Its cleanup removes only disposable `transfers-e2e` resources.
+It starts disposable PostgreSQL, mock `twscrape`/Upstash/Qwen/Discord/Sofascore
+endpoints, and the pinned n8n image; runs SQL tests 001–004; imports both
+workflows; then verifies Redis-off pass-through, active cache hit/miss,
+terminal-only writes, Redis outage/malformed-response fail-open, Qwen/merge
+no-write paths, manual-sample bypass, off/shadow/active enrichment,
+sparse/ambiguous/malformed/timeout/all-failure paths, transfer-only delivery,
+Discord limits, and interrupted-delivery recovery. Its cleanup removes only
+disposable `transfers-e2e` resources. The Redis assertions execute the generated
+Code-node contracts against the mock and validate workflow import separately;
+they do not run a full live-trigger Redis subgraph through n8n.
 
 ## Optional live acceptance
 
@@ -58,6 +67,6 @@ SOFASCORE_PROVIDER_POLICY_APPROVED=1 SOFASCORE_LIVE_ACCEPTANCE=1 \
 Before a commit, scan tracked files for obvious secret assignments and inspect ignored state:
 
 ```bash
-rg -n --glob '!*.json' '(RAPIDAPI_KEY|DISCORD_.*WEBHOOK_URL|POSTGRES_PASSWORD)=' .
+git grep -n -I -E '(UPSTASH_REDIS_REST_TOKEN|DISCORD_.*WEBHOOK_URL|POSTGRES_PASSWORD)=' -- ':!*.json'
 git status --short --ignored
 ```

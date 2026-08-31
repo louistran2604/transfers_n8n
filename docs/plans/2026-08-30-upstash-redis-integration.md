@@ -202,6 +202,87 @@ Remaining risks:
 
 Exact next step: Step 6 — update user/deployment/test documentation, reconcile retired RapidAPI references without changing twscrape behavior, add the Redis token to secret scanning, run ECC code review and security review, and execute the complete repository verification suite.
 
-### Step 6 — Documentation, review, security, full verification — pending
+### Step 6 — Documentation, review, security, full verification — completed
+
+Files changed:
+
+- `README.md`
+- `workflow/README.md`
+- `deploy/n8n/README.md`
+- `deploy/n8n/compose.yaml`
+- `tests/README.md`
+- `tests/e2e/compose.yaml`
+- `tests/e2e/mock/server.mjs`
+- `tests/e2e/scenario.mjs`
+- `tests/unit/processed-post-cache-workflow.test.mjs`
+- `tests/unit/workflow-lib.test.mjs`
+- `workflow/build-workflows.mjs`
+- `workflow/lib.mjs`
+- `workflow/football-transfer-monitor.json` (regenerated)
+- this progress plan
+
+Important decisions:
+
+- Retired RapidAPI runtime code, mock routes, Compose variables, retry assertions,
+  and stale user/deployment/test documentation. The twscrape collector is now
+  the sole live X collector; regression assertions intentionally retain the
+  no-RapidAPI contract. The tracked `graphify-out` snapshot was not regenerated
+  because it is an unrelated stale generated artifact and is not runtime input.
+- Documented PostgreSQL as authoritative and Upstash Redis as an optional,
+  short-lived, terminal-only acceleration cache with 24-hour default TTL,
+  fail-open behavior, sample-run bypass, exact key namespace, and an immediate
+  `UPSTASH_REDIS_MODE=off` rollback. Redis remains absent from Sofascore, and no
+  SDK, lock, rate limiter, or PostgreSQL retry/deduplication replacement was
+  introduced.
+- Production Redis URLs are HTTPS-only; loopback HTTP is permitted only for
+  `NODE_ENV=test` mock E2E. Ambiguous Redis responses expose only a redacted
+  `redis_cache_diagnostic=fail_open` marker so failures remain observable without
+  leaking response bodies or credentials.
+
+Tests/checks and results:
+
+- ECC reviewer follow-up: all four prior findings resolved; no remaining code or
+  specification blockers. ECC security review: no concrete findings; residual
+  trust/token and generated-Code-node coverage risks are recorded below.
+- `node workflow/build-workflows.mjs` and `--check`: passed (`78` sources,
+  `3` workflows).
+- JavaScript syntax checks for changed workflow and E2E files: passed.
+- `node --test tests/unit/*.test.mjs`: passed (`3` files, `0` failures).
+- Docker Compose validation for base, enrichment, twscrape, support, qwen, and
+  E2E configurations: all passed.
+- Sofascore image build, Docker smoke test, and isolated fixture suite: passed;
+  `89` tests, `0` failures. The generated soccerdata persistence query is
+  unchanged since the Step 5 commit.
+- Twscrape service suite: passed (`4` tests, `0` failures).
+- `tests/e2e/run.sh`: passed, including disposable SQL checks, all workflow
+  imports, mock services, and Redis scenarios.
+- Secret scan found no generated credential literal; RapidAPI scan found no
+  runtime/documentation reference outside intentional regression assertions,
+  historical plan text, or the stale graphify snapshot. `git diff --check`
+  passed.
+- Migration suite was attempted but remains blocked by a pre-existing generated
+  enrichment SQL `\gset` cardinality error at
+  `/tmp/generated-enrichment-persistence.sql:524` (an earlier run also exposed
+  the existing concurrent-claim assertion). No migration, Sofascore code, or
+  generated persistence query was changed to mask this unrelated failure.
+
+Remaining risks:
+
+- Active Upstash credentials and production connectivity remain intentionally
+  unverified; the default `UPSTASH_REDIS_MODE=off` path is safe.
+- Mock E2E executes generated Code-node contracts and workflow import, not a
+  complete live-trigger Redis subgraph through n8n; this is documented in
+  `tests/README.md`.
+- The read/write Redis token is available to trusted n8n and runner Code nodes,
+  and a compromised token could suppress posts until TTL expiry; PostgreSQL
+  remains durable and authoritative.
+- Deployment, publish, commit, and push are intentionally deferred to Step 7.
+
+Exact next step: Step 7 — reread this plan and all changed files, rerun final
+verification, optionally perform a non-destructive live connectivity check only
+when locally configured credentials can be used without exposing secrets, then
+invoke `$deploy-and-push` to regenerate, validate, import, publish, verify,
+inspect, stage task files, commit, and push normally without enabling Redis in
+production unless valid credentials already exist.
 
 ### Step 7 — Deployment and Git completion — pending

@@ -22,7 +22,32 @@ Both workflows target n8n `2.31.6`, use `Asia/Ho_Chi_Minh`, and contain no secre
 
 ## X collector selection
 
-`X_COLLECTOR` must be explicitly `twscrape` or `rapidapi`. The generated `twscrape` branch submits all configured numeric X IDs as strings in one request, then adapts successful normalized posts into the existing raw-post SQL parameters. Its structured source failures produce no raw-post rows and do not stop successful sources. The retained RapidAPI branch keeps its existing per-source request and retry behavior. Both branches join before `Persist raw posts`; Qwen, PostgreSQL deduplication, report merging, digest reservation, and Discord delivery are unchanged.
+`X_COLLECTOR` must be explicitly `twscrape`. The generated branch submits all
+configured numeric X IDs as strings in one request, then adapts successful
+normalized posts into the existing raw-post SQL parameters. Its structured
+source failures produce no raw-post rows and do not stop successful sources.
+Live posts pass through the optional processed-post Redis lookup before
+`Persist raw posts`; manual sample runs connect directly to persistence and
+bypass Redis. Qwen, PostgreSQL deduplication, report merging, digest
+reservation, and Discord delivery are unchanged.
+
+## Optional Upstash processed-post cache
+
+`UPSTASH_REDIS_MODE` defaults to `off`. Active mode requires
+`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and a positive
+`UPSTASH_REDIS_POST_TTL_SECONDS` value (86,400 seconds/24 hours by default).
+The generated HTTP Request nodes call the Upstash HTTPS REST `/pipeline`
+endpoint directly in bounded batches; no Redis SDK is bundled.
+
+PostgreSQL remains the authoritative durable state. The cache namespace is
+`ftm:v1:processed-post:x:<external_post_id>` and terminal values are `ignored`
+or `merged`. Markers are written only after the corresponding PostgreSQL
+terminal operation succeeds. A hit skips the post; a miss, malformed or
+unexpected response, timeout, HTTP error, or missing/invalid configuration
+passes the post through unchanged. Redis writes are non-fatal. Set the mode
+back to `off` and recreate `n8n` plus `n8n-runner` before the next run to
+disable the cache. Sofascore does not use this cache; its existing local
+persistent caching, TTLs, pacing, and stale fallback remain unchanged.
 
 Classification conflict precedence is: contract renewal, rejected/failed, loan, official/confirmed, advanced negotiations, then rumor. Fees and clauses are base-unit amounts, currencies are ISO codes, all report properties are required, and unknown nullable data is `null`.
 
@@ -52,7 +77,11 @@ Keep the mode `off` during build, migration, import, and local verification. Pro
 
 ## Retry and delivery rules
 
-RapidAPI permits at most five attempts and Qwen at most three. The `twscrape` HTTP request has a finite 310-second timeout. The shared logic calculates bounded exponential delay and respects `Retry-After` or rate-reset headers. Discord is retryable only for an explicit `429` or `5xx`; a request interrupted after the network write is marked `unknown` and is never automatically resent.
+The `twscrape` HTTP request has a finite 310-second timeout. Qwen permits at
+most three attempts. The shared logic calculates bounded exponential delay and
+respects `Retry-After` or rate-reset headers. Discord is retryable only for an
+explicit `429` or `5xx`; a request interrupted after the network write is
+marked `unknown` and is never automatically resent.
 
 The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It has at most 15 normal stories; positions 16–18 are only confirmed transfers or Romano/Ornstein reports. It also caps output at 10 embeds, 25 fields per embed, 1,024 characters per field, and 6,000 aggregate embed characters.
 

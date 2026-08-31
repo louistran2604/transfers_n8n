@@ -2,8 +2,6 @@ import { createServer } from 'node:http';
 
 const redisValues = new Map();
 const state = {
-  rapidRate: 0,
-  rapidFail: 0,
   twscrapeCalls: 0,
   qwenCalls: 0,
   sofascoreCalls: 0,
@@ -45,8 +43,6 @@ function stateSnapshot() {
 
 function resetState() {
   Object.assign(state, {
-    rapidRate: 0,
-    rapidFail: 0,
     twscrapeCalls: 0,
     qwenCalls: 0,
     sofascoreCalls: 0,
@@ -191,16 +187,6 @@ createServer(async (request, response) => {
     resetState();
     return json(response, 200, stateSnapshot());
   }
-  if (url.pathname === '/rapid/rate') {
-    state.rapidRate += 1;
-    if (state.rapidRate === 1) return json(response, 429, { error: 'rate limited' }, { 'retry-after': '1', 'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 1) });
-    return json(response, 200, { data: { entries: [] } });
-  }
-  if (url.pathname === '/rapid/fail') {
-    state.rapidFail += 1;
-    return json(response, 503, { error: 'unavailable' });
-  }
-  if (url.pathname.startsWith('/rapid/user/')) return json(response, 200, { data: { entries: [] } });
   if (url.pathname === '/twscrape/collect') {
     let body = '';
     for await (const chunk of request) body += chunk;

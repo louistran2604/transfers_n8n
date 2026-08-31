@@ -81,6 +81,8 @@ test('generated Upstash lookup uses a bounded REST pipeline and keeps credential
   assert.match(lookup.parameters.url, /pipeline/);
   assert.match(lookup.parameters.jsonBody, /\$json\.commands/);
   assert.match(JSON.stringify(lookup.parameters.headerParameters), /UPSTASH_REDIS_REST_TOKEN/);
+  assert.match(nodeByName('Prepare processed-post Redis lookup').parameters.jsCode, /NODE_ENV/);
+  assert.match(nodeByName('Prepare processed-post Redis lookup').parameters.jsCode, /parsed\.protocol === 'https:'/);
   assert.equal(lookup.continueOnFail, true);
   assert.equal(lookup.parameters.options.response.response.fullResponse, true);
   assert.equal(lookup.parameters.options.response.response.neverError, true);
@@ -132,6 +134,23 @@ test('processed-post lookup preparation passes through when off and batches uniq
   });
   assert.equal(invalid.length, posts.length);
   assert.ok(invalid.every((item) => item.json.redis_lookup === false));
+
+  const insecure = await runPrepare(posts, {
+    UPSTASH_REDIS_MODE: 'active',
+    UPSTASH_REDIS_REST_URL: 'http://example.upstash.io',
+    UPSTASH_REDIS_REST_TOKEN: 'test-token',
+    NODE_ENV: 'production',
+  });
+  assert.ok(insecure.every((item) => item.json.redis_lookup === false));
+
+  const localTest = await runPrepare(posts, {
+    UPSTASH_REDIS_MODE: 'active',
+    UPSTASH_REDIS_REST_URL: 'http://127.0.0.1:18081/upstash',
+    UPSTASH_REDIS_REST_TOKEN: 'test-token',
+    NODE_ENV: 'test',
+  });
+  assert.equal(localTest.length, 1);
+  assert.equal(localTest[0].json.redis_lookup, true);
 });
 
 test('processed-post terminal writes are off by default, deduplicated, terminal-only, and bounded', async () => {
@@ -201,7 +220,7 @@ test('processed-post Redis hits are filtered while misses and every ambiguous re
     { statusCode: 200, error: 'request timed out' },
   ]) {
     const failOpen = await runFilter([response], prepared);
-    assert.deepEqual(failOpen.map((item) => item.json), posts, JSON.stringify(response));
+    assert.deepEqual(failOpen.map((item) => item.json), posts.map((post) => ({ ...post, redis_cache_diagnostic: 'fail_open' })), JSON.stringify(response));
   }
 });
 
