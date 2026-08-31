@@ -285,10 +285,11 @@ invoke `$deploy-and-push` to regenerate, validate, import, publish, verify,
 inspect, stage task files, commit, and push normally without enabling Redis in
 production unless valid credentials already exist.
 
-### Step 7 — Deployment and Git completion — completed
+### Step 7 — Deployment and Git completion — deployment complete; Git completion pending
 
 Files changed:
 
+- `README.md` (operator monitoring and Redis rollback commands)
 - `docs/plans/2026-08-30-upstash-redis-integration.md` (deployment record)
 
 Important decisions:
@@ -307,6 +308,11 @@ Important decisions:
   was created. The ignored local `.env` may contain an obsolete unused
   `RAPIDAPI_KEY` entry, but the Compose configuration and generated workflow do
   not consume RapidAPI.
+- Added root-README operations for effective mode/TTL checks in both runtime
+  containers, a read-only Upstash `/pipeline` probe, n8n fail-open log and
+  execution inspection, PostgreSQL authoritative-state checks, and an
+  immediate `UPSTASH_REDIS_MODE=off` recreate rollback. The probe reads only a
+  synthetic key and does not print the REST token.
 
 Tests/checks and results:
 
@@ -326,6 +332,11 @@ Tests/checks and results:
   ID `football-transfer-monitor`, active state `true`, 65 nodes, and the
   published version. n8n `/healthz` returned `ok`; both `n8n` and `n8n-runner`
   report `UPSTASH_REDIS_MODE=off`.
+- Post-documentation checks passed: `git diff --check`, README shell-block
+  syntax (`bash -n`), `node workflow/build-workflows.mjs --check`, and
+  `node --test tests/unit/*.test.mjs` (102 tests, 0 failures). A live
+  non-mutating container check confirmed both runtime containers report
+  `mode=off ttl=86400`.
 - Git was clean before the deployment-record edit; `git diff --check` passed
   after it. The deployment-record commit was created locally. The first
   normal push was rejected because `origin/main` advanced by one unrelated
@@ -342,6 +353,9 @@ Remaining risks:
   Redis is unavailable or compromised.
 - The unrelated migration harness `\gset` failure remains for a separate
   follow-up.
+- The workflow does not persist a separate cache hit-rate counter; use n8n
+  execution item counts and the Upstash console for cache observability, with
+  PostgreSQL queries as the durable processing check.
 - Git completion is blocked pending explicit authorization to merge the
   fetched remote README-only commit into this branch. The deployed n8n state
   is unaffected by this Git-history blocker.

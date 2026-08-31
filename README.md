@@ -253,6 +253,64 @@ docker compose -f deploy/qwen3.8-27b/compose.yaml logs --since=15m --follow llam
 
 Open `http://localhost:5678/executions` for node-level n8n execution details. The queries below show the application state recorded by the workflow.
 
+### Monitor the processed-post cache
+
+Redis is an acceleration layer, not a processing ledger. In an n8n execution,
+compare the item counts entering `Prepare processed-post Redis lookup` with the
+items leaving `Filter processed-post Redis hits`; a valid hit is removed before
+`Persist raw posts`. A Redis outage or ambiguous response leaves the post in
+the normal path and adds `redis_cache_diagnostic=fail_open` to the item. Use the
+Upstash console for request volume, latency, errors, and memory; use PostgreSQL
+for durable processing state.
+
+```bash
+# Confirm the effective non-secret mode and TTL in both runtime containers.
+for service in n8n n8n-runner; do
+  docker compose -f deploy/n8n/compose.yaml exec -T "$service" \
+    sh -c 'printf "%s: mode=%s ttl=%s\\n" "$HOSTNAME" "${UPSTASH_REDIS_MODE:-off}" "${UPSTASH_REDIS_POST_TTL_SECONDS:-86400}"'
+done
+
+# Read-only Upstash probe: GET a synthetic key without printing the token.
+(
+  set -a
+  . deploy/n8n/.env
+  set +a
+  if [ "${UPSTASH_REDIS_MODE:-off}" = active ]; then
+    curl --fail --silent --show-error --max-time 5 \
+      -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
+      -H 'Content-Type: application/json' \
+      --data '[ ["GET", "ftm:v1:processed-post:x:0"] ]' \
+      "${UPSTASH_REDIS_REST_URL%/}/pipeline" | jq .
+  else
+    echo "UPSTASH_REDIS_MODE=${UPSTASH_REDIS_MODE:-off}; Redis probe skipped."
+  fi
+)
+
+# Inspect recent n8n messages for Redis HTTP failures.
+docker compose -f deploy/n8n/compose.yaml logs --since=1h n8n \
+  | grep -Ei 'redis|upstash|fail_open|processed-post' || true
+
+# PostgreSQL remains authoritative: watch terminal state and retry backlog.
+docker compose -f deploy/support/compose.yaml exec -T transfers-postgres \
+  sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "
+SELECT processing_state, count(*) AS posts
+FROM raw_posts
+WHERE platform = '\''x'\''
+GROUP BY processing_state
+ORDER BY processing_state;
+"'
+```
+
+To disable Redis immediately, set `UPSTASH_REDIS_MODE=off` in the ignored
+`deploy/n8n/.env` and recreate both runtime containers. The shell override is a
+safe emergency rollback for the current recreate; persist the `.env` change
+before the next one:
+
+```bash
+UPSTASH_REDIS_MODE=off docker compose -f deploy/n8n/compose.yaml \
+  up -d --force-recreate n8n n8n-runner
+```
+
 ### Inspect recent runs and failures
 
 ```bash
