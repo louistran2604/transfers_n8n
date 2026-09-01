@@ -1237,8 +1237,8 @@ test('digest keeps distinct destinations from one post and uses the fresh profil
   const value = buildDiscordDigest(reports, { entityAliases }).embeds[0].fields.map((field) => field.value).join('\n');
   assert.match(value, /Chelsea → Atlético Madrid/);
   assert.match(value, /Chelsea → Aston Villa/);
-  assert.match(value, /Confidence: 95%/);
-  assert.match(value, /Confidence: 90%/);
+  assert.match(value, /Confidence of Model Understanding \(CoMU\): 95%/);
+  assert.match(value, /Confidence of Model Understanding \(CoMU\): 90%/);
 });
 
 test('digest renders active probability details and labels legacy confidence honestly', () => {
@@ -1276,7 +1276,7 @@ test('digest renders active probability details and labels legacy confidence hon
   assert.match(values[0], /Why: strong primary report \(87% reliability\); \+1 independent source/);
   assert.doesNotMatch(values[0], /competition/);
   assert.doesNotMatch(values[0], /Confidence:/);
-  assert.match(values[1], /Confidence: 73%/);
+  assert.match(values[1], /Confidence of Model Understanding \(CoMU\): 73%/);
   assert.doesNotMatch(values[1], /Probability:/);
   const prior = {
     ...active,
@@ -1298,7 +1298,7 @@ test('digest preserves exact legacy confidence and rejects malformed active prob
       probability: { normalized_probability: 0.91 },
     };
     const value = buildDiscordDigest([report]).embeds[0].fields[0].value;
-    assert.match(value, /Confidence: 73%/);
+    assert.match(value, /Confidence of Model Understanding \(CoMU\): 73%/);
     assert.doesNotMatch(value, /Legacy extraction confidence/);
     assert.doesNotMatch(value, /Probability:/);
   }
@@ -1330,7 +1330,7 @@ test('generated digest preserves legacy confidence and rejects malformed active 
   for (const status of ['legacy_unscored', 'shadow_scored']) {
     const output = await runDigest({ all: () => [candidate(status, { normalized_probability: 0.91 })] });
     const payload = JSON.parse(output[0].json.params[0]);
-    assert.match(payload.discord_payload.embeds[0].fields[0].value, /Confidence: 73%/);
+    assert.match(payload.discord_payload.embeds[0].fields[0].value, /Confidence of Model Understanding \(CoMU\): 73%/);
   }
   await assert.rejects(
     runDigest({ all: () => [candidate('active_scored', { explanation: {} })] }),
@@ -1534,7 +1534,7 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   };
   const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
   const value = embed.fields[0].value;
-  assert.match(value, /Confidence: 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
+  assert.match(value, /Confidence of Model Understanding \(CoMU\): 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
   assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
   assert.match(value, /LaLiga 2025\/26 - all clubs: 31 app · 2,604 min · 25 G · 5 A · 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating · stale 18h/);
   assert.doesNotMatch(value, /Advanced:/);

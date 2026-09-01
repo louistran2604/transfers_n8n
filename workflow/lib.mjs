@@ -1193,7 +1193,7 @@ function storyLines(report) {
     const reasons = [...positives.slice(0, 2), negative].filter(Boolean);
     if (reasons.length) probabilityLines.push(`Why: ${reasons.join('; ')}`);
   } else {
-    probabilityLines.push(`Confidence: ${Math.round(report.confidence * 100)}%`);
+    probabilityLines.push(`Confidence of Model Understanding (CoMU): ${Math.round(report.confidence * 100)}%`);
   }
   return [clubDirection, ...details, ...probabilityLines, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
 }

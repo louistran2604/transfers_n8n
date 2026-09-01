@@ -1821,7 +1821,7 @@ const probabilityLines = (report) => {
     }
   }
   const value = finiteNumber(probability?.normalized_probability);
-  if (value === null) return ['Confidence: ' + Math.round(report.confidence * 100) + '%'];
+  if (value === null) return ['Confidence of Model Understanding (CoMU): ' + Math.round(report.confidence * 100) + '%'];
   const previous = finiteNumber(probability.previous_probability);
   const delta = finiteNumber(probability.probability_delta);
   const points = delta === null ? null : Math.round(delta * 100);
