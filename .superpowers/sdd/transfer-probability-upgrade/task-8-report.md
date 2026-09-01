@@ -51,7 +51,7 @@ The error and probability-backfill workflow JSON files are unchanged.
 
 - The unrelated generated-enrichment `old_unresolved_` multi-row `\gset` failure at generated SQL line 524 is unchanged and was not edited.
 - Stored ratios retain PostgreSQL numeric precision; Discord deterministically displays at most two decimal places.
-- No dependency, deployment, production mutation, push, merge, rebase, commit, Stage 9 work, or `.omx` change was made.
+- No dependency, deployment, production mutation, push, merge, rebase, commit, or Stage 9 work was performed.
 - This report is force-added despite `.superpowers/sdd/.gitignore` so the reviewed Stage 8 evidence remains in branch history.
 
 ## Fix Round 1: concurrent projection stale snapshot

@@ -68,7 +68,7 @@
 - Public signatures remain `score_transfer_probability_v1(bigint, timestamptz)` and `settle_expired_probability_v1_cases(text, timestamptz, integer)`.
 - Migration 010 remains unchanged; migration 011 is additive and ledger-gated.
 - The independent review report was preserved unchanged.
-- No third scorer/helper, dependency, service, workflow behavior, Discord behavior, TransferTracker ingestion, `.omx` content, or unrelated cleanup was added.
+- No third scorer/helper, dependency, service, workflow behavior, Discord behavior, TransferTracker ingestion, or unrelated cleanup was added.
 - Final checks: `sh -n` on modified shell files, `git diff --check`, scope/status review, and clean-worktree verification after commit.
 - Remaining concern: only the documented unrelated generated-enrichment baseline above.
 
@@ -95,4 +95,4 @@
 
   `tests/migrations/run.sh → pre-existing generated-enrichment old_unresolved_ multi-row \gset failure → unchanged/deferred`
 
-- Whole implementation-range audit: `git diff --check` passed; 0 `.omx` paths, 0 dependency manifests, and 0 new secret-assignment lines were changed.
+- Whole implementation-range audit: `git diff --check` passed; no dependency manifests or new secret-assignment lines were changed.

@@ -14,7 +14,7 @@ When active, the generated n8n workflow uses Upstash's HTTPS REST API directly f
 
 ## ECC preflight and research
 
-- ECC is available through the installed local skill catalog and plugin surface. The ECC `search-first` skill is present at `/home/louistran/.codex/plugins/cache/ecc/ecc/2.2.0/skills/search-first/SKILL.md` and was read before repository changes. The `omx` CLI binary is not on PATH; no OMX CLI workflow was substituted.
+- ECC is available through the installed local skill catalog and plugin surface. The ECC `search-first` skill is present at `/home/louistran/.codex/plugins/cache/ecc/ecc/2.2.0/skills/search-first/SKILL.md` and was read before repository changes.
 - ECC search-first research confirmed that n8n HTTP Request nodes can call Upstash REST directly with a Bearer token. The planned API is `POST <REST_URL>/pipeline` with ordered `[["GET", key], ...]` and `[["SET", key, value, "EX", ttl], ...]` commands. Missing GETs return `result: null`; pipeline responses must be checked entry-by-entry for errors and exact cardinality.
 - Official references: [Upstash REST API](https://upstash.com/docs/redis/features/restapi), [n8n HTTP Request credentials](https://docs.n8n.io/integrations/builtin/credentials/httprequest/), and [n8n HTTP Request node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/).
 
