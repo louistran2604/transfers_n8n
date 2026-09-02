@@ -933,6 +933,23 @@ test('generated request bypasses both cooldowns only for a forced resolver retry
   assert.deepEqual((await execute({ ...context, force_resolver_retry: true }))[0].json.request.players[0].report_ids, ['22']);
 });
 
+test('forced selector retry bypasses otherwise-fresh enrichment', () => {
+  const context = {
+    transfer_report_id: '23', reported_player_name: 'Fresh Selector Player',
+    current_club_name: 'Barcelona', destination_club_name: 'Other',
+    classification: 'rumor', move_type: 'permanent', provider_player_id: '826643',
+    profile_fresh_until: '2026-07-31T12:00:00Z',
+    statistics_fresh_until: '2026-07-31T12:00:00Z',
+    profile_current_provider_team_id: '123',
+    force_resolver_retry: true, aliases: [], identity_overrides: [],
+  };
+  const result = buildEnrichmentRequest([context], {
+    mode: 'active', requestId: 'selector-retry',
+    now: Date.parse('2026-07-30T12:00:00Z'), entityAliases,
+  });
+  assert.deepEqual(result.request.players[0].report_ids, ['23']);
+});
+
 test('enrichment response normalization converts contract failures into one sanitized result per request item', () => {
   const request = {
     request_id: 'sofascore:1',
