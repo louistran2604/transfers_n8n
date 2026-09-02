@@ -17,6 +17,7 @@
           "current_club_name",
           "former_club_name",
           "destination_club_name",
+          "move_effective_on",
           "classification",
           "move_type",
           "fee_amount",
@@ -51,6 +52,7 @@
           "current_club_name": { "type": ["string", "null"] },
           "former_club_name": { "type": ["string", "null"] },
           "destination_club_name": { "type": ["string", "null"] },
+          "move_effective_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])(-[0-9]{2})?$" },
           "classification": {
             "type": "string",
             "enum": ["official_confirmed", "advanced_negotiations", "rumor", "rejected_failed", "contract_renewal", "loan"]

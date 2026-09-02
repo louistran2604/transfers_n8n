@@ -154,14 +154,14 @@ player AS (
 report AS (
   INSERT INTO transfer_reports (
     dedupe_key, player_id, reported_player_name, current_club_name, destination_club_name,
-    classification, move_type, fee_amount, fee_currency, add_ons_amount, add_ons_currency,
+    move_effective_on, classification, move_type, fee_amount, fee_currency, add_ons_amount, add_ons_currency,
     release_clause_amount, release_clause_currency, contract_length_months, contract_expires_on,
     loan_ends_on, has_option_to_buy, has_obligation_to_buy, sell_on_percentage, medical_status,
     agreement_status, confidence, first_reported_at, last_reported_at, normalized_data
   )
   SELECT payload->>'dedupe_key', (SELECT id FROM player), payload->>'player_name',
     NULLIF(payload->>'current_club_name', ''), NULLIF(payload->>'destination_club_name', ''),
-    payload->>'classification', payload->>'move_type',
+    NULLIF(payload->>'move_effective_on', ''), payload->>'classification', payload->>'move_type',
     NULLIF(payload->>'fee_amount', '')::numeric, NULLIF(payload->>'fee_currency', ''),
     NULLIF(payload->>'add_ons_amount', '')::numeric, NULLIF(payload->>'add_ons_currency', ''),
     NULLIF(payload->>'release_clause_amount', '')::numeric, NULLIF(payload->>'release_clause_currency', ''),
@@ -183,6 +183,7 @@ report AS (
       reported_player_name = EXCLUDED.reported_player_name,
       current_club_name = COALESCE(EXCLUDED.current_club_name, transfer_reports.current_club_name),
       destination_club_name = COALESCE(EXCLUDED.destination_club_name, transfer_reports.destination_club_name),
+      move_effective_on = COALESCE(EXCLUDED.move_effective_on, transfer_reports.move_effective_on),
       classification = EXCLUDED.classification, move_type = EXCLUDED.move_type,
       fee_amount = COALESCE(EXCLUDED.fee_amount, transfer_reports.fee_amount),
       fee_currency = COALESCE(EXCLUDED.fee_currency, transfer_reports.fee_currency),
@@ -1136,6 +1137,43 @@ const namedKey = (value) => {
 const key = (report) => [report.player_name, report.current_club_name || 'unknown', report.destination_club_name || 'unknown'].map((value) => normalize(value).replace(/\\s/g, '-')).join('|');
 const precedence = { contract_renewal: 6, rejected_failed: 5, loan: 4, official_confirmed: 3, advanced_negotiations: 2, rumor: 1 };
 const compareSource = (left, right) => (left.source.priority_rank - right.source.priority_rank) || (right.source.reliability_score - left.source.reliability_score) || String(left.posted_at).localeCompare(String(right.posted_at));
+const moveEffectivePattern = /^\\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\\d|3[01]))?$/;
+const effectiveMoveTimestamp = (value) => {
+  if (typeof value !== 'string' || !moveEffectivePattern.test(value)) return null;
+  const timestamp = Date.parse(value.length === 7 ? value + '-01T00:00:00Z' : value + 'T00:00:00Z');
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+const connectedTransferSiblingGroup = (reports) => {
+  if (reports.length < 2) return false;
+  const hasLoan = reports.some((report) => report.move_type === 'loan' || report.classification === 'loan');
+  const hasPermanent = reports.some((report) => {
+    if (report.move_type === 'loan' || report.classification === 'loan') return false;
+    const effective = effectiveMoveTimestamp(report.move_effective_on);
+    const posted = Date.parse(String(report.posted_at ?? ''));
+    return report.classification === 'official_confirmed' || (effective !== null && Number.isFinite(posted) && effective > posted);
+  });
+  return hasLoan && hasPermanent;
+};
+const propagateConnectedDigestWorthiness = (reports) => {
+  const normalized = reports.map((report) => canonicalizeReport(report));
+  const groups = new Map();
+  normalized.forEach((report, index) => {
+    const rawPostId = String(report.raw_post_id ?? '');
+    if (!rawPostId) return;
+    const player = unicodeKey(report.player_name);
+    const sourceClub = namedKey(report.current_club_name || report.former_club_name) ?? '';
+    const groupKey = rawPostId + '|' + player + '|' + sourceClub;
+    const indexes = groups.get(groupKey) ?? [];
+    indexes.push(index);
+    groups.set(groupKey, indexes);
+  });
+  for (const indexes of groups.values()) {
+    const group = indexes.map((index) => normalized[index]);
+    if (!connectedTransferSiblingGroup(group) || !group.some((report) => report.is_digest_worthy === true)) continue;
+    for (const index of indexes) normalized[index] = { ...normalized[index], is_digest_worthy: true };
+  }
+  return normalized;
+};
 const sha256 = (value) => {
   const input = unescape(encodeURIComponent(JSON.stringify(value)));
   const bytes = Array.from(input, (character) => character.charCodeAt(0));
@@ -1388,7 +1426,7 @@ function qwenParseCode({ includeExternalPostId = false } = {}) {
   return `
 ${entityAliasHelpers()}
 const requests = $('Build Qwen request').all();
-const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
+const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'move_effective_on', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 const stages = ${JSON.stringify(STAGE_SIGNALS)};
 const stances = ${JSON.stringify(CLAIM_STANCES)};
@@ -1404,6 +1442,7 @@ const nullableString = (value) => value === null || typeof value === 'string';
 const nullableNumber = (value) => value === null || (Number.isFinite(value) && value >= 0);
 const nullableCurrency = (value) => value === null || (typeof value === 'string' && /^[A-Z]{3}$/.test(value));
 const nullableDate = (value) => value === null || (typeof value === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(value));
+const nullableMoveEffectiveOn = (value) => value === null || (typeof value === 'string' && /^\\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\\d|3[01]))?$/.test(value));
 const nullableBoolean = (value) => value === null || typeof value === 'boolean';
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
@@ -1415,7 +1454,7 @@ return $input.all().flatMap((item, index) => {
   try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
-  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
+  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
     return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
   }
@@ -1440,8 +1479,8 @@ function mergeCode() {
   return `
 ${runtimeHelpers()}
 const groups = new Map();
-for (const item of $input.all()) {
-  const report = item.json.report ? canonicalizeReport(item.json.report) : null;
+const extractedReports = propagateConnectedDigestWorthiness($input.all().map((item) => item.json.report).filter(Boolean));
+for (const report of extractedReports) {
   if (!report) continue;
   const groupKey = key(report);
   groups.set(groupKey, [...(groups.get(groupKey) ?? []), report]);
@@ -1464,7 +1503,7 @@ for (const reports of groups.values()) {
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
-  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])}.map((field) => [field, merged[field] ?? null]));
+  const snapshot = Object.fromEntries(${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'move_effective_on', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])}.map((field) => [field, merged[field] ?? null]));
   snapshot.confidence = merged.extraction_confidence;
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
@@ -2394,7 +2433,8 @@ const outputs = [];
 for (const [rawPostId, group] of grouped) {
   const request = requests.get(rawPostId);
   if (!request) throw new Error('Missing backfill request metadata for raw post ' + rawPostId);
-  const payloads = group.ignored ? [] : group.reports.map((report) => {
+  const reports = group.ignored ? [] : propagateConnectedDigestWorthiness(group.reports);
+  const payloads = reports.map((report) => {
     const dedupe_key = key(report);
     const normalizedEvidence = report.normalized_evidence;
     return {

@@ -18,6 +18,7 @@ import {
   materialSnapshot,
   mergeReportGroup,
   normalizeEnrichmentResponse,
+  propagateConnectedDigestWorthiness,
   normalizeProcessedPostCacheConfig,
   normalizeProcessedPostCacheTtl,
   processedPostCacheKey,
@@ -39,6 +40,7 @@ const validReport = (overrides = {}) => ({
   current_club_name: 'Test FC',
   former_club_name: null,
   destination_club_name: 'Destination FC',
+  move_effective_on: null,
   classification: 'rumor',
   move_type: 'permanent',
   fee_amount: null,
@@ -343,10 +345,46 @@ test('Qwen contract keeps explicit former senior club separate from omitted curr
   assert.match(prompt, /former\/ex-player/);
   assert.match(prompt, /Academy, birthplace, nationality, and origin-only wording must not populate/);
   assert.match(prompt, /same player is linked to multiple distinct destination clubs/);
+  assert.match(prompt, /move_effective_on/);
+  assert.match(prompt, /completed-market recap/);
   const schema = JSON.parse(await readFile(new URL('../../workflow/qwen-response-schema.json', import.meta.url), 'utf8'));
   assert.ok(schema.properties.reports.items.required.includes('former_club_name'));
   assert.ok(schema.properties.reports.items.required.includes('extraction_confidence'));
+  assert.ok(schema.properties.reports.items.required.includes('move_effective_on'));
+  assert.equal(schema.properties.reports.items.properties.move_effective_on.pattern, '^[0-9]{4}-(0[1-9]|1[0-2])(-[0-9]{2})?$');
   assert.equal(schema.properties.reports.items.required.includes('confidence'), false);
+});
+
+test('Qwen contract accepts month-precision effective move dates and rejects malformed dates', () => {
+  for (const move_effective_on of ['2027-06', '2027-06-30', null]) {
+    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, true, move_effective_on);
+  }
+  for (const move_effective_on of ['2027-6', '2027-13', '2027-00', '2027-06-1', 'June 2027']) {
+    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, false, move_effective_on);
+  }
+});
+
+test('connected future permanent and loan reports inherit digest worthiness', () => {
+  const connected = [
+    evidenceReport({
+      player_name: 'Honest Ahanor', current_club_name: 'Atalanta', destination_club_name: 'Chelsea',
+      move_type: 'permanent', classification: 'official_confirmed', move_effective_on: '2027-06', is_digest_worthy: true,
+      raw_post_id: '99', posted_at: '2026-09-01T00:00:00.000Z',
+    }),
+    evidenceReport({
+      player_name: 'Honest Ahanor', current_club_name: 'Atalanta', destination_club_name: 'Crystal Palace',
+      move_type: 'loan', classification: 'loan', is_digest_worthy: false,
+      raw_post_id: '99', posted_at: '2026-09-01T00:00:00.000Z',
+    }),
+  ];
+  const propagated = propagateConnectedDigestWorthiness(connected, entityAliases);
+  assert.equal(propagated[1].is_digest_worthy, true);
+
+  const unrelated = propagateConnectedDigestWorthiness([
+    connected[0],
+    { ...connected[1], destination_club_name: 'Benfica', move_type: 'permanent', classification: 'rumor' },
+  ], entityAliases);
+  assert.equal(unrelated[1].is_digest_worthy, false);
 });
 
 test('merging uses source tier, fills missing fields, keeps conflicts, and creates only material revisions', () => {
@@ -2497,6 +2535,36 @@ test('generated workflow carries fail-closed shadow and active probability evide
   assert.equal(activeStale.length, 1);
   assert.equal(activeStale[0].json.probability_mode, 'active');
   assert.equal(workflow.connections['Create stale recompute context'].main[0][0].node, 'Register stale workflow run');
+});
+
+test('generated extraction preserves future effective dates and connected loan siblings', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const parserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const mergeNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const request = { json: {
+    raw_post_id: '99', external_post_id: '100', post_url: 'https://x.com/fabrizio/status/100',
+    posted_at: '2026-09-01T00:00:00.000Z', source: source('fabrizioromano'),
+  } };
+  const response = { json: { choices: [{ message: { content: JSON.stringify({
+    transfer_related: true,
+    reports: [
+      evidenceReport({ player_name: 'Honest Ahanor', current_club_name: 'Atalanta', destination_club_name: 'Chelsea', classification: 'official_confirmed', move_type: 'permanent', move_effective_on: '2027-06', is_digest_worthy: true }),
+      evidenceReport({ player_name: 'Honest Ahanor', current_club_name: 'Atalanta', destination_club_name: 'Crystal Palace', classification: 'loan', move_type: 'loan', is_digest_worthy: false }),
+    ],
+  }) } }] }, pairedItem: { item: 0 } };
+  const runParser = new AsyncFunction('$input', '$', parserNode.parameters.jsCode);
+  const parsed = await runParser({ all: () => [response] }, () => ({ all: () => [request] }));
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].json.report.move_effective_on, '2027-06');
+  assert.equal((await runParser({ all: () => [{ json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [evidenceReport({ move_effective_on: '2027-6' })] }) } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] })))[0].json.valid, false);
+  const runMerge = new AsyncFunction('$input', mergeNode.parameters.jsCode);
+  const payloads = await runMerge({ all: () => parsed });
+  assert.equal(payloads.length, 2);
+  const snapshots = payloads.map((item) => JSON.parse(item.json.params[0]).snapshot);
+  assert.ok(snapshots.every((snapshot) => snapshot.is_digest_worthy === true));
+  assert.ok(snapshots.some((snapshot) => snapshot.move_effective_on === '2027-06'));
+  assert.ok(snapshots.some((snapshot) => snapshot.destination_club_name === 'Crystal Palace'));
 });
 
 test('standard n8n deployment exposes probability mode to main and runner services', async () => {

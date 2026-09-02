@@ -171,4 +171,18 @@ END AS migration_011_pending \gset
   COMMIT;
 \endif
 
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM app_schema_migrations
+    WHERE version = '012_transfer_effective_on'
+  ) THEN 'false' ELSE 'true'
+END AS migration_012_pending \gset
+
+\if :migration_012_pending
+  BEGIN;
+  \i /database/migrations/012_transfer_effective_on.sql
+  INSERT INTO app_schema_migrations (version) VALUES ('012_transfer_effective_on');
+  COMMIT;
+\endif
+
 SELECT pg_advisory_unlock(hashtext('transfers_net_schema_migrations'));

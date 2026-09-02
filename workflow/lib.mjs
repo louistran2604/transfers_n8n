@@ -36,6 +36,7 @@ const REPORT_FIELDS = Object.freeze([
   'current_club_name',
   'former_club_name',
   'destination_club_name',
+  'move_effective_on',
   'classification',
   'move_type',
   'fee_amount',
@@ -94,6 +95,7 @@ const CLASSIFICATION_PRECEDENCE = Object.freeze({
 
 const SOURCE_KINDS = new Set(['journalist', 'publisher', 'club_official', 'league_official', 'aggregator']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_MOVE_EFFECTIVE_ON = /^\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const DECIMAL_ID = /^\d+$/;
 const PROCESSED_POST_CACHE_KEY_PREFIX = 'ftm:v1:processed-post:x:';
@@ -838,6 +840,10 @@ function isNullableDate(value) {
   return value === null || (typeof value === 'string' && ISO_DATE.test(value));
 }
 
+function isNullableMoveEffectiveOn(value) {
+  return value === null || (typeof value === 'string' && ISO_MOVE_EFFECTIVE_ON.test(value));
+}
+
 function isNullableCurrency(value) {
   return value === null || (typeof value === 'string' && ISO_CURRENCY.test(value));
 }
@@ -880,6 +886,7 @@ export function validateQwenResponse(value) {
       for (const field of ['contract_expires_on', 'loan_ends_on']) {
         if (!isNullableDate(report[field])) errors.push(`${label}.${field} must be ISO date or null`);
       }
+      if (!isNullableMoveEffectiveOn(report.move_effective_on)) errors.push(`${label}.move_effective_on must be YYYY-MM or YYYY-MM-DD or null`);
       for (const field of ['has_option_to_buy', 'has_obligation_to_buy']) {
         if (!isNullableBoolean(report[field])) errors.push(`${label}.${field} must be boolean or null`);
       }
@@ -908,9 +915,12 @@ export function canonicalizeQwenResponse(value) {
     reports: value.reports.map((report) => {
       if (!report || typeof report !== 'object' || Array.isArray(report)) return report;
       const keys = Object.keys(report);
-      if (keys.length !== REPORT_FIELDS.length || !REPORT_FIELDS.every((field) => field in report)) return report;
+      const legacyFields = REPORT_FIELDS.filter((field) => field !== 'move_effective_on');
+      const currentReport = keys.length === REPORT_FIELDS.length && REPORT_FIELDS.every((field) => field in report);
+      const legacyReport = keys.length === legacyFields.length && legacyFields.every((field) => field in report);
+      if (!currentReport && !legacyReport) return report;
       const { confidence, ...legacy } = report;
-      return { ...legacy, ...LEGACY_EVIDENCE_DEFAULTS, extraction_confidence: confidence };
+      return { ...legacy, move_effective_on: report.move_effective_on ?? null, ...LEGACY_EVIDENCE_DEFAULTS, extraction_confidence: confidence };
     }),
   };
 }
@@ -973,6 +983,46 @@ export function mergeReportGroup(group, entityAliases = EMPTY_ENTITY_ALIASES) {
     destination_club_key: enrichmentNamedContext(merged.destination_club_name),
   };
   return merged;
+}
+
+function effectiveMoveTimestamp(value) {
+  if (typeof value !== 'string' || !ISO_MOVE_EFFECTIVE_ON.test(value)) return null;
+  const timestamp = Date.parse(value.length === 7 ? `${value}-01T00:00:00Z` : `${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function connectedTransferSiblingGroup(reports) {
+  if (reports.length < 2) return false;
+  const hasLoan = reports.some((report) => report.move_type === 'loan' || report.classification === 'loan');
+  const hasPermanent = reports.some((report) => {
+    if (report.move_type === 'loan' || report.classification === 'loan') return false;
+    const effective = effectiveMoveTimestamp(report.move_effective_on);
+    const posted = Date.parse(String(report.posted_at ?? ''));
+    return report.classification === 'official_confirmed'
+      || (effective !== null && Number.isFinite(posted) && effective > posted);
+  });
+  return hasLoan && hasPermanent;
+}
+
+export function propagateConnectedDigestWorthiness(reports, entityAliases = EMPTY_ENTITY_ALIASES) {
+  const normalized = (Array.isArray(reports) ? reports : []).map((report) => canonicalizeReport(report, entityAliases));
+  const groups = new Map();
+  normalized.forEach((report, index) => {
+    const rawPostId = String(report.raw_post_id ?? '');
+    if (!rawPostId) return;
+    const player = enrichmentUnicodeKey(report.player_name);
+    const sourceClub = enrichmentNamedContext(report.current_club_name || report.former_club_name);
+    const key = `${rawPostId}|${player}|${sourceClub ?? ''}`;
+    const group = groups.get(key) ?? [];
+    group.push(index);
+    groups.set(key, group);
+  });
+  for (const indexes of groups.values()) {
+    const group = indexes.map((index) => normalized[index]);
+    if (!connectedTransferSiblingGroup(group) || !group.some((report) => report.is_digest_worthy === true)) continue;
+    for (const index of indexes) normalized[index] = { ...normalized[index], is_digest_worthy: true };
+  }
+  return normalized;
 }
 
 export function materialSnapshot(report) {
