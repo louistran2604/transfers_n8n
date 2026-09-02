@@ -1564,6 +1564,59 @@ test('digest renders fresh same-currency fee context compactly and fails open ot
   assert.doesNotMatch(partial, /incl\. add-ons/);
 });
 
+test('digest separates transfer details, enrichment, and transfer assessment', () => {
+  const report = {
+    ...validReport({
+      player_name: 'Future Move',
+      move_effective_on: '2027-06',
+      fee_amount: 55000000,
+      fee_currency: 'EUR',
+      fee_context: {
+        market_value: 62000000,
+        market_value_currency: 'EUR',
+        stale: false,
+        guaranteed_fee_ratio: 0.89,
+      },
+      probability_status: 'active_scored',
+      probability: {
+        engine_version: 'probability-v1',
+        normalized_probability: 0.62,
+        previous_probability: null,
+        probability_delta: null,
+        current_stage: 'advanced',
+        terminal_state: 'open',
+        explanation: { primary: { reliability: 0.87 }, corroboration: [] },
+      },
+    }),
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: 'https://x.com/David_Ornstein/status/future-move' }],
+    enrichment: richEnrichment(),
+  };
+  const value = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0].fields[0].value;
+  const transferHeading = value.indexOf('**Transfer details**');
+  const profileHeading = value.indexOf('**Player profile & statistics**');
+  const assessmentHeading = value.indexOf('**Transfer assessment**');
+  assert.ok(transferHeading >= 0);
+  assert.ok(profileHeading > transferHeading);
+  assert.ok(assessmentHeading > profileHeading);
+  assert.match(value, /Move starts: June 2027/);
+  assert.match(value, /Fee: €55m \(0\.89x guaranteed, fresh\)/);
+  assert.doesNotMatch(value, /Fee: .*Sofascore value/);
+  assert.equal((value.match(/Sofascore value/g) ?? []).length, 1);
+  assert.match(value, /\*\*Transfer assessment\*\*\nProbability: 62%\nStage: Advanced talks/);
+  assert.ok(value.endsWith('[David Ornstein](https://x.com/David_Ornstein/status/future-move)'));
+});
+
+test('digest puts CoMU under transfer assessment when enrichment is absent', () => {
+  const value = buildDiscordDigest([validReport({
+    preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
+    sources: [{ post_url: 'https://x.com/David_Ornstein/status/no-enrichment' }],
+  })]).embeds[0].fields[0].value;
+  assert.match(value, /\*\*Transfer details\*\*[\s\S]*\*\*Transfer assessment\*\*\nConfidence of Model Understanding \(CoMU\): 70%/);
+  assert.doesNotMatch(value, /Player profile & statistics/);
+  assert.ok(value.endsWith('[David Ornstein](https://x.com/David_Ornstein/status/no-enrichment)'));
+});
+
 test('fee context alone does not make a delivered report material', () => {
   const delivered = validReport({ fee_amount: 25000000, fee_currency: 'EUR' });
   const enriched = {
