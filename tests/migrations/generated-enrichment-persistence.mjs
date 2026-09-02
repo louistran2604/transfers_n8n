@@ -191,6 +191,10 @@ PREPARE generated_context_current(jsonb, text) AS
 SELECT *
 FROM (${contextNode.parameters.query.replace(/;\s*$/, '')}) context_rows
 WHERE context_rows.is_current_request;
+PREPARE generated_context_report(jsonb, text, bigint) AS
+SELECT *
+FROM (${contextNode.parameters.query.replace(/;\s*$/, '')}) context_rows
+WHERE context_rows.transfer_report_id = $3::text;
 EXECUTE generated_context_current('["900614","900614"]'::jsonb, '900077') \\gset context_
 \\if :{?context_transfer_report_id}
 \\else
@@ -232,7 +236,7 @@ SELECT pg_temp.step3_assert_true(
 UPDATE player_enrichment_attempts
 SET evidence = jsonb_set(evidence, '{statistics_selection}', '{"selector_version":"statistics-v2"}'::jsonb)
 WHERE transfer_report_id IN (900616, 900617);
-EXECUTE generated_context('[]'::jsonb, '900077') \\gset old_unresolved_
+EXECUTE generated_context_report('[]'::jsonb, '900077', 900605) \\gset old_unresolved_
 \\if :old_unresolved_force_resolver_retry
 \\else
   \\quit 1
@@ -351,6 +355,7 @@ SELECT :cap_historical_count = 25 AS historical_cap_ok \\gset
 \\endif
 DEALLOCATE generated_context_count;
 DEALLOCATE generated_context_current;
+DEALLOCATE generated_context_report;
 DEALLOCATE generated_context;
 
 PREPARE generated_persist(jsonb, bigint) AS

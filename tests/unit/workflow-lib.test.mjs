@@ -2740,11 +2740,14 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(contextNode.parameters.query, /UNION ALL/);
   assert.match(contextNode.parameters.query, /LIMIT 25/);
   assert.match(contextNode.parameters.query, /IS DISTINCT FROM 'identity-v9'/);
+  assert.match(contextNode.parameters.query, /statistics_selector_version/);
+  assert.match(contextNode.parameters.query, /warning_codes \? 'statistics_unavailable'/);
   assert.match(contextNode.parameters.query, /season\.season_state = 'latest_completed'/);
   assert.match(requestNode.parameters.jsCode, /is_current_request !== false/);
   assert.match(requestNode.parameters.jsCode, /enrichment_player_aliases/);
   assert.match(persistEnrichmentNode.parameters.query, /resolver_version/);
   assert.match(candidatesNode.parameters.query, /'sent_history'::text AS row_type/);
+  assert.match(candidatesNode.parameters.query, /WHERE di\.id IS NULL/);
   assert.match(candidatesNode.parameters.query, /r\.snapshot->>'probability_status' IS DISTINCT FROM 'active_scored'/);
   assert.match(candidatesNode.parameters.query, /\$3::text = 'active'/);
   assert.match(candidatesNode.parameters.query, /CASE WHEN \$4::text = 'active'/);
@@ -2779,6 +2782,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(persistEnrichmentNode.parameters.query, /'candidates'/);
   assert.match(persistEnrichmentNode.parameters.query, /'resolver_version', expanded\.item->>'resolver_version'/);
   assert.match(persistEnrichmentNode.parameters.query, /HAVING count\(DISTINCT provider_competition_id\) = 1/);
+  assert.match(persistEnrichmentNode.parameters.query, /primaryUniqueTournament/);
   assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'profile' IS NOT NULL/);
   assert.doesNotMatch(persistEnrichmentNode.parameters.query, /item->'statistics' IS NOT NULL/);
   assert.match(mergeReportsNode.parameters.query, /transfer_report_player_resolutions/);

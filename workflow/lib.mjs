@@ -444,7 +444,8 @@ export function buildEnrichmentRequest(contexts, {
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
     if (
-      knownProviderId
+      !forceRetryGroups.has(itemKey)
+      && knownProviderId
       && profileFresh
       && (
         statisticsFresh

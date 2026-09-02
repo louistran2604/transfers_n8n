@@ -271,7 +271,9 @@ historical_candidates AS (
   FROM transfer_reports tr
   JOIN LATERAL (
     SELECT attempt.status, attempt.retryable, attempt.next_retry_at, attempt.started_at,
-      attempt.evidence->>'resolver_version' AS resolver_version
+      attempt.evidence->>'resolver_version' AS resolver_version,
+      attempt.evidence->'statistics_selection'->>'selector_version' AS statistics_selector_version,
+      attempt.evidence->'warning_codes' AS warning_codes
     FROM player_enrichment_attempts attempt
     WHERE attempt.transfer_report_id = tr.id
     ORDER BY attempt.started_at DESC, attempt.id DESC
@@ -298,8 +300,17 @@ historical_candidates AS (
           OR latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9'
         )
       )
+      OR (
+        latest_attempt.status = 'partial'
+        AND latest_attempt.warning_codes ? 'statistics_unavailable'
+        AND (
+          latest_attempt.statistics_selector_version IS DISTINCT FROM 'statistics-v2'
+          OR (latest_attempt.retryable AND latest_attempt.next_retry_at <= CURRENT_TIMESTAMP)
+        )
+      )
     )
   ORDER BY
+    (latest_attempt.statistics_selector_version IS DISTINCT FROM 'statistics-v2') DESC,
     (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9') DESC,
     latest_attempt.started_at,
     tr.id
@@ -363,7 +374,13 @@ SELECT
   latest_attempt.started_at AS latest_attempt_started_at,
   latest_attempt.next_retry_at AS latest_attempt_next_retry_at,
   latest_attempt.resolver_version AS latest_attempt_resolver_version,
-  latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9' AS force_resolver_retry,
+  latest_attempt.statistics_selector_version AS latest_attempt_statistics_selector_version,
+  (latest_attempt.resolver_version IS DISTINCT FROM 'identity-v9'
+    OR (
+      latest_attempt.status = 'partial'
+      AND latest_attempt.warning_codes ? 'statistics_unavailable'
+      AND latest_attempt.statistics_selector_version IS DISTINCT FROM 'statistics-v2'
+    )) AS force_resolver_retry,
   $2::text AS workflow_run_id
 FROM requested
 JOIN transfer_reports tr ON tr.id = requested.transfer_report_id
@@ -455,7 +472,9 @@ LEFT JOIN LATERAL (
 ) overrides ON true
 LEFT JOIN LATERAL (
   SELECT attempt.status, attempt.started_at, attempt.next_retry_at,
-    attempt.evidence->>'resolver_version' AS resolver_version
+    attempt.evidence->>'resolver_version' AS resolver_version,
+    attempt.evidence->'statistics_selection'->>'selector_version' AS statistics_selector_version,
+    attempt.evidence->'warning_codes' AS warning_codes
   FROM player_enrichment_attempts attempt
   WHERE attempt.transfer_report_id = tr.id
   ORDER BY attempt.started_at DESC, attempt.id DESC
@@ -700,6 +719,8 @@ incoming_team_mappings AS (
   JOIN competitions competition
     ON competition.provider_unique_tournament_id =
       item->'statistics'->>'provider_unique_tournament_id'
+  WHERE item->'profile'->'raw_payload'->'player'->'team'->'primaryUniqueTournament'->>'id' =
+    item->'statistics'->>'provider_unique_tournament_id'
 ),
 unambiguous_team_mappings AS (
   SELECT provider_team_id, min(provider_competition_id) AS provider_competition_id
@@ -1660,7 +1681,7 @@ const groups = new Map();
 for (const prepared of preparedContexts) {
     const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, asOfDate: reportAsOfDate, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
-    if (providerId && fresh(context.profile_fresh_until)
+    if (!forceRetryGroups.has(itemKey) && providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
         || context.profile_current_provider_team_id === null
         || latestStatus === 'unattached')) continue;
