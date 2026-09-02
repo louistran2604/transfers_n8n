@@ -32,6 +32,7 @@ const request = {
 const report = {
   player_name: 'Test Player', player_identity_hint: null,
   current_club_name: 'Old FC', former_club_name: null, destination_club_name: 'New FC',
+  move_effective_on: null,
   classification: 'rumor', move_type: 'permanent', fee_amount: null, fee_currency: null,
   add_ons_amount: null, add_ons_currency: null, release_clause_amount: null,
   release_clause_currency: null, contract_length_months: null, contract_expires_on: null,

@@ -15,6 +15,7 @@ const validExtraction = {
   transfer_related: true,
   reports: [{
     player_name: 'Mock Player', player_identity_hint: null, current_club_name: 'Mock FC', former_club_name: null, destination_club_name: 'Test United',
+    move_effective_on: null,
     classification: 'advanced_negotiations', move_type: 'permanent', fee_amount: null, fee_currency: null,
     add_ons_amount: null, add_ons_currency: null, release_clause_amount: null, release_clause_currency: null,
     contract_length_months: null, contract_expires_on: null, loan_ends_on: null, has_option_to_buy: null,
