@@ -679,7 +679,7 @@ class AdapterNormalizationTests(unittest.TestCase):
         statistics_endpoint = (
             "player/826643/unique-tournament/8/season/77559/statistics/overall"
         )
-        self.transport.register(statistics_endpoint, ConnectionError("404 Not Found"))
+        self.transport.register(statistics_endpoint, ConnectionError("upstream reset"))
 
         result = self.adapter.enrich(
             mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")
@@ -693,6 +693,237 @@ class AdapterNormalizationTests(unittest.TestCase):
             [{"code": "statistics_unavailable", "retryable": True}],
             result["warnings"],
         )
+
+    def test_as_of_date_is_normalized_and_invalid_dates_are_rejected(self):
+        item = mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")
+        item["as_of_date"] = "2026-07-30T05:44:00+00:00"
+        _, _, players = validate_batch({"request_id": "run:date", "players": [item]})
+        self.assertEqual("2026-07-30T05:44:00Z", players[0]["as_of_date"])
+
+        item["as_of_date"] = "not-a-date"
+        with self.assertRaisesRegex(ValueError, "as_of_date"):
+            validate_batch({"request_id": "run:date", "players": [item]})
+
+
+class HistoricalStatisticsSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.transport = FixtureTransport(FIXTURES)
+        self.adapter = SofascoreAdapter(
+            self.transport,
+            Path(self.temporary.name),
+            min_interval_seconds=0,
+            jitter_seconds=0,
+            now=lambda: NOW,
+        )
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    @staticmethod
+    def _team(identifier, name, tournament_id, tournament_name, alpha2):
+        return {
+            "id": identifier,
+            "name": name,
+            "national": False,
+            "gender": "M",
+            "sport": {"slug": "football"},
+            "primaryUniqueTournament": {
+                "id": tournament_id,
+                "name": tournament_name,
+                "category": {
+                    "alpha2": alpha2,
+                    "sport": {"slug": "football"},
+                },
+            },
+        }
+
+    def _register_team_competition(self, team_id, team, season_id, season_label, start_timestamp, tournament_id, tournament_name, alpha2):
+        self.transport.register(f"team/{team_id}", {"team": team})
+        self.transport.register(
+            f"unique-tournament/{tournament_id}",
+            {
+                "uniqueTournament": {
+                    "id": tournament_id,
+                    "name": tournament_name,
+                    "tier": 1,
+                    "gender": "M",
+                    "category": {"alpha2": alpha2, "sport": {"slug": "football"}},
+                    "startDateTimestamp": start_timestamp,
+                    "endDateTimestamp": start_timestamp + 31_500_000,
+                }
+            },
+        )
+        self.transport.register(
+            f"unique-tournament/{tournament_id}/seasons",
+            {
+                "seasons": [
+                    {"id": "99001", "year": "26/27"},
+                    {"id": season_id, "year": season_label},
+                ]
+            },
+        )
+
+    @staticmethod
+    def _statistics(appearances=10):
+        return {
+            "statistics": {
+                "appearances": appearances,
+                "matchesStarted": appearances,
+                "minutesPlayed": appearances * 90,
+                "goals": 2,
+                "expectedGoals": 1.2,
+                "assists": 1,
+                "expectedAssists": 0.5,
+                "rating": 7.1,
+                "cleanSheet": 0,
+                "saves": 0,
+            }
+        }
+
+    def test_report_source_and_preceding_transfer_are_selected_before_as_of_date(self):
+        player_id = "9001"
+        source_team = self._team(100, "Manchester City", 17, "Premier League", "EN")
+        preceding_team = self._team(200, "Girona", 8, "LaLiga", "ES")
+        destination_team = self._team(300, "Benfica", 238, "Liga Portugal", "PT")
+        self.transport.register(
+            f"player/{player_id}",
+            {"player": {"id": 9001, "name": "Claudio Echeverri", "team": destination_team}},
+        )
+        self.transport.register(
+            f"player/{player_id}/transfer-history",
+            {
+                "transferHistory": [
+                    {
+                        "transferFrom": {"id": 100, "name": "Manchester City"},
+                        "transferTo": {"id": 300, "name": "Benfica"},
+                        "transferDateTimestamp": 1_800_000_000,
+                    },
+                    {
+                        "transferFrom": {"id": 200, "name": "Girona"},
+                        "transferTo": {"id": 100, "name": "Manchester City"},
+                        "transferDateTimestamp": 1_700_000_000,
+                    },
+                ]
+            },
+        )
+        self._register_team_competition(100, source_team, "76986", "25/26", 1_787_270_400, 17, "Premier League", "EN")
+        self._register_team_competition(200, preceding_team, "77559", "25/26", 1_787_270_400, 8, "LaLiga", "ES")
+        self.transport.register(
+            f"player/{player_id}/unique-tournament/17/season/76986/statistics/overall",
+            ConnectionError("404 Not Found"),
+        )
+        self.transport.register(
+            f"player/{player_id}/unique-tournament/8/season/77559/statistics/overall",
+            self._statistics(12),
+        )
+
+        result = self.adapter.enrich({
+            "item_key": f"provider:{player_id}",
+            "reported_name": "Claudio Echeverri",
+            "known_provider_player_id": player_id,
+            "current_club_name": "Manchester City",
+            "destination_club_name": "Benfica",
+            "as_of_date": "2026-07-30T00:00:00Z",
+            "aliases": [],
+        })
+
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("LaLiga", result["statistics"]["competition"])
+        self.assertEqual("8", result["statistics"]["provider_unique_tournament_id"])
+        self.assertEqual("statistics-v2", result["provenance"]["statistics_selection"]["selector_version"])
+        self.assertEqual("preceding_transfer_club", result["provenance"]["statistics_selection"]["basis"])
+        self.assertEqual("200", result["provenance"]["statistics_selection"]["chosen_team"]["provider_team_id"])
+        self.assertEqual(
+            1,
+            sum(
+                call["endpoint"] == f"player/{player_id}/unique-tournament/17/season/76986/statistics/overall"
+                for call in self.transport.calls
+            ),
+        )
+
+    def test_single_catalogue_candidate_is_used_but_ambiguous_catalogue_stays_profile_only(self):
+        player_id = "9002"
+        destination_team = self._team(301, "Fiorentina", 238, "Liga Portugal", "PT")
+        self.transport.register(
+            f"player/{player_id}",
+            {"player": {"id": 9002, "name": "Catalogue Player", "team": destination_team}},
+        )
+        self.transport.register(
+            f"player/{player_id}/transfer-history",
+            {"transferHistory": []},
+        )
+        self.transport.register(
+            f"player/{player_id}/statistics/seasons",
+            {
+                "uniqueTournamentSeasons": [{
+                    "uniqueTournament": {
+                        "id": 8,
+                        "name": "LaLiga",
+                        "category": {"alpha2": "ES", "sport": {"slug": "football"}},
+                    },
+                    "seasons": [{"id": "99001", "year": "26/27"}, {"id": "77559", "year": "25/26"}],
+                }]
+            },
+        )
+        self.transport.register(
+            "unique-tournament/8",
+            {
+                "uniqueTournament": {
+                    "id": 8,
+                    "name": "LaLiga",
+                    "tier": 1,
+                    "gender": "M",
+                    "category": {"alpha2": "ES", "sport": {"slug": "football"}},
+                    "startDateTimestamp": 1_787_270_400,
+                    "endDateTimestamp": 1_818_770_400,
+                }
+            },
+        )
+        self.transport.register("unique-tournament/8/seasons", {"seasons": [{"id": "99001", "year": "26/27"}, {"id": "77559", "year": "25/26"}]})
+        self.transport.register(
+            f"player/{player_id}/unique-tournament/8/season/77559/statistics/overall",
+            self._statistics(8),
+        )
+        result = self.adapter.enrich({
+            "item_key": f"provider:{player_id}",
+            "reported_name": "Catalogue Player",
+            "known_provider_player_id": player_id,
+            "current_club_name": "Unknown Source",
+            "as_of_date": "2026-07-30T00:00:00Z",
+            "aliases": [],
+        })
+        self.assertEqual("fresh", result["status"])
+        self.assertEqual("single_catalogue_domestic_candidate", result["provenance"]["statistics_selection"]["basis"])
+        self.assertIsNone(result["provenance"]["statistics_selection"]["chosen_team"])
+
+        self.transport.register(
+            f"player/{player_id}/statistics/seasons",
+            {
+                "uniqueTournamentSeasons": [
+                    {
+                        "uniqueTournament": {"id": 8, "name": "LaLiga", "category": {"alpha2": "ES", "sport": {"slug": "football"}}},
+                        "seasons": [{"id": "77559", "year": "25/26"}],
+                    },
+                    {
+                        "uniqueTournament": {"id": 17, "name": "Premier League", "category": {"alpha2": "EN", "sport": {"slug": "football"}}},
+                        "seasons": [{"id": "76986", "year": "25/26"}],
+                    },
+                ]
+            },
+        )
+        self.adapter._invalidate_cache(f"statistics-seasons-{player_id}")
+        ambiguous = self.adapter.enrich({
+            "item_key": f"provider:{player_id}:ambiguous",
+            "reported_name": "Catalogue Player",
+            "known_provider_player_id": player_id,
+            "current_club_name": "Unknown Source",
+            "as_of_date": "2026-07-30T00:00:00Z",
+            "aliases": [],
+        })
+        self.assertEqual("partial", ambiguous["status"])
+        self.assertIsNone(ambiguous["statistics"])
+        self.assertEqual("statistics_not_found", ambiguous["warnings"][0]["code"])
 
     def test_validator_deduplicates_identical_items_and_rejects_conflicts(self):
         item = mapped_item("826643", "2829", "8", "77559", "Kylian Mbappé")

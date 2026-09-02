@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import time
 from contextlib import contextmanager
@@ -25,11 +26,12 @@ from identity import (
     resolve_search,
     transfer_history_matches_club,
 )
-from models import nullable_float, nullable_int
+from models import nullable_float, nullable_int, optional_as_of_date
 
 
 API_ROOT = "https://api.sofascore.com/api/v1/"
 ADAPTER_SCHEMA = "sofascore-player-v1"
+STATISTICS_SELECTOR_VERSION = "statistics-v2"
 POSITION_NAMES = {"F": "Forward", "M": "Midfielder", "D": "Defender", "G": "Goalkeeper"}
 
 
@@ -175,7 +177,9 @@ class SofascoreAdapter:
                     return self._last_good[cache_key], "stale"
                 raise
         self._last_good[cache_key] = payload
-        if cache_key.startswith(("seasons-", "tournament-", "transfer-history-")):
+        if cache_key.startswith(
+            ("seasons-", "tournament-", "transfer-history-", "team-", "statistics-seasons-")
+        ):
             self._mapping_cache[cache_key] = (
                 self.now() + timedelta(hours=max_age_hours),
                 payload,
@@ -205,6 +209,385 @@ class SofascoreAdapter:
         if not isinstance(player, dict) or str(player.get("id", "")) != player_id:
             raise SchemaError("invalid player profile envelope")
         return payload, cache_status
+
+    def _as_of_date(self, item: dict[str, Any]) -> tuple[datetime, bool]:
+        value = item.get("as_of_date")
+        explicit = isinstance(value, str) and bool(value.strip())
+        if not explicit:
+            current = self.now()
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            return current.astimezone(timezone.utc), False
+        try:
+            normalized = optional_as_of_date(value, "as_of_date")
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            current = self.now()
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            return current.astimezone(timezone.utc), False
+        return parsed.astimezone(timezone.utc), True
+
+    @staticmethod
+    def _is_not_found(error: BaseException) -> bool:
+        for candidate in (
+            getattr(error, "status_code", None),
+            getattr(error, "status", None),
+            getattr(getattr(error, "response", None), "status_code", None),
+        ):
+            if candidate == 404:
+                return True
+        return bool(re.search(r"\b404\b|not[ -]?found", str(error), re.IGNORECASE))
+
+    @staticmethod
+    def _history_timestamp(entry: dict[str, Any]) -> datetime | None:
+        value = entry.get("transferDateTimestamp")
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value.strip())
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return datetime.fromtimestamp(value, timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        value = entry.get("transferDate")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _history_entries(
+        payload: dict[str, Any], as_of: datetime, *, allow_undated: bool
+    ) -> list[dict[str, Any]]:
+        history = payload.get("transferHistory")
+        if not isinstance(history, list):
+            raise SchemaError("invalid transfer history envelope")
+        entries: list[dict[str, Any]] = []
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            transfer_from = entry.get("transferFrom")
+            transfer_to = entry.get("transferTo")
+            if not isinstance(transfer_from, dict):
+                transfer_from = (
+                    {"name": entry.get("fromTeamName")}
+                    if isinstance(entry.get("fromTeamName"), str)
+                    else None
+                )
+            if not isinstance(transfer_to, dict):
+                transfer_to = (
+                    {"name": entry.get("toTeamName")}
+                    if isinstance(entry.get("toTeamName"), str)
+                    else None
+                )
+            if not isinstance(transfer_from, dict) or not isinstance(transfer_to, dict):
+                continue
+            if not any(
+                isinstance(team.get(field), (str, int)) and str(team.get(field)).strip()
+                for team in (transfer_from, transfer_to)
+                for field in ("id", "name")
+            ):
+                continue
+            timestamp = SofascoreAdapter._history_timestamp(entry)
+            if timestamp is None and not allow_undated:
+                continue
+            if timestamp is not None and timestamp > as_of:
+                continue
+            normalized_entry = dict(entry)
+            normalized_entry["transferFrom"] = transfer_from
+            normalized_entry["transferTo"] = transfer_to
+            entries.append({"entry": normalized_entry, "timestamp": timestamp})
+        entries.sort(
+            key=lambda value: value["timestamp"] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return entries
+
+    @staticmethod
+    def _team_matches(team: dict[str, Any], names: list[str]) -> bool:
+        return any(_reported_club_matches(name, team) for name in names)
+
+    def _source_transfer(
+        self, entries: list[dict[str, Any]], source_names: list[str]
+    ) -> dict[str, Any] | None:
+        for candidate in entries:
+            entry = candidate["entry"]
+            transfer_to = entry["transferTo"]
+            transfer_from = entry["transferFrom"]
+            if self._team_matches(transfer_to, source_names):
+                return {
+                    "team": transfer_to,
+                    "entry": entry,
+                    "preceding_team": transfer_from,
+                }
+            if self._team_matches(transfer_from, source_names):
+                return {"team": transfer_from, "entry": entry, "preceding_team": None}
+        return None
+
+    def _preceding_transfer_team(
+        self,
+        entries: list[dict[str, Any]],
+        source_team: dict[str, Any],
+        source_names: list[str],
+    ) -> dict[str, Any] | None:
+        names = [
+            *source_names,
+            source_team.get("name") if isinstance(source_team.get("name"), str) else None,
+        ]
+        names = [name for name in names if isinstance(name, str)]
+        for candidate in entries:
+            entry = candidate["entry"]
+            if self._team_matches(entry["transferTo"], names):
+                return entry["transferFrom"]
+        return None
+
+    def _team_detail(self, team: dict[str, Any]) -> dict[str, Any] | None:
+        tournament = team.get("primaryUniqueTournament")
+        if isinstance(tournament, dict) and str(tournament.get("id", "")).isdecimal():
+            return team
+        team_id = str(team.get("id", ""))
+        if not team_id.isdecimal():
+            return None
+        payload, _ = self.fetch_json(
+            f"team/{team_id}", f"team-{team_id}", self.mapping_max_age_hours
+        )
+        detail = payload.get("team")
+        if not isinstance(detail, dict) or str(detail.get("id", "")) != team_id:
+            raise SchemaError("invalid team envelope")
+        return detail
+
+    def _competition_for_team(self, team: dict[str, Any]) -> dict[str, str] | None:
+        tournament = team.get("primaryUniqueTournament")
+        tournament_id = str(tournament.get("id", "")) if isinstance(tournament, dict) else ""
+        if not tournament_id.isdecimal():
+            return None
+        metadata_payload, _ = self.fetch_json(
+            f"unique-tournament/{tournament_id}",
+            f"tournament-{tournament_id}",
+            self.mapping_max_age_hours,
+        )
+        candidate_team = dict(team)
+        candidate_tournament = dict(tournament)
+        metadata = metadata_payload.get("uniqueTournament")
+        candidate_category = candidate_tournament.get("category")
+        if (
+            isinstance(metadata, dict)
+            and isinstance(metadata.get("category"), dict)
+            and (
+                not isinstance(candidate_category, dict)
+                or not candidate_category.get("alpha2")
+            )
+        ):
+            candidate_tournament["category"] = metadata["category"]
+        candidate_team["primaryUniqueTournament"] = candidate_tournament
+        return validated_competition({"team": candidate_team}, metadata_payload)
+
+    def _season_for_competition(
+        self,
+        competition: dict[str, str],
+        metadata_payload: dict[str, Any],
+        as_of: datetime,
+        *,
+        season_mapping: dict[str, Any] | None,
+        historical: bool,
+    ) -> dict[str, str] | None:
+        if (
+            season_mapping
+            and not historical
+            and season_mapping.get("state") == "latest_completed"
+        ):
+            return dict(season_mapping)
+        tournament_id = competition["provider_unique_tournament_id"]
+        seasons_payload, _ = self.fetch_json(
+            f"unique-tournament/{tournament_id}/seasons",
+            f"seasons-{tournament_id}",
+            self.mapping_max_age_hours,
+        )
+        return select_reporting_season(seasons_payload, metadata_payload, now=as_of)
+
+    def _statistics_request(
+        self,
+        player_id: str,
+        competition: dict[str, str],
+        season: dict[str, str],
+    ) -> dict[str, Any]:
+        tournament_id = competition["provider_unique_tournament_id"]
+        season_id = season["provider_season_id"]
+        try:
+            payload, cache_status = self.fetch_json(
+                f"player/{player_id}/unique-tournament/{tournament_id}/season/{season_id}/statistics/overall",
+                f"statistics-{player_id}-{tournament_id}-{season_id}",
+                self.stats_max_age_hours,
+            )
+        except Exception as error:
+            if isinstance(error, SchemaError):
+                raise
+            return {
+                "status": "missing" if self._is_not_found(error) else "unavailable",
+                "error": error,
+            }
+        payload_error = payload.get("error")
+        if (
+            str(payload.get("status", "")) == "404"
+            or str(payload.get("code", "")) == "404"
+            or isinstance(payload_error, dict)
+            and str(payload_error.get("code", "")) == "404"
+        ):
+            return {"status": "missing"}
+        return {
+            "status": "fresh",
+            "statistics": self._normalize_statistics(payload, competition, season),
+            "payload": payload,
+            "cache_status": cache_status,
+        }
+
+    def _team_statistics(
+        self,
+        player_id: str,
+        team: dict[str, Any],
+        as_of: datetime,
+        *,
+        season_mapping: dict[str, Any] | None,
+        historical: bool,
+    ) -> dict[str, Any]:
+        hydrated = self._team_detail(team)
+        if hydrated is None:
+            return {"status": "unavailable"}
+        competition = self._competition_for_team(hydrated)
+        if competition is None:
+            return {"status": "unavailable", "team": hydrated}
+        tournament_id = competition["provider_unique_tournament_id"]
+        metadata_payload, _ = self.fetch_json(
+            f"unique-tournament/{tournament_id}",
+            f"tournament-{tournament_id}",
+            self.mapping_max_age_hours,
+        )
+        season = self._season_for_competition(
+            competition,
+            metadata_payload,
+            as_of,
+            season_mapping=season_mapping,
+            historical=historical,
+        )
+        if season is None:
+            return {"status": "unavailable", "team": hydrated}
+        result = self._statistics_request(player_id, competition, season)
+        result.update({"team": hydrated, "competition": competition, "season": season})
+        return result
+
+    def _catalogue_candidates(
+        self, player_id: str, as_of: datetime
+    ) -> list[dict[str, Any]]:
+        payload, _ = self.fetch_json(
+            f"player/{player_id}/statistics/seasons",
+            f"statistics-seasons-{player_id}",
+            self.mapping_max_age_hours,
+        )
+        groups = payload.get("uniqueTournamentSeasons")
+        if not isinstance(groups, list):
+            return []
+        candidates: dict[str, dict[str, Any]] = {}
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            tournament = group.get("uniqueTournament")
+            seasons = group.get("seasons")
+            if not isinstance(tournament, dict) or not isinstance(seasons, list):
+                continue
+            tournament_id = str(tournament.get("id", ""))
+            if not tournament_id.isdecimal() or tournament_id in candidates:
+                continue
+            metadata_payload, _ = self.fetch_json(
+                f"unique-tournament/{tournament_id}",
+                f"tournament-{tournament_id}",
+                self.mapping_max_age_hours,
+            )
+            metadata = metadata_payload.get("uniqueTournament")
+            category = metadata.get("category") if isinstance(metadata, dict) else None
+            alpha2 = category.get("alpha2") if isinstance(category, dict) else None
+            if (
+                not isinstance(alpha2, str)
+                or not re.fullmatch(r"[A-Z]{2}", alpha2)
+                or metadata.get("tier") != 1
+            ):
+                continue
+            tournament_for_team = dict(tournament)
+            if (
+                isinstance(metadata, dict)
+                and isinstance(metadata.get("category"), dict)
+                and (
+                    not isinstance(tournament_for_team.get("category"), dict)
+                    or not tournament_for_team["category"].get("alpha2")
+                )
+            ):
+                tournament_for_team["category"] = metadata.get("category")
+            team = {
+                "id": 0,
+                "name": "Catalogue candidate",
+                "national": False,
+                "gender": "M",
+                "sport": {"slug": "football"},
+                "primaryUniqueTournament": tournament_for_team,
+            }
+            competition = validated_competition({"team": team}, metadata_payload)
+            if competition is None:
+                continue
+            candidate = {
+                "competition": competition,
+                "metadata": metadata_payload,
+                "seasons": {"seasons": seasons},
+            }
+            candidates[tournament_id] = candidate
+        return list(candidates.values())
+
+    def _catalogue_statistics(
+        self,
+        player_id: str,
+        as_of: datetime,
+        *,
+        excluded: set[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        candidates = self._catalogue_candidates(player_id, as_of)
+        if len(candidates) != 1:
+            return {"status": "not_found"}
+        candidate = candidates[0]
+        season = select_reporting_season(
+            candidate["seasons"], candidate["metadata"], now=as_of
+        )
+        if season is None:
+            return {"status": "not_found"}
+        statistics_key = (
+            candidate["competition"]["provider_unique_tournament_id"],
+            season["provider_season_id"],
+        )
+        if statistics_key in (excluded or set()):
+            return {"status": "not_found"}
+        result = self._statistics_request(player_id, candidate["competition"], season)
+        result.update({"competition": candidate["competition"], "season": season})
+        return result
+
+    @staticmethod
+    def _selection_provenance(
+        team: dict[str, Any] | None, basis: str
+    ) -> dict[str, Any]:
+        chosen_team = None
+        if isinstance(team, dict) and str(team.get("id", "")).isdecimal():
+            name = team.get("name")
+            if isinstance(name, str) and name.strip():
+                chosen_team = {
+                    "provider_team_id": str(team["id"]),
+                    "name": name.strip(),
+                }
+        return {
+            "selector_version": STATISTICS_SELECTOR_VERSION,
+            "chosen_team": chosen_team,
+            "basis": basis,
+        }
 
     def _normalize_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
         player = payload["player"]
@@ -496,6 +879,187 @@ class SofascoreAdapter:
                 item_key, identity, profile, calls_before, "unattached", profile_payload
             )
 
+        as_of, historical = self._as_of_date(item)
+        source_names = [
+            club_name
+            for club_name in [
+                item.get("current_club_name"),
+                *(item.get("current_club_aliases") or []),
+            ]
+            if isinstance(club_name, str) and is_discriminating_club_name(club_name)
+        ]
+
+        def fresh_result(statistics_result: dict[str, Any], selection: dict[str, Any]):
+            return {
+                "item_key": item_key,
+                "status": "fresh",
+                "provider_calls": self.provider_calls - calls_before,
+                "identity": identity,
+                "profile": profile,
+                "statistics": statistics_result["statistics"],
+                "provenance": {
+                    "adapter_schema": ADAPTER_SCHEMA,
+                    "profile_cache": profile_cache,
+                    "statistics_cache": statistics_result["cache_status"],
+                    "statistics_selection": selection,
+                    "raw_payloads": {
+                        "profile": profile_payload,
+                        "statistics": statistics_result["payload"],
+                    },
+                },
+                "warnings": [],
+            }
+
+        if historical and not source_names:
+            catalogue_result = self._catalogue_statistics(player_id, as_of)
+            if catalogue_result["status"] == "fresh":
+                return fresh_result(
+                    catalogue_result,
+                    self._selection_provenance(None, "single_catalogue_domestic_candidate"),
+                )
+            if catalogue_result["status"] == "unavailable":
+                return self._partial(
+                    item_key,
+                    identity,
+                    profile,
+                    calls_before,
+                    "statistics_unavailable",
+                    profile_payload,
+                )
+            return self._partial(
+                item_key,
+                identity,
+                profile,
+                calls_before,
+                "statistics_not_found",
+                profile_payload,
+            )
+
+        if historical and source_names:
+            attempted_statistics: set[tuple[str, str]] = set()
+            source_team = team if self._team_matches(team, source_names) else None
+            source_transfer = None
+            history_entries: list[dict[str, Any]] = []
+            history_loaded = False
+            if source_team is None:
+                history_payload, _ = self.fetch_json(
+                    f"player/{player_id}/transfer-history",
+                    f"transfer-history-{player_id}",
+                    self.mapping_max_age_hours,
+                )
+                history_entries = self._history_entries(
+                    history_payload, as_of, allow_undated=False
+                )
+                history_loaded = True
+                source_transfer = self._source_transfer(history_entries, source_names)
+                source_team = source_transfer["team"] if source_transfer else None
+
+            if source_team is not None:
+                source_result = self._team_statistics(
+                    player_id,
+                    source_team,
+                    as_of,
+                    season_mapping=None,
+                    historical=True,
+                )
+                if source_result.get("competition") and source_result.get("season"):
+                    attempted_statistics.add(
+                        (
+                            source_result["competition"]["provider_unique_tournament_id"],
+                            source_result["season"]["provider_season_id"],
+                        )
+                    )
+                source_selection = self._selection_provenance(
+                    source_result.get("team") or source_team,
+                    "reported_source_club",
+                )
+                if source_result["status"] == "fresh":
+                    return fresh_result(source_result, source_selection)
+                if source_result["status"] == "unavailable" and source_result.get("error"):
+                    return self._partial(
+                        item_key,
+                        identity,
+                        profile,
+                        calls_before,
+                        "statistics_unavailable",
+                        profile_payload,
+                        source_selection,
+                    )
+
+                if not history_loaded:
+                    history_payload, _ = self.fetch_json(
+                        f"player/{player_id}/transfer-history",
+                        f"transfer-history-{player_id}",
+                        self.mapping_max_age_hours,
+                    )
+                    history_entries = self._history_entries(
+                        history_payload, as_of, allow_undated=False
+                    )
+                    history_loaded = True
+                    source_transfer = self._source_transfer(history_entries, source_names)
+                preceding_team = self._preceding_transfer_team(
+                    history_entries,
+                    source_result.get("team") or source_team,
+                    source_names,
+                )
+                if preceding_team:
+                    preceding_result = self._team_statistics(
+                        player_id,
+                        preceding_team,
+                        as_of,
+                        season_mapping=None,
+                        historical=True,
+                    )
+                    if preceding_result.get("competition") and preceding_result.get("season"):
+                        attempted_statistics.add(
+                            (
+                                preceding_result["competition"]["provider_unique_tournament_id"],
+                                preceding_result["season"]["provider_season_id"],
+                            )
+                        )
+                    preceding_selection = self._selection_provenance(
+                        preceding_result.get("team") or preceding_team,
+                        "preceding_transfer_club",
+                    )
+                    if preceding_result["status"] == "fresh":
+                        return fresh_result(preceding_result, preceding_selection)
+                    if preceding_result["status"] == "unavailable" and preceding_result.get("error"):
+                        return self._partial(
+                            item_key,
+                            identity,
+                            profile,
+                            calls_before,
+                            "statistics_unavailable",
+                            profile_payload,
+                            preceding_selection,
+                        )
+
+            catalogue_result = self._catalogue_statistics(
+                player_id, as_of, excluded=attempted_statistics
+            )
+            if catalogue_result["status"] == "fresh":
+                return fresh_result(
+                    catalogue_result,
+                    self._selection_provenance(None, "single_catalogue_domestic_candidate"),
+                )
+            if catalogue_result["status"] == "unavailable":
+                return self._partial(
+                    item_key,
+                    identity,
+                    profile,
+                    calls_before,
+                    "statistics_unavailable",
+                    profile_payload,
+                )
+            return self._partial(
+                item_key,
+                identity,
+                profile,
+                calls_before,
+                "statistics_not_found",
+                profile_payload,
+            )
+
         team_mapping = item.get("team_mapping")
         season_mapping = item.get("season_mapping")
         completed_move = (
@@ -535,6 +1099,7 @@ class SofascoreAdapter:
             team_mapping = None
             season_mapping = None
 
+        metadata_payload = None
         if team_mapping:
             competition = {
                 "provider_unique_tournament_id": team_mapping[
@@ -543,7 +1108,6 @@ class SofascoreAdapter:
                 "name": tournament.get("name") or "",
             }
         else:
-            tournament = team.get("primaryUniqueTournament") or {}
             tournament_id = str(tournament.get("id", ""))
             metadata_payload, _ = self.fetch_json(
                 f"unique-tournament/{tournament_id}",
@@ -561,7 +1125,7 @@ class SofascoreAdapter:
                     profile_payload,
                 )
 
-        season = season_mapping
+        season = season_mapping if not historical else None
         if season and season.get("state") == "latest_completed":
             season = dict(season)
         else:
@@ -571,15 +1135,13 @@ class SofascoreAdapter:
                 f"seasons-{tournament_id}",
                 self.mapping_max_age_hours,
             )
-            if "metadata_payload" not in locals():
+            if metadata_payload is None:
                 metadata_payload, _ = self.fetch_json(
                     f"unique-tournament/{tournament_id}",
                     f"tournament-{tournament_id}",
                     self.mapping_max_age_hours,
                 )
-            season = select_reporting_season(
-                seasons_payload, metadata_payload, now=self.now()
-            )
+            season = select_reporting_season(seasons_payload, metadata_payload, now=as_of)
             if season is None:
                 return self._partial(
                     item_key,
@@ -590,15 +1152,8 @@ class SofascoreAdapter:
                     profile_payload,
                 )
 
-        tournament_id = competition["provider_unique_tournament_id"]
-        season_id = season["provider_season_id"]
-        try:
-            statistics_payload, statistics_cache = self.fetch_json(
-                f"player/{player_id}/unique-tournament/{tournament_id}/season/{season_id}/statistics/overall",
-                f"statistics-{player_id}-{tournament_id}-{season_id}",
-                self.stats_max_age_hours,
-            )
-        except ConnectionError:
+        statistics_result = self._statistics_request(player_id, competition, season)
+        if statistics_result["status"] == "unavailable":
             return self._partial(
                 item_key,
                 identity,
@@ -607,25 +1162,19 @@ class SofascoreAdapter:
                 "statistics_unavailable",
                 profile_payload,
             )
-        statistics = self._normalize_statistics(statistics_payload, competition, season)
-        return {
-            "item_key": item_key,
-            "status": "fresh",
-            "provider_calls": self.provider_calls - calls_before,
-            "identity": identity,
-            "profile": profile,
-            "statistics": statistics,
-            "provenance": {
-                "adapter_schema": ADAPTER_SCHEMA,
-                "profile_cache": profile_cache,
-                "statistics_cache": statistics_cache,
-                "raw_payloads": {
-                    "profile": profile_payload,
-                    "statistics": statistics_payload,
-                },
-            },
-            "warnings": [],
-        }
+        if statistics_result["status"] == "missing":
+            return self._partial(
+                item_key,
+                identity,
+                profile,
+                calls_before,
+                "statistics_not_found",
+                profile_payload,
+            )
+        return fresh_result(
+            statistics_result,
+            self._selection_provenance(team, "profile_current_club"),
+        )
 
     def _partial(
         self,
@@ -635,11 +1184,12 @@ class SofascoreAdapter:
         calls_before: int,
         code: str,
         profile_payload: dict[str, Any],
+        selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "item_key": item_key,
             "status": "partial"
-            if code in {"unattached", "missing_season", "statistics_unavailable"}
+            if code in {"unattached", "missing_season", "statistics_unavailable", "statistics_not_found"}
             else code,
             "provider_calls": self.provider_calls - calls_before,
             "identity": identity,
@@ -647,6 +1197,7 @@ class SofascoreAdapter:
             "statistics": None,
             "provenance": {
                 "adapter_schema": ADAPTER_SCHEMA,
+                **({"statistics_selection": selection} if selection else {}),
                 "raw_payloads": {"profile": profile_payload},
             },
             "warnings": [{

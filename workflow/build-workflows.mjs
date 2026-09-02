@@ -316,6 +316,7 @@ SELECT
   tr.player_id::text AS placeholder_player_id,
   tr.reported_player_name,
   tr.current_club_name,
+  COALESCE(post.posted_at, tr.created_at, CURRENT_TIMESTAMP) AS as_of_date,
   tr.normalized_data->>'former_club_name' AS former_club_name,
   tr.destination_club_name,
   tr.classification,
@@ -870,7 +871,8 @@ attempts AS (
           THEN expanded.item->'candidates'
         ELSE '[]'::jsonb
       END,
-      'resolver_version', expanded.item->>'resolver_version'
+      'resolver_version', expanded.item->>'resolver_version',
+      'statistics_selection', expanded.item->'statistics_selection'
     ),
     expanded.item->'error'->>'code',
     CASE WHEN expanded.item->'error'->>'code' IS NULL THEN NULL
@@ -1576,6 +1578,11 @@ const fresh = (value) => {
   const timestamp = Date.parse(String(value ?? ''));
   return Number.isFinite(timestamp) && timestamp > now;
 };
+const asOfDate = (value) => {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
 const preparedContexts = [];
 if (mode !== 'off') {
   for (const input of $input.all()) {
@@ -1609,6 +1616,7 @@ if (mode !== 'off') {
     const completedMove = context.classification === 'official_confirmed'
       || context.classification === 'loan'
       || context.move_type === 'loan';
+    const reportAsOfDate = asOfDate(context.as_of_date);
     if (!providerId && (!reportedNameKey || !clubKey)) continue;
     const groupedItemKey = providerId ? 'provider:' + providerId : 'name:' + reportedNameKey + '|club:' + clubKey;
     const forceResolverRetry = context.force_resolver_retry === true;
@@ -1620,7 +1628,7 @@ if (mode !== 'off') {
       && latestStarted > now - 86400000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? groupedItemKey + '|report:' + reportId : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, asOfDate: reportAsOfDate, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
 }
 const enrichmentPriority = ({ context }) => {
@@ -1650,7 +1658,7 @@ const overrideGroups = new Set(preparedContexts.filter(({ hasActiveOverride }) =
 const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
 const groups = new Map();
 for (const prepared of preparedContexts) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, providerId, aliases, overrides, latestStatus, asOfDate: reportAsOfDate, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     if (providerId && fresh(context.profile_fresh_until)
       && (fresh(context.statistics_fresh_until)
@@ -1663,6 +1671,8 @@ for (const prepared of preparedContexts) {
       if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
       existing.allow_exact_name_without_club ||= allowExactNameWithoutClub;
       existing.completed_move ||= completedMove;
+      if (reportAsOfDate && (!existing.as_of_date || reportAsOfDate < existing.as_of_date)) existing.as_of_date = reportAsOfDate;
+      if (reportAsOfDate && (!existing.request_context.as_of_date || reportAsOfDate < existing.request_context.as_of_date)) existing.request_context.as_of_date = reportAsOfDate;
       for (const override of overrides) if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) existing.identity_overrides.push(override);
       continue;
     }
@@ -1673,6 +1683,7 @@ for (const prepared of preparedContexts) {
       allow_exact_name_without_club: allowExactNameWithoutClub,
       completed_move: completedMove,
       known_provider_player_id: providerId || null,
+      as_of_date: reportAsOfDate,
       current_club_name: typeof canonicalCurrentClub === 'string' ? canonicalCurrentClub : null,
       current_club_aliases: entityAliases.club_variants[normalizeAlias(canonicalCurrentClub)] ?? [],
       former_club_name: typeof canonicalFormerClub === 'string' ? canonicalFormerClub : null,
@@ -1684,7 +1695,7 @@ for (const prepared of preparedContexts) {
       identity_overrides: overrides,
       team_mapping: context.team_mapping_fresh === true ? parseValue(context.team_mapping, null) : null,
       season_mapping: context.season_mapping_fresh === true ? parseValue(context.season_mapping, null) : null,
-      request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, former_club_key: formerClubKey, destination_club_key: destinationClubKey },
+      request_context: { reported_name_key: reportedNameKey, current_club_key: currentClubKey, former_club_key: formerClubKey, destination_club_key: destinationClubKey, as_of_date: reportAsOfDate },
     });
 }
 const players = [...groups.values()].slice(0, 25);
@@ -1769,6 +1780,8 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
           if (['fresh', 'cache_hit'].includes(item.status) && (!item.statistics || typeof item.statistics !== 'object')) return failure(player, 'service_contract_invalid');
           if (item.profile && (!Number.isFinite(Date.parse(String(item.profile.retrieved_at ?? ''))) || (item.profile.current_club !== null && (typeof item.profile.current_club !== 'object' || !/^\\d+$/.test(String(item.profile.current_club.provider_team_id ?? '')) || typeof item.profile.current_club.name !== 'string' || !item.profile.current_club.name.trim())) || (item.profile.market_value_currency !== null && item.profile.market_value_currency !== undefined && !/^[A-Z]{3}$/.test(String(item.profile.market_value_currency))))) return failure(player, 'service_contract_invalid');
           if (item.statistics && (!/^\\d+$/.test(String(item.statistics.provider_unique_tournament_id ?? '')) || !/^\\d+$/.test(String(item.statistics.provider_season_id ?? '')) || !['active', 'latest_completed'].includes(item.statistics.season_state) || item.statistics.scope !== 'selected_domestic_league_all_clubs' || !Number.isFinite(Date.parse(String(item.statistics.retrieved_at ?? ''))))) return failure(player, 'service_contract_invalid');
+          const statisticsSelection = item.provenance?.statistics_selection;
+          if (statisticsSelection !== undefined && statisticsSelection !== null && (typeof statisticsSelection !== 'object' || typeof statisticsSelection.selector_version !== 'string' || !statisticsSelection.selector_version || typeof statisticsSelection.basis !== 'string' || !statisticsSelection.basis || (statisticsSelection.chosen_team !== null && (typeof statisticsSelection.chosen_team !== 'object' || !/^\\d+$/.test(String(statisticsSelection.chosen_team.provider_team_id ?? '')) || typeof statisticsSelection.chosen_team.name !== 'string' || !statisticsSelection.chosen_team.name.trim())))) return failure(player, 'service_contract_invalid');
           const rawProfile = item.provenance?.raw_payloads?.profile && typeof item.provenance.raw_payloads.profile === 'object' ? item.provenance.raw_payloads.profile : {};
           const rawStatistics = item.provenance?.raw_payloads?.statistics && typeof item.provenance.raw_payloads.statistics === 'object' ? item.provenance.raw_payloads.statistics : {};
           return {
@@ -1803,6 +1816,7 @@ if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode > 299 || $jso
               raw_cache_key: providerId ? 'statistics-' + providerId + '-' + item.statistics.provider_unique_tournament_id + '-' + item.statistics.provider_season_id : null,
               raw_payload: rawStatistics,
             } : null,
+            ...(statisticsSelection ? { statistics_selection: { selector_version: statisticsSelection.selector_version, chosen_team: statisticsSelection.chosen_team === null ? null : { provider_team_id: String(statisticsSelection.chosen_team.provider_team_id), name: statisticsSelection.chosen_team.name.trim() }, basis: statisticsSelection.basis } } : {}),
             candidates: normalizeEnrichmentCandidates(item.candidates),
             warning_codes: Array.isArray(item.warnings) ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean) : [],
             error: item.error && typeof item.error === 'object' ? { code: String(item.error.code ?? 'enrichment_failed').slice(0, 100) } : null,

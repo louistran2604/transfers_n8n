@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -26,6 +27,23 @@ def optional_string(value: Any, field: str) -> str | None:
     return value or None
 
 
+def optional_as_of_date(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be an ISO date or timestamp or null")
+    text = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        text += "-01"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO date or timestamp or null") from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def validate_player(value: Any, index: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"players[{index}] must be an object")
@@ -37,6 +55,9 @@ def validate_player(value: Any, index: int) -> dict[str, Any]:
     normalized = dict(value)
     normalized["item_key"] = item_key
     normalized["reported_name"] = reported_name
+    normalized["as_of_date"] = optional_as_of_date(
+        value.get("as_of_date"), f"players[{index}].as_of_date"
+    )
     for club_field in ("current_club_name", "former_club_name", "destination_club_name"):
         if club_field in value:
             normalized[club_field] = optional_string(

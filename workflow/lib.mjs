@@ -344,6 +344,12 @@ function enrichmentFresh(value, now) {
   return Number.isFinite(timestamp) && timestamp > now;
 }
 
+function enrichmentAsOfDate(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function enrichmentContextComparator(left, right) {
   const report = (context) => ({
     ...context,
@@ -409,6 +415,7 @@ export function buildEnrichmentRequest(contexts, {
     const completedMove = context.classification === 'official_confirmed'
       || context.classification === 'loan'
       || context.move_type === 'loan';
+    const asOfDate = enrichmentAsOfDate(context.as_of_date);
     if (!knownProviderId && (!reportedNameKey || !clubKey)) continue;
     const overrides = Array.isArray(context.identity_overrides) ? context.identity_overrides : [];
     const latestStatus = String(context.latest_attempt_status ?? '');
@@ -424,7 +431,7 @@ export function buildEnrichmentRequest(contexts, {
       && latestStartedAt > now - 24 * 60 * 60 * 1000;
     const hasActiveOverride = overrides.some((override) => override && typeof override === 'object' && override.active === true);
     const itemKey = hasActiveOverride ? `${groupedItemKey}|report:${reportId}` : groupedItemKey;
-    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
+    preparedContexts.push({ context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, asOfDate, itemKey, forceResolverRetry, hardBackoff, ambiguityCooldown, hasActiveOverride });
   }
   const hardBackoffGroups = new Set(preparedContexts.filter(({ hardBackoff }) => hardBackoff).map(({ itemKey }) => itemKey));
   const ambiguityCooldownGroups = new Set(preparedContexts.filter(({ ambiguityCooldown }) => ambiguityCooldown).map(({ itemKey }) => itemKey));
@@ -432,7 +439,7 @@ export function buildEnrichmentRequest(contexts, {
   const forceRetryGroups = new Set(preparedContexts.filter(({ forceResolverRetry }) => forceResolverRetry).map(({ itemKey }) => itemKey));
   const groups = new Map();
   for (const prepared of preparedContexts.toSorted(enrichmentContextComparator)) {
-    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, itemKey } = prepared;
+    const { context, reportId, reportedName, canonicalReportedName, canonicalCurrentClub, canonicalFormerClub, canonicalDestinationClub, destinationEligible, knownProviderId, currentClubKey, formerClubKey, destinationClubKey, reportedNameKey, allowSurnameOnlyMatch, allowExactNameWithoutClub, completedMove, overrides, latestStatus, asOfDate, itemKey } = prepared;
     if (!forceRetryGroups.has(itemKey) && (hardBackoffGroups.has(itemKey) || (ambiguityCooldownGroups.has(itemKey) && !overrideGroups.has(itemKey)))) continue;
     const profileFresh = enrichmentFresh(context.profile_fresh_until, now);
     const statisticsFresh = enrichmentFresh(context.statistics_fresh_until, now);
@@ -457,6 +464,8 @@ export function buildEnrichmentRequest(contexts, {
       if (canonicalReportedName !== reportedName && !existing.aliases.includes(reportedName)) existing.aliases.push(reportedName);
       existing.allow_exact_name_without_club ||= allowExactNameWithoutClub;
       existing.completed_move ||= completedMove;
+      if (asOfDate && (!existing.as_of_date || asOfDate < existing.as_of_date)) existing.as_of_date = asOfDate;
+      if (asOfDate && (!existing.request_context.as_of_date || asOfDate < existing.request_context.as_of_date)) existing.request_context.as_of_date = asOfDate;
       for (const override of overrides) {
         if (!existing.identity_overrides.some((candidate) => JSON.stringify(candidate) === JSON.stringify(override))) {
           existing.identity_overrides.push(override);
@@ -472,6 +481,7 @@ export function buildEnrichmentRequest(contexts, {
       allow_exact_name_without_club: allowExactNameWithoutClub,
       completed_move: completedMove,
       known_provider_player_id: knownProviderId || null,
+      as_of_date: asOfDate,
       current_club_name: typeof canonicalCurrentClub === 'string'
         ? canonicalCurrentClub
         : null,
@@ -500,6 +510,7 @@ export function buildEnrichmentRequest(contexts, {
         current_club_key: currentClubKey,
         former_club_key: formerClubKey,
         destination_club_key: destinationClubKey,
+        as_of_date: asOfDate,
       },
     });
   }
@@ -666,6 +677,21 @@ export function normalizeEnrichmentResponse(request, response) {
         )
       ) return enrichmentFailure(player);
 
+      const statisticsSelection = item.provenance?.statistics_selection;
+      if (statisticsSelection !== undefined && statisticsSelection !== null && (
+        typeof statisticsSelection !== 'object'
+        || typeof statisticsSelection.selector_version !== 'string'
+        || !statisticsSelection.selector_version
+        || typeof statisticsSelection.basis !== 'string'
+        || !statisticsSelection.basis
+        || (statisticsSelection.chosen_team !== null && (
+          typeof statisticsSelection.chosen_team !== 'object'
+          || !DECIMAL_ID.test(String(statisticsSelection.chosen_team.provider_team_id ?? ''))
+          || typeof statisticsSelection.chosen_team.name !== 'string'
+          || !statisticsSelection.chosen_team.name.trim()
+        ))
+      )) return enrichmentFailure(player);
+
       const rawPayloads = item.provenance?.raw_payloads;
       const rawProfile = rawPayloads?.profile && typeof rawPayloads.profile === 'object'
         ? rawPayloads.profile
@@ -716,6 +742,14 @@ export function normalizeEnrichmentResponse(request, response) {
             : null,
           raw_payload: rawStatistics,
         } : null,
+        ...(statisticsSelection ? { statistics_selection: {
+          selector_version: statisticsSelection.selector_version,
+          chosen_team: statisticsSelection.chosen_team === null ? null : {
+            provider_team_id: String(statisticsSelection.chosen_team.provider_team_id),
+            name: statisticsSelection.chosen_team.name.trim(),
+          },
+          basis: statisticsSelection.basis,
+        } } : {}),
         candidates: normalizeEnrichmentCandidates(item.candidates),
         warning_codes: Array.isArray(item.warnings)
           ? item.warnings.map((warning) => String(warning?.code ?? '')).filter(Boolean)

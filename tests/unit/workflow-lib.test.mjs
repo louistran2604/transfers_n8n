@@ -491,6 +491,11 @@ test('enrichment grouping uses provider ID or Unicode name and club context, nev
   assert.equal(grouped.request.players[0].allow_exact_name_without_club, true);
   assert.equal(grouped.request.players[0].completed_move, false);
   assert.equal(grouped.request.players[1].current_club_name, 'Real Madrid');
+  const dated = buildEnrichmentRequest([
+    { ...base, transfer_report_id: '13', provider_player_id: '826643', as_of_date: '2026-07-30T05:44:00+00:00' },
+  ], { mode: 'shadow', requestId: 'dated', now: 0 });
+  assert.equal(dated.request.players[0].as_of_date, '2026-07-30T05:44:00.000Z');
+  assert.equal(dated.request.players[0].request_context.as_of_date, '2026-07-30T05:44:00.000Z');
   assert.equal(buildEnrichmentRequest([base], { mode: 'invalid', requestId: 'x' }).request, null);
 });
 
