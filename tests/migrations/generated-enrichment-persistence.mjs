@@ -16,11 +16,14 @@ const identity = (id, name) => ({
   stable_source_identifier: `sofascore:player:${id}`,
   canonical_name: name, score: 80, margin: 80, resolver_version: 'identity-v7',
 });
-const profile = (id, name, teamId, teamName) => ({
+const profile = (id, name, teamId, teamName, primaryCompetitionId = null) => ({
   canonical_name: name,
   current_club: { provider_team_id: teamId, name: teamName },
   retrieved_at: '2026-08-09T00:00:00Z', content_sha256: hash('a'), raw_sha256: hash('b'),
-  raw_cache_key: `profile-${id}`, raw_payload: { player: { team: { country: { name: 'Testland' }, category: { name: 'Test' } } } },
+  raw_cache_key: `profile-${id}`, raw_payload: { player: { team: {
+    ...(primaryCompetitionId ? { primaryUniqueTournament: { id: Number(primaryCompetitionId) } } : {}),
+    country: { name: 'Testland' }, category: { name: 'Test' },
+  } } },
 });
 const statistics = (id, competitionId, seasonId) => ({
   provider_unique_tournament_id: competitionId, competition: `League ${competitionId}`,
@@ -29,11 +32,11 @@ const statistics = (id, competitionId, seasonId) => ({
   content_sha256: hash('c'), raw_sha256: hash('d'),
   raw_cache_key: `statistics-${id}-${competitionId}-${seasonId}`, raw_payload: {},
 });
-const item = ({ key, reportId, playerId, name, teamId, teamName, competitionId, seasonId }) => ({
+const item = ({ key, reportId, playerId, name, teamId, teamName, competitionId, seasonId, profileCompetitionId = competitionId }) => ({
   item_key: key, report_ids: [String(reportId)], status: 'fresh', resolver_version: 'identity-v7',
   retryable: false, provider_calls: 2, cache_hits: 0,
   request_context: { reported_name_key: name.toLowerCase() },
-  identity: identity(playerId, name), profile: profile(playerId, name, teamId, teamName),
+  identity: identity(playerId, name), profile: profile(playerId, name, teamId, teamName, profileCompetitionId),
   statistics: statistics(playerId, competitionId, seasonId), candidates: [], warning_codes: [], error: null,
 });
 const payload = (requestId, items) => JSON.stringify({ request_id: requestId, items });
@@ -60,6 +63,9 @@ const duplicateMappingPayload = payload('generated-duplicate-mapping', [
 const contradictoryMappingPayload = payload('generated-contradictory-mapping', [
   item({ key: 'conflict-a', reportId: 900603, playerId: '9603', name: 'Conflict A', teamId: '9701', teamName: 'Conflict Team', competitionId: '9801', seasonId: '9901' }),
   item({ key: 'conflict-b', reportId: 900604, playerId: '9604', name: 'Conflict B', teamId: '9701', teamName: 'Conflict Team', competitionId: '9802', seasonId: '9902' }),
+]);
+const profileCompetitionMismatchPayload = payload('generated-profile-competition-mismatch', [
+  item({ key: 'profile-mismatch', reportId: 900616, playerId: '9616', name: 'Profile Mismatch', teamId: '9716', teamName: 'Profile Mismatch FC', competitionId: '9816', profileCompetitionId: '9817', seasonId: '9916' }),
 ]);
 
 const sql = `\\set ON_ERROR_STOP on
@@ -132,13 +138,19 @@ INSERT INTO transfer_reports (
   (900612, 'fixture-612', 'Shared Player', 'Club B', 'Destination', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"reported_name_key":"shared player","current_club_key":"club b","destination_club_key":"destination"}'),
   (900613, 'fixture-613', 'Legacy Pláyer, Jr.', 'Légacy-Club F.C.', 'Legacy Destination (City)', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'),
   (900614, 'fixture-614', 'Due Transient', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'),
-  (900615, 'fixture-615', 'Future Transient', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}');
+  (900615, 'fixture-615', 'Future Transient', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'),
+  (900616, 'fixture-616', 'Partial Missing Selector', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'),
+  (900617, 'fixture-617', 'Partial Stale Selector', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'),
+  (900618, 'fixture-618', 'Partial Current Selector', 'Club', 'Other', 'rumor', 'permanent', 0.9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}');
 INSERT INTO transfer_report_revisions (transfer_report_id, revision_number, content_sha256, snapshot) VALUES
   (900611, 1, '${hash('5')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
   (900612, 1, '${hash('6')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
   (900613, 1, '${hash('7')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
   (900614, 1, '${hash('8')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
-  (900615, 1, '${hash('9')}', '{"is_huge_rumor":false,"is_digest_worthy":true}');
+  (900615, 1, '${hash('9')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
+  (900616, 1, '${hash('a')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
+  (900617, 1, '${hash('b')}', '{"is_huge_rumor":false,"is_digest_worthy":true}'),
+  (900618, 1, '${hash('c')}', '{"is_huge_rumor":false,"is_digest_worthy":true}');
 INSERT INTO player_identity_overrides (
   reported_name_key, current_club_key, destination_club_key, override_action,
   provider_player_id, effective_at, reason, operator_name
@@ -157,7 +169,21 @@ INSERT INTO player_enrichment_attempts (
   ('fixture-due-transient', 'fixture-due-transient', 'due-transient', 900077, 900614,
    'provider_failure', true, CURRENT_TIMESTAMP - interval '1 minute', '{}', '{"resolver_version":"identity-v5"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes'),
   ('fixture-future-transient', 'fixture-future-transient', 'future-transient', 900077, 900615,
-   'deferred', true, CURRENT_TIMESTAMP + interval '5 minutes', '{}', '{"resolver_version":"identity-v7"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes');
+   'deferred', true, CURRENT_TIMESTAMP + interval '5 minutes', '{}', '{"resolver_version":"identity-v7"}', CURRENT_TIMESTAMP - interval '5 minutes', CURRENT_TIMESTAMP - interval '5 minutes'),
+  ('fixture-partial-missing-selector', 'fixture-partial-selector', 'partial-missing-selector', 900077, 900616,
+   'partial', false, CURRENT_TIMESTAMP + interval '1 hour', '{}', '{"resolver_version":"identity-v9","warning_codes":["statistics_unavailable"]}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour'),
+  ('fixture-partial-stale-selector', 'fixture-partial-selector', 'partial-stale-selector', 900077, 900617,
+   'partial', false, CURRENT_TIMESTAMP + interval '1 hour', '{}', '{"resolver_version":"identity-v9","statistics_selection":{"selector_version":"statistics-v1"},"warning_codes":["statistics_unavailable"]}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour'),
+  ('fixture-partial-current-selector', 'fixture-partial-selector', 'partial-current-selector', 900077, 900618,
+   'partial', true, CURRENT_TIMESTAMP + interval '1 hour', '{}', '{"resolver_version":"identity-v9","statistics_selection":{"selector_version":"statistics-v2"},"warning_codes":["statistics_unavailable"]}', CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP - interval '1 hour');
+
+CREATE FUNCTION pg_temp.step3_assert_true(condition boolean)
+RETURNS boolean LANGUAGE plpgsql AS $assert$
+BEGIN
+  IF NOT condition THEN RAISE EXCEPTION 'Step 3 generated assertion failed'; END IF;
+  RETURN true;
+END
+$assert$;
 
 PREPARE generated_context(jsonb, text) AS
 ${contextNode.parameters.query};
@@ -189,6 +215,23 @@ WHERE transfer_report_id = 900614;
 UPDATE player_enrichment_attempts
 SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v7"')
 WHERE transfer_report_id = 900614;
+PREPARE generated_context_count(jsonb, text) AS
+SELECT count(*) AS historical_count,
+  count(*) FILTER (WHERE transfer_report_id = '900606') AS young_v6_unresolved_count,
+  count(*) FILTER (WHERE transfer_report_id = '900615') AS future_v6_transient_count,
+  count(*) FILTER (WHERE transfer_report_id = '900616') AS partial_missing_selector_count,
+  count(*) FILTER (WHERE transfer_report_id = '900617') AS partial_stale_selector_count,
+  count(*) FILTER (WHERE transfer_report_id = '900618') AS partial_current_selector_count
+FROM (${contextNode.parameters.query.replace(/;\s*$/, '')}) context_rows;
+EXECUTE generated_context_count('[]'::jsonb, '900077') \\gset partial_selector_
+SELECT pg_temp.step3_assert_true(
+  :partial_selector_partial_missing_selector_count = 1
+  AND :partial_selector_partial_stale_selector_count = 1
+  AND :partial_selector_partial_current_selector_count = 0
+);
+UPDATE player_enrichment_attempts
+SET evidence = jsonb_set(evidence, '{statistics_selection}', '{"selector_version":"statistics-v2"}'::jsonb)
+WHERE transfer_report_id IN (900616, 900617);
 EXECUTE generated_context('[]'::jsonb, '900077') \\gset old_unresolved_
 \\if :old_unresolved_force_resolver_retry
 \\else
@@ -203,15 +246,13 @@ SELECT CASE WHEN :'old_unresolved_transfer_report_id' = '900605'
 UPDATE player_enrichment_attempts
 SET evidence = jsonb_set(evidence, '{resolver_version}', '"identity-v7"')
 WHERE transfer_report_id = 900605;
-PREPARE generated_context_count(jsonb, text) AS
-SELECT count(*) AS historical_count,
-  count(*) FILTER (WHERE transfer_report_id = '900606') AS young_v6_unresolved_count,
-  count(*) FILTER (WHERE transfer_report_id = '900615') AS future_v6_transient_count
-FROM (${contextNode.parameters.query.replace(/;\s*$/, '')}) context_rows;
 EXECUTE generated_context_count('[]'::jsonb, '900077') \\gset current_version_
 SELECT :current_version_historical_count = 0
   AND :current_version_young_v6_unresolved_count = 0
-  AND :current_version_future_v6_transient_count = 0 AS v6_cooldowns_ok \\gset
+  AND :current_version_future_v6_transient_count = 0
+  AND :current_version_partial_missing_selector_count = 0
+  AND :current_version_partial_stale_selector_count = 0
+  AND :current_version_partial_current_selector_count = 0 AS v6_cooldowns_ok \\gset
 \\if :v6_cooldowns_ok
 \\else
   \\quit 1
@@ -339,6 +380,13 @@ EXECUTE generated_persist(${literal(contradictoryMappingPayload)}, 900077);
 DO $check$
 BEGIN
   IF (SELECT count(*) FROM team_competition_mappings mapping JOIN provider_teams team ON team.id = mapping.provider_team_id WHERE team.provider_team_id = '9701' AND mapping.superseded_at IS NULL) <> 0 THEN RAISE EXCEPTION 'contradictory mapping was guessed'; END IF;
+END
+$check$;
+
+EXECUTE generated_persist(${literal(profileCompetitionMismatchPayload)}, 900077);
+DO $check$
+BEGIN
+  IF (SELECT count(*) FROM team_competition_mappings mapping JOIN provider_teams team ON team.id = mapping.provider_team_id WHERE team.provider_team_id = '9716' AND mapping.superseded_at IS NULL) <> 0 THEN RAISE EXCEPTION 'profile team was mapped to a different statistics competition'; END IF;
 END
 $check$;
 DEALLOCATE generated_persist;
