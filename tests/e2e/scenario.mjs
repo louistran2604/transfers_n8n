@@ -336,7 +336,7 @@ assert.equal(new Set(digest.embeds[0].fields.map((field) => field.name)).size, 1
 const activeField = digest.embeds[0].fields.find((field) => field.name.includes('Mock Player 0'));
 assert.match(activeField.value, /Probability: 62% \(▲ \+11\)/);
 assert.match(activeField.value, /Stage: Advanced talks/);
-assert.match(activeField.value, /Fee: €25m \+ €5m add-ons · Sofascore value €20m \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
+assert.match(activeField.value, /Fee: €25m \+ €5m add-ons \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
 assert.doesNotMatch(activeField.value, /Confidence:/);
 const discordBeforeNormal = (await json('/state')).body.discordRequests;
 const sent = await json('/discord/receive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(digest) });

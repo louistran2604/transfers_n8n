@@ -1538,7 +1538,8 @@ test('digest renders fresh same-currency fee context compactly and fails open ot
       fee_plus_add_ons_ratio: 1.5,
     },
   }]).embeds[0].fields[0].value;
-  assert.match(fresh, /Fee: €25m \+ €5m add-ons · Sofascore value €20m \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
+  assert.match(fresh, /Fee: €25m \+ €5m add-ons \(1\.25x guaranteed, 1\.5x incl\. add-ons, fresh\)/);
+  assert.doesNotMatch(fresh, /Fee: .*Sofascore value/);
   assert.doesNotMatch(fresh, /^Add-ons:/m);
 
   for (const fee_context of [
@@ -1559,7 +1560,7 @@ test('digest renders fresh same-currency fee context compactly and fails open ot
       market_value_currency: 'EUR', stale: false, guaranteed_fee_ratio: 1.25,
     },
   }]).embeds[0].fields[0].value;
-  assert.match(partial, /^Fee: €25m · Sofascore value €20m \(1\.25x guaranteed, fresh\)$/m);
+  assert.match(partial, /^Fee: €25m \(1\.25x guaranteed, fresh\)$/m);
   assert.match(partial, /^Add-ons: 5,000,000 GBP$/m);
   assert.doesNotMatch(partial, /incl\. add-ons/);
 });
@@ -1647,12 +1648,13 @@ test('digest appends rich enrichment in whole groups and keeps the journalist li
   };
   const embed = buildDiscordDigest([report], { now: Date.parse('2026-07-30T06:00:00Z') }).embeds[0];
   const value = embed.fields[0].value;
-  assert.match(value, /Confidence of Model Understanding \(CoMU\): 70%\n\*\*Player profile & statistics\*\*\nProfile:/);
+  assert.match(value, /\*\*Player profile & statistics\*\*\nProfile:/);
   assert.match(value, /Profile: Real Madrid · France · 27 · Forward · Sofascore value €191m/);
   assert.match(value, /LaLiga 2025\/26 - all clubs: 31 app · 2,604 min · 25 G · 5 A · 29 starts · 84 min\/app · 23\.95 xG · 6\.20 xA · 7\.56 rating · stale 18h/);
   assert.doesNotMatch(value, /Advanced:/);
   assert.match(value, /Details: Born 1998-12-20 · 180 cm · Right foot/);
   assert.match(value, /Other: 3 yellow · 0 red/);
+  assert.match(value, /\*\*Transfer assessment\*\*\nConfidence of Model Understanding \(CoMU\): 70%/);
   assert.ok(value.endsWith(`[David Ornstein](${postUrl})`));
   assert.ok(value.length <= 1024);
   assert.ok(discordCharacterCount(embed) <= 6000);
@@ -2323,6 +2325,7 @@ test('library and generated Discord formatters match across rich, sparse, null, 
     const report = {
       ...validReport({
         player_name: `Parity ${index}`,
+        move_effective_on: index === 0 ? '2027-06' : null,
         ...(index === 0 ? {
           fee_amount: 25000000, fee_currency: 'EUR',
           add_ons_amount: 5000000, add_ons_currency: 'EUR',

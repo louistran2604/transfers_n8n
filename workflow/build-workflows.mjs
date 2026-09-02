@@ -1871,6 +1871,12 @@ const truncate = (value, maximum) => {
   return result + '…';
 };
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
+const moveEffectiveLine = (value) => {
+  const match = /^(\\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\\d|3[01]))?$/.exec(String(value ?? ''));
+  if (!match) return null;
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  return 'Move starts: ' + months[Number(match[2]) - 1] + ' ' + match[1];
+};
 const finiteNumber = (value) => {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -1960,7 +1966,7 @@ const feeContextLine = (report) => {
     && String(report.add_ons_currency ?? '') === String(context.market_value_currency ?? ''));
   const ratios = [Number(ratio.toFixed(2)) + 'x guaranteed'];
   if (includesAddOns) ratios.push(Number(totalRatio.toFixed(2)) + 'x incl. add-ons');
-  return { line: 'Fee: ' + fee + (includesAddOns ? ' + ' + addOns + ' add-ons' : '') + ' · Sofascore value ' + marketValue + ' (' + ratios.join(', ') + ', fresh)', includesAddOns };
+  return { line: 'Fee: ' + fee + (includesAddOns ? ' + ' + addOns + ' add-ons' : '') + ' (' + ratios.join(', ') + ', fresh)', includesAddOns };
 };
 const integerStatistic = (value, label) => {
   const number = finiteNumber(value);
@@ -2124,10 +2130,12 @@ for (const report of selected) {
   const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);
   const sourceLine = report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name;
   const feeComparison = feeContextLine(report);
-  const lines = [
+  const transferLines = [
     report.current_club_name + ' → ' + report.destination_club_name,
+    '**Transfer details**',
     'Classification: ' + report.classification.replaceAll('_', ' '),
     report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
+    moveEffectiveLine(report.move_effective_on),
     feeComparison?.line ?? (amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null),
     !feeComparison?.includesAddOns && amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,
     amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,
@@ -2139,25 +2147,28 @@ for (const report of selected) {
     report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? 'Sell-on: ' + report.sell_on_percentage + '%' : null,
     report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,
     report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,
-    ...probabilityLines(report),
-    sourceLine,
   ].filter(Boolean);
-  const source = lines.at(-1);
-  const transferLines = lines.slice(0, -1);
+  const assessmentLines = ['**Transfer assessment**', ...probabilityLines(report)];
+  const source = sourceLine;
+  const transferOnlyLines = [
+    ...transferLines,
+    ...assessmentLines,
+    source,
+  ].filter(Boolean);
   const enrichmentHeading = '**Player profile & statistics**';
   const accepted = [];
   for (const group of enrichmentGroups(report.enrichment, now.valueOf())) {
     if (!group.line) continue;
     const nextAccepted = [...accepted, group];
     const enrichmentLines = nextAccepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
-    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, source].join('\\n');
+    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, ...assessmentLines, source].join('\\n');
     if (candidate.length > 1024) continue;
     accepted.push(group);
   }
   const enrichmentLines = accepted.sort((left, right) => left.displayOrder - right.displayOrder).map(({ line }) => line);
   const value = accepted.length
-    ? [...transferLines, enrichmentHeading, ...enrichmentLines, source].join('\\n')
-    : lines.join('\\n');
+    ? [...transferLines, enrichmentHeading, ...enrichmentLines, ...assessmentLines, source].join('\\n')
+    : transferOnlyLines.join('\\n');
   const currentCharacters = title.length + footerText(fields.length).length + fields.reduce((total, field) => total + field.name.length + field.value.length, 0);
   const candidateCharacters = currentCharacters - footerText(fields.length).length + footerText(fields.length + 1).length + name.length + value.length;
   if (value.length > 1024 || candidateCharacters > 6000) continue;

@@ -1211,12 +1211,21 @@ function isNewDigestUpdate(report, entityAliases, now) {
   return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
 }
 
-function storyLines(report) {
+function moveEffectiveLine(value) {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$/.exec(String(value ?? ''));
+  if (!match) return null;
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  return `Move starts: ${months[Number(match[2]) - 1]} ${match[1]}`;
+}
+
+function storySections(report) {
   const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
   const feeComparison = feeContextLine(report);
   const details = [
+    '**Transfer details**',
     `Classification: ${report.classification.replaceAll('_', ' ')}`,
     report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
+    moveEffectiveLine(report.move_effective_on),
     feeComparison?.line ?? (formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null),
     !feeComparison?.includesAddOns && formatAmount(report.add_ons_amount, report.add_ons_currency) ? `Add-ons: ${formatAmount(report.add_ons_amount, report.add_ons_currency)}` : null,
     formatAmount(report.release_clause_amount, report.release_clause_currency) ? `Release clause: ${formatAmount(report.release_clause_amount, report.release_clause_currency)}` : null,
@@ -1280,7 +1289,11 @@ function storyLines(report) {
   } else {
     probabilityLines.push(`Confidence of Model Understanding (CoMU): ${Math.round(report.confidence * 100)}%`);
   }
-  return [clubDirection, ...details, ...probabilityLines, sourceUrl ? `[${source}](${sourceUrl})` : source].filter(Boolean);
+  return {
+    transferLines: [clubDirection, ...details].filter(Boolean),
+    assessmentLines: ['**Transfer assessment**', ...probabilityLines],
+    sourceLine: sourceUrl ? `[${source}](${sourceUrl})` : source,
+  };
 }
 
 function truncate(value, maximum) {
@@ -1345,7 +1358,7 @@ function feeContextLine(report) {
   const ratios = [`${Number(ratio.toFixed(2))}x guaranteed`];
   if (includesAddOns) ratios.push(`${Number(totalRatio.toFixed(2))}x incl. add-ons`);
   return {
-    line: `Fee: ${fee}${includesAddOns ? ` + ${addOns} add-ons` : ''} · Sofascore value ${marketValue} (${ratios.join(', ')}, fresh)`,
+    line: `Fee: ${fee}${includesAddOns ? ` + ${addOns} add-ons` : ''} (${ratios.join(', ')}, fresh)`,
     includesAddOns,
   };
 }
@@ -1452,9 +1465,7 @@ function enrichmentGroups(enrichment, now) {
 }
 
 function digestStoryValue(report, now) {
-  const lines = storyLines(report);
-  const sourceLine = lines.at(-1);
-  const transferLines = lines.slice(0, -1);
+  const { transferLines, assessmentLines, sourceLine } = storySections(report);
   const enrichmentHeading = '**Player profile & statistics**';
   const accepted = [];
   for (const group of enrichmentGroups(report.enrichment, now)) {
@@ -1463,15 +1474,15 @@ function digestStoryValue(report, now) {
     const enrichmentLines = nextAccepted
       .toSorted((left, right) => left.displayOrder - right.displayOrder)
       .map(({ line }) => line);
-    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
+    const candidate = [...transferLines, enrichmentHeading, ...enrichmentLines, ...assessmentLines, sourceLine].join('\n');
     if (candidate.length > 1024) continue;
     accepted.push(group);
   }
-  if (!accepted.length) return lines.join('\n');
+  if (!accepted.length) return [...transferLines, ...assessmentLines, sourceLine].join('\n');
   const enrichmentLines = accepted
     .toSorted((left, right) => left.displayOrder - right.displayOrder)
     .map(({ line }) => line);
-  return [...transferLines, enrichmentHeading, ...enrichmentLines, sourceLine].join('\n');
+  return [...transferLines, enrichmentHeading, ...enrichmentLines, ...assessmentLines, sourceLine].join('\n');
 }
 
 export function selectDigestReports(reports, { entityAliases = EMPTY_ENTITY_ALIASES, now = Date.now() } = {}) {
