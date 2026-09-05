@@ -125,8 +125,8 @@ WITH raw AS (
   WHERE id = $1::bigint
   RETURNING id
 ), failure AS (
-  INSERT INTO failures (operation_name, error_fingerprint, error_class, error_message, details)
-  VALUES ('qwen_extract', $2, 'ValidationError', $3, $4::jsonb)
+  INSERT INTO failures (workflow_run_id, operation_name, error_fingerprint, error_class, error_message, details)
+  VALUES ($7::bigint, 'qwen_extract', $2, 'ValidationError', $3, $4::jsonb)
   ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE
   SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,
       error_message = EXCLUDED.error_message, details = EXCLUDED.details
@@ -139,7 +139,8 @@ SET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELS
     attempt_count = retry_states.attempt_count + 1,
     next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,
     last_failure_id = EXCLUDED.last_failure_id
-RETURNING id::text AS retry_state_id, state, attempt_count;`.trim();
+RETURNING id::text AS retry_state_id, state, attempt_count;
+UPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $7::bigint;`.trim();
 }
 
 function mergeReportSql() {
@@ -1479,7 +1480,7 @@ return $input.all().flatMap((item, index) => {
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
   const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
-    return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000] } }];
+    return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
@@ -2290,8 +2291,12 @@ const probabilityMode = ['shadow', 'active'].includes(selectedProbabilityMode) ?
 const runContext = $('Create run context').isExecuted
   ? $('Create run context').first().json
   : $('Create sample run context').first().json;
+const workflowRunId = $('Register workflow run').isExecuted
+  ? $('Register workflow run').first().json.workflow_run_id
+  : $('Register sample workflow run').first().json.workflow_run_id;
 return $input.all().map((item) => ({ json: {
   raw_post_id: item.json.raw_post_id, external_post_id: item.json.external_post_id, post_url: item.json.post_url, posted_at: item.json.posted_at,
+  workflow_run_id: workflowRunId,
   evaluated_at: runContext.collection_started_at,
   probability_mode: probabilityMode,
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },

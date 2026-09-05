@@ -2679,6 +2679,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const runNode = workflow.nodes.find((node) => node.name === 'Register workflow run');
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
+  const qwenFailureNode = workflow.nodes.find((node) => node.name === 'Record Qwen validation failure');
   const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
   assert.match(qwenNode.parameters.jsCode, /football_transfer_extraction/);
@@ -2700,6 +2701,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenParserNode.parameters.jsCode, /Randal Kolo Muani/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.extraction_confidence/);
   assert.doesNotMatch(qwenParserNode.parameters.jsCode, /report\.confidence/);
+  assert.match(qwenFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
+  assert.match(qwenFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
+  assert.match(qwenFailureNode.parameters.query, /id = \$7::bigint/);
   assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
   assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
   assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
@@ -2721,12 +2725,14 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(mergeReportsNode.parameters.query, /payload->>'extraction_confidence'/);
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const runQwenParser = new AsyncFunction('$input', '$', qwenParserNode.parameters.jsCode);
-  const request = { json: { raw_post_id: '1', external_post_id: '2', post_url: 'https://x.com/test/status/2', posted_at: '2026-08-27T00:00:00.000Z', source: source('test') } };
+  const request = { json: { raw_post_id: '1', external_post_id: '2', workflow_run_id: '77', post_url: 'https://x.com/test/status/2', posted_at: '2026-08-27T00:00:00.000Z', source: source('test') } };
   const parseQwen = (report) => runQwenParser({ all: () => [{ json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [report] }) } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
   const parsedEvidence = await parseQwen(evidenceReport({ extraction_confidence: 0.84 }));
   assert.equal(parsedEvidence[0].json.valid, true);
   assert.equal(parsedEvidence[0].json.report.extraction_confidence, 0.84);
-  assert.equal((await parseQwen(validReport()))[0].json.valid, false);
+  const invalidQwen = (await parseQwen(validReport()))[0].json;
+  assert.equal(invalidQwen.valid, false);
+  assert.equal(invalidQwen.params.at(-1), '77');
   const runMerge = new AsyncFunction('$input', mergeExtractedNode.parameters.jsCode);
   const preferredEvidence = evidenceReport({
     stage_signal: 'talks', claim_stance: 'supports', wording_strength: 'direct', club_agreement_state: 'talks', personal_terms_state: 'talks',
