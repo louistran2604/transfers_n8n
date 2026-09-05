@@ -137,6 +137,88 @@
       }
     },
     {
+      "id": "check-stale-workflow-runs",
+      "name": "Check stale workflow runs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        -540
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nSELECT count(*)::integer AS stale_run_count,\n  (count(*) > 0) AS stale_runs\nFROM workflow_runs\nWHERE status = 'running'\n  AND started_at < CURRENT_TIMESTAMP - interval '12 hours';",
+        "options": {
+          "queryBatching": "transaction",
+          "outputLargeFormatNumbers": "text"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Transfers PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "stale-workflow-runs-",
+      "name": "Stale workflow runs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -680,
+        -540
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.stale_runs }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "send-stale-run-alert",
+      "name": "Send stale-run alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -460,
+        -540
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_ERRORS_WEBHOOK_URL + \"?wait=true\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: \"Football Transfer Monitor has \" + $json.stale_run_count + \" workflow run(s) stuck in running for more than 12 hours.\" }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "id": "create-run-context",
       "name": "Create run context",
       "type": "n8n-nodes-base.code",
@@ -1421,6 +1503,11 @@
             "node": "Recover interrupted deliveries",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Check stale workflow runs",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -1489,6 +1576,29 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Check stale workflow runs": {
+      "main": [
+        [
+          {
+            "node": "Stale workflow runs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stale workflow runs?": {
+      "main": [
+        [
+          {
+            "node": "Send stale-run alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     },
     "Create run context": {

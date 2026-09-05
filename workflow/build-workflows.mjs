@@ -2206,6 +2206,17 @@ function mainWorkflow({ registry, prompt, schema }) {
     postgresNode('Recover interrupted deliveries', [-900, -40], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
     postgresNode('Recover interrupted sample deliveries', [-900, 220], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
     postgresNode('Recover interrupted stale deliveries', [-900, -340], `UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending' RETURNING id::text AS digest_delivery_id;`),
+    postgresNode('Check stale workflow runs', [-900, -540], `
+SELECT count(*)::integer AS stale_run_count,
+  (count(*) > 0) AS stale_runs
+FROM workflow_runs
+WHERE status = 'running'
+  AND started_at < CURRENT_TIMESTAMP - interval '12 hours';`),
+    node('Stale workflow runs?', 'n8n-nodes-base.if', [-680, -540], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.stale_runs }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Send stale-run alert', [-460, -540], {
+      method: 'POST', url: '={{ $env.DISCORD_ERRORS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
+      contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify({ content: "Football Transfer Monitor has " + $json.stale_run_count + " workflow run(s) stuck in running for more than 12 hours." }) }}',
+    }, { continueOnFail: true }),
     codeNode('Create run context', [-700, -40], `
 const now = new Date();
 const start = new Date(now); start.setMinutes(0, 0, 0); start.setHours(Math.floor(start.getHours() / 6) * 6);
@@ -2390,13 +2401,18 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     postgresNode('Finalize delivery and run', [6700, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
   ];
   const connections = {
-    'Every six hours': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
+    'Every six hours': { main: [[
+      { node: 'Recover interrupted deliveries', type: 'main', index: 0 },
+      { node: 'Check stale workflow runs', type: 'main', index: 0 },
+    ]] },
     'Daily probability decay': { main: [[{ node: 'Recover interrupted stale deliveries', type: 'main', index: 0 }]] },
     'Manual run': { main: [[{ node: 'Recover interrupted deliveries', type: 'main', index: 0 }]] },
     'Manual sample run': { main: [[{ node: 'Recover interrupted sample deliveries', type: 'main', index: 0 }]] },
     'Recover interrupted deliveries': { main: [[{ node: 'Create run context', type: 'main', index: 0 }]] },
     'Recover interrupted sample deliveries': { main: [[{ node: 'Create sample run context', type: 'main', index: 0 }]] },
     'Recover interrupted stale deliveries': { main: [[{ node: 'Create stale recompute context', type: 'main', index: 0 }]] },
+    'Check stale workflow runs': { main: [[{ node: 'Stale workflow runs?', type: 'main', index: 0 }]] },
+    'Stale workflow runs?': { main: [[{ node: 'Send stale-run alert', type: 'main', index: 0 }], []] },
     'Create run context': { main: [[{ node: 'Register workflow run', type: 'main', index: 0 }]] },
     'Create sample run context': { main: [[{ node: 'Register sample workflow run', type: 'main', index: 0 }]] },
     'Create stale recompute context': { main: [[{ node: 'Register stale workflow run', type: 'main', index: 0 }]] },

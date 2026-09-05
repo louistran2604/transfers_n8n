@@ -2679,6 +2679,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const runNode = workflow.nodes.find((node) => node.name === 'Register workflow run');
   const recoveryNode = workflow.nodes.find((node) => node.name === 'Recover interrupted deliveries');
+  const staleRunCheckNode = workflow.nodes.find((node) => node.name === 'Check stale workflow runs');
+  const staleRunIfNode = workflow.nodes.find((node) => node.name === 'Stale workflow runs?');
+  const staleRunAlertNode = workflow.nodes.find((node) => node.name === 'Send stale-run alert');
   const qwenFailureNode = workflow.nodes.find((node) => node.name === 'Record Qwen validation failure');
   const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
@@ -2704,6 +2707,12 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
   assert.match(qwenFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
   assert.match(qwenFailureNode.parameters.query, /id = \$7::bigint/);
+  assert.match(staleRunCheckNode.parameters.query, /status = 'running'/);
+  assert.match(staleRunCheckNode.parameters.query, /interval '12 hours'/);
+  assert.equal(staleRunIfNode.parameters.conditions.conditions[0].leftValue, '={{ $json.stale_runs }}');
+  assert.equal(staleRunAlertNode.continueOnFail, true);
+  assert.match(staleRunAlertNode.parameters.url, /DISCORD_ERRORS_WEBHOOK_URL/);
+  assert.match(staleRunAlertNode.parameters.jsonBody, /stale_run_count/);
   assert.match(collectorNode.parameters.jsCode, /X_COLLECTOR/);
   assert.match(twscrapeBuilderNode.parameters.jsCode, /limit: 20/);
   assert.match(twscrapeNode.parameters.url, /TWSCRAPE_BASE_URL/);
@@ -2819,6 +2828,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions').parameters.query, /is_preferred = false/);
   assert.ok(workflow.nodes.find((node) => node.name === 'Clear preferred report source'));
   assert.ok(workflow.nodes.find((node) => node.name === 'Set preferred report source'));
+  assert.equal(workflow.connections['Every six hours'].main[0][1].node, 'Check stale workflow runs');
+  assert.equal(workflow.connections['Check stale workflow runs'].main[0][0].node, 'Stale workflow runs?');
+  assert.equal(workflow.connections['Stale workflow runs?'].main[0][0].node, 'Send stale-run alert');
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare merged processed-post Redis write');
   assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Prepare preferred source reset');
   assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare enrichment batch query');
