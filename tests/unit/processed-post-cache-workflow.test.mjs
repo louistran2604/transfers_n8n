@@ -29,17 +29,23 @@ test('generated twscrape topology checks processed-post Redis before PostgreSQL 
   nodeByName('Processed-post Redis cache enabled?');
   nodeByName('Lookup processed-posts via Upstash');
   nodeByName('Filter processed-post Redis hits');
+  nodeByName('Collected posts?');
+  nodeByName('Posts remain after cache?');
   nodeByName('Bypass processed-post Redis cache');
   assert.equal(workflow.nodes.some((node) => /rapidapi/i.test(node.name)), false);
   assert.doesNotMatch(JSON.stringify(workflow), /RAPIDAPI/i);
-  assert.equal(target('Normalize twscrape posts'), 'Prepare processed-post Redis lookup');
+  assert.equal(target('Normalize twscrape posts'), 'Collected posts?');
+  assert.equal(target('Collected posts?', 0), 'Prepare processed-post Redis lookup');
+  assert.equal(target('Collected posts?', 1), 'Prepare digest candidates query');
   assert.equal(target('Upsert source accounts'), 'Select X collector');
   assert.equal(target('Select X collector'), 'Build twscrape collect request');
   assert.equal(target('Prepare processed-post Redis lookup'), 'Processed-post Redis cache enabled?');
   assert.equal(target('Processed-post Redis cache enabled?', 0), 'Lookup processed-posts via Upstash');
   assert.equal(target('Processed-post Redis cache enabled?', 1), 'Bypass processed-post Redis cache');
   assert.equal(target('Lookup processed-posts via Upstash'), 'Filter processed-post Redis hits');
-  assert.equal(target('Filter processed-post Redis hits'), 'Persist raw posts');
+  assert.equal(target('Filter processed-post Redis hits'), 'Posts remain after cache?');
+  assert.equal(target('Posts remain after cache?', 0), 'Persist raw posts');
+  assert.equal(target('Posts remain after cache?', 1), 'Prepare digest candidates query');
   assert.equal(target('Bypass processed-post Redis cache'), 'Persist raw posts');
   assert.equal(target('Load sample collected X posts'), 'Persist raw posts');
   assert.equal(target('Persist raw posts'), 'Build Qwen request');
@@ -50,6 +56,7 @@ test('terminal PostgreSQL transitions populate Redis only after success and merg
     'Prepare ignored processed-post Redis write',
     'Ignored processed-post Redis cache enabled?',
     'Store ignored processed-post markers via Upstash',
+    'Mark ignored outcome',
     'Prepare merged processed-post Redis write',
     'Merged processed-post Redis cache enabled?',
     'Store merged processed-post markers via Upstash',
@@ -58,13 +65,16 @@ test('terminal PostgreSQL transitions populate Redis only after success and merg
   assert.equal(target('Mark non-transfer ignored'), 'Prepare ignored processed-post Redis write');
   assert.equal(target('Prepare ignored processed-post Redis write'), 'Ignored processed-post Redis cache enabled?');
   assert.equal(target('Ignored processed-post Redis cache enabled?', 0), 'Store ignored processed-post markers via Upstash');
+  assert.equal(target('Ignored processed-post Redis cache enabled?', 1), 'Mark ignored outcome');
+  assert.equal(target('Store ignored processed-post markers via Upstash'), 'Mark ignored outcome');
+  assert.equal(target('Mark ignored outcome'), 'Merge workflow outcomes');
   assert.equal(target('Prepare merged processed-post Redis write'), 'Merged processed-post Redis cache enabled?');
   assert.equal(target('Merged processed-post Redis cache enabled?', 0), 'Store merged processed-post markers via Upstash');
   assert.equal(target('Merged processed-post Redis cache enabled?', 1), 'Resume merged processing after Redis');
   assert.equal(target('Store merged processed-post markers via Upstash'), 'Resume merged processing after Redis');
-  assert.equal(target('Resume merged processing after Redis'), 'Prepare preferred source reset');
+  assert.equal(target('Resume merged processing after Redis'), 'Merge workflow outcomes');
   assert.equal(target('Persist merged reports and revisions'), 'Prepare merged processed-post Redis write');
-  assert.equal(workflow.connections['Record Qwen validation failure'], undefined);
+  assert.equal(target('Record Qwen validation failure'), 'Merge workflow outcomes');
   assert.equal(nodeByName('Mark non-transfer ignored').continueOnFail, undefined);
   assert.equal(nodeByName('Persist merged reports and revisions').continueOnFail, undefined);
   assert.match(nodeByName('Persist merged reports and revisions').parameters.query, /processed_post_external_ids/);
@@ -195,7 +205,7 @@ test('processed-post terminal writes are off by default, deduplicated, terminal-
 
 test('merged Redis write result is ignored so durable merge output resumes preferred-source processing', async () => {
   const durableRows = [{ transfer_report_id: '41', preferred_raw_post_id: '51', processed_post_external_ids: ['61'] }];
-  assert.deepEqual(await runResume(durableRows), durableRows.map((json) => ({ json })));
+  assert.deepEqual(await runResume(durableRows), durableRows.map((json) => ({ json: { ...json, workflow_outcome: 'merged_report' } })));
 });
 
 test('processed-post Redis hits are filtered while misses and every ambiguous response fail open', async () => {
@@ -209,6 +219,11 @@ test('processed-post Redis hits are filtered while misses and every ambiguous re
     { statusCode: 200, body: [{ result: 'ignored' }, { result: null }] },
   ], prepared);
   assert.deepEqual(hitAndMiss.map((item) => item.json), [posts[1]]);
+
+  const allHits = await runFilter([
+    { statusCode: 200, body: [{ result: 'ignored' }, { result: 'merged' }] },
+  ], prepared);
+  assert.deepEqual(allHits.map((item) => item.json), [{ workflow_outcome: 'all_posts_processed' }]);
 
   for (const response of [
     { statusCode: 401, body: 'unauthorized' },

@@ -140,7 +140,7 @@ SET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELS
     next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,
     last_failure_id = EXCLUDED.last_failure_id
 RETURNING id::text AS retry_state_id, state, attempt_count;
-UPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $7::bigint;`.trim();
+SELECT 'qwen_validation_failure'::text AS workflow_outcome, $7::text AS workflow_run_id;`.trim();
 }
 
 function mergeReportSql() {
@@ -1115,10 +1115,20 @@ claimed AS (
   WHERE (SELECT status FROM delivery) = 'sending'
   ON CONFLICT (transfer_report_revision_id) DO NOTHING
   RETURNING id
+), selected AS (
+  SELECT id::text AS digest_delivery_id, status, request_payload
+  FROM delivery
+  WHERE EXISTS (SELECT 1 FROM claimed)
+     OR EXISTS (SELECT 1 FROM digest_items WHERE digest_delivery_id = delivery.id)
+), result AS (
+  SELECT digest_delivery_id, status, request_payload FROM selected
+  UNION ALL
+  SELECT NULL::text AS digest_delivery_id, 'not_reserved'::text AS status, NULL::jsonb AS request_payload
+  FROM input
+  WHERE NOT EXISTS (SELECT 1 FROM selected)
 )
-SELECT id::text AS digest_delivery_id, status, request_payload FROM delivery
-WHERE EXISTS (SELECT 1 FROM claimed)
-   OR EXISTS (SELECT 1 FROM digest_items WHERE digest_delivery_id = delivery.id);`.trim();
+SELECT result.*, input.payload->>'workflow_run_id' AS workflow_run_id
+FROM result CROSS JOIN input;`.trim();
 }
 
 function finalizeDeliverySql() {
@@ -1134,6 +1144,14 @@ SET status = CASE
     sent_at = CASE WHEN $2::integer BETWEEN 200 AND 299 THEN CURRENT_TIMESTAMP ELSE NULL END
 WHERE id = $1::bigint
 RETURNING id::text AS digest_delivery_id, status, discord_message_id;`.trim();
+}
+
+function completeRunWithoutDeliverySql() {
+  return `
+UPDATE workflow_runs
+SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP
+WHERE id = $1::bigint
+RETURNING id::text AS workflow_run_id, status;`.trim();
 }
 
 function runRegistrationSql() {
@@ -1265,7 +1283,7 @@ const context = $('Create run context').isExecuted ? $('Create run context').fir
 const collectionCutoffAt = Date.parse(context.collection_cutoff_at);
 const collectionStartedAt = Date.parse(context.collection_started_at);
 const seen = new Set();
-return posts.flatMap((post) => {
+const normalized = posts.flatMap((post) => {
   const source = sources.get(String(post?.source_id ?? ''));
   const externalPostId = String(post?.external_post_id ?? '');
   const xUserId = String(post?.x_user_id ?? '');
@@ -1280,7 +1298,8 @@ return posts.flatMap((post) => {
   return [{ json: {
     params: [String(source.external_account_id), externalPostId, postUrl, content, date.toISOString(), JSON.stringify(rawPayload), source.username, source.display_name, source.priority_rank, source.reliability_score, source.is_official],
   } }];
-});`;
+});
+return normalized.length ? normalized : [{ json: { workflow_outcome: 'no_posts' } }];`;
 }
 
 function processedPostCacheLookupCode() {
@@ -1370,7 +1389,7 @@ for (let index = 0; index < prepared.length; index += 1) {
     if (results[resultIndex] === null) output.push(...emit([groups[resultIndex]]));
   }
 }
-return output;`;
+return output.length ? output : [{ json: { workflow_outcome: 'all_posts_processed' } }];`;
 }
 
 function processedPostCacheBypassCode() {
@@ -1443,7 +1462,7 @@ function processedPostCacheSetHttpParameters() {
 
 function processedPostCacheResumeCode() {
   return `
-return $('Persist merged reports and revisions').all().map((item) => ({ json: item.json }));`;
+return $('Persist merged reports and revisions').all().map((item) => ({ json: { ...item.json, workflow_outcome: 'merged_report' } }));`;
 }
 
 function qwenParseCode({ includeExternalPostId = false } = {}) {
@@ -1553,9 +1572,9 @@ for (const reports of groups.values()) {
     snapshot,
     content_sha256: sha256(Object.fromEntries(Object.entries(snapshot).filter(([field]) => field !== 'is_digest_worthy'))),
   };
-  outputs.push({ json: { params: [JSON.stringify(payload)] } });
+  outputs.push({ json: { workflow_outcome: 'merged_report', params: [JSON.stringify(payload)] } });
 }
-return outputs;`;
+return outputs.length ? outputs : [{ json: { workflow_outcome: 'no_merged_reports' } }];`;
 }
 
 function prepareEnrichmentBatchCode() {
@@ -2185,11 +2204,20 @@ if (pending) {
       ? JSON.parse(pending.pending_request_payload)
       : pending.pending_request_payload;
   } catch {
-    return [];
+    throw new Error('Malformed pending Discord payload');
   }
-  if (!discordPayload || typeof discordPayload !== 'object' || Array.isArray(discordPayload)) return [];
+  if (!discordPayload || typeof discordPayload !== 'object' || Array.isArray(discordPayload)) throw new Error('Malformed pending Discord payload');
 }
-return fields.length ? [{ json: { params: [JSON.stringify({ idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: discordPayload })] } }] : [];`;
+let workflowRunId = '';
+try {
+  workflowRunId = $('Register workflow run').isExecuted
+    ? $('Register workflow run').first().json.workflow_run_id
+    : ($('Register sample workflow run').isExecuted
+      ? $('Register sample workflow run').first().json.workflow_run_id
+      : $('Register stale workflow run').first().json.workflow_run_id);
+} catch {}
+if (!fields.length) return [{ json: { workflow_outcome: 'no_delivery', workflow_run_id: String(workflowRunId) } }];
+return [{ json: { params: [JSON.stringify({ workflow_run_id: String(workflowRunId), idempotency_key: pending?.pending_idempotency_key ?? 'transfer-digest|' + start.toISOString(), window_started_at: pending?.pending_window_started_at ?? start.toISOString(), window_ended_at: pending?.pending_window_ended_at ?? end.toISOString(), revision_ids: fields.map((field) => field.revision_id), discord_payload: discordPayload })] } }];`;
 }
 function mainWorkflow({ registry, prompt, schema }) {
   const registryJson = JSON.stringify(registry);
@@ -2271,6 +2299,7 @@ return [{ json: { sources, body: { sources: sources.map(({ source_id, username, 
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, requestOptions: { timeout: 310000 } }),
     codeNode('Normalize twscrape posts', [720, -40], twscrapeParserCode()),
+    node('Collected posts?', 'n8n-nodes-base.if', [900, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome !== "no_posts" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Load sample collected X posts', [320, 220], `
 const source = { platform: 'x', external_account_id: String($json.external_account_id), username: $json.username, display_name: $json.display_name, account_type: $json.account_type, is_official: $json.is_official, priority_rank: Number($json.priority_rank), reliability_score: Number($json.reliability_score), seed_reliability: Number($json.seed_reliability), publisher_group_key: $json.publisher_group_key, source_kind: $json.source_kind, is_aggregator: $json.is_aggregator };
 const createdAt = new Date().toUTCString();
@@ -2290,6 +2319,7 @@ return [
       sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.commands) }}',
     }, { continueOnFail: true, requestOptions: { timeout: 5000 } }),
     codeNode('Filter processed-post Redis hits', [1560, -380], processedPostCacheFilterCode()),
+    node('Posts remain after cache?', 'n8n-nodes-base.if', [1780, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome !== "all_posts_processed" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Bypass processed-post Redis cache', [1340, -120], processedPostCacheBypassCode()),
     postgresNode('Persist raw posts', [760, -40], rawPostUpsertSql()),
     codeNode('Build Qwen request', [980, -40], `
@@ -2325,12 +2355,20 @@ return $input.all().map((item) => ({ json: {
     codeNode('Prepare ignored processed-post Redis write', [2080, 80], processedPostCacheSetPrepareCode('ignored')),
     node('Ignored processed-post Redis cache enabled?', 'n8n-nodes-base.if', [2300, 80], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.redis_write === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     httpNode('Store ignored processed-post markers via Upstash', [2520, 80], processedPostCacheSetHttpParameters(), { continueOnFail: true, requestOptions: { timeout: 5000 } }),
+    codeNode('Mark ignored outcome', [2740, 80], `
+return [{ json: { workflow_outcome: 'ignored' } }];`),
     codeNode('Merge extracted reports', [2080, -180], mergeCode()),
+    node('Merged report payload?', 'n8n-nodes-base.if', [2300, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome === "merged_report" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Persist merged reports and revisions', [2300, -180], mergeReportSql(), undefined, { typeVersion: 2.6 }),
     codeNode('Prepare merged processed-post Redis write', [2520, -380], processedPostCacheSetPrepareCode('merged')),
     node('Merged processed-post Redis cache enabled?', 'n8n-nodes-base.if', [2740, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.redis_write === true }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     httpNode('Store merged processed-post markers via Upstash', [2960, -380], processedPostCacheSetHttpParameters(), { continueOnFail: true, requestOptions: { timeout: 5000 } }),
     codeNode('Resume merged processing after Redis', [3180, -380], processedPostCacheResumeCode()),
+    node('Merge workflow outcomes', 'n8n-nodes-base.merge', [3400, -380], { mode: 'append', numberInputs: 3 }, { typeVersion: 3.2 }),
+    codeNode('Route workflow outcomes', [3620, -380], `
+const reports = $input.all().filter((item) => item.json?.workflow_outcome === 'merged_report');
+return reports.length ? reports : [{ json: { workflow_outcome: 'no_merged_reports' } }];`),
+    node('Merged reports ready?', 'n8n-nodes-base.if', [3840, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome === "merged_report" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Prepare preferred source reset', [2520, -180], `
 return $input.all().map((item) => {
   const reportId = String(item.json.transfer_report_id ?? '');
@@ -2378,13 +2416,14 @@ const enrichmentMode = ['shadow', 'active'].includes(selectedEnrichment) ? selec
 return [{ json: { params: [context.collection_cutoff_at, context.collection_started_at, probabilityMode, enrichmentMode] } }];`),
     postgresNode('Find undelivered revisions', [5160, -180], candidatesSql()),
     codeNode('Build bounded Discord digest', [5380, -180], digestCode()),
+    node('Digest has content?', 'n8n-nodes-base.if', [5600, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome !== "no_delivery" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Reserve digest before delivery', [5600, -180], reserveDigestSql()),
     node('Digest reserved', 'n8n-nodes-base.if', [5820, -180], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !!$json.digest_delivery_id }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Build Discord delivery request', [6040, -260], `
 const payload = typeof $json.request_payload === 'string'
   ? JSON.parse($json.request_payload)
   : $json.request_payload;
-if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Malformed reserved Discord payload');
 return [{ json: { digest_delivery_id: $json.digest_delivery_id, body: payload } }];`),
     httpNode('Send Discord digest once', [6260, -260], {
       method: 'POST', url: '={{ $env.DISCORD_TRANSFERS_WEBHOOK_URL + "?wait=true" }}', sendBody: true,
@@ -2399,6 +2438,7 @@ const workflowRunId = $('Register workflow run').isExecuted
   : ($('Register sample workflow run').isExecuted ? $('Register sample workflow run').first().json.workflow_run_id : $('Register stale workflow run').first().json.workflow_run_id);
 return [{ json: { params: [request.digest_delivery_id, status, String(response?.id ?? ''), JSON.stringify(response ?? {}), workflowRunId] } }];`),
     postgresNode('Finalize delivery and run', [6700, -260], `${finalizeDeliverySql()}\nUPDATE workflow_runs SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE id = $5::bigint;`),
+    postgresNode('Complete workflow run without delivery', [5820, 20], completeRunWithoutDeliverySql(), '={{ [$json.workflow_run_id] }}'),
   ];
   const connections = {
     'Every six hours': { main: [[
@@ -2427,11 +2467,13 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Select X collector': { main: [[{ node: 'Build twscrape collect request', type: 'main', index: 0 }]] },
     'Build twscrape collect request': { main: [[{ node: 'Collect 20 X posts via twscrape', type: 'main', index: 0 }]] },
     'Collect 20 X posts via twscrape': { main: [[{ node: 'Normalize twscrape posts', type: 'main', index: 0 }]] },
-    'Normalize twscrape posts': { main: [[{ node: 'Prepare processed-post Redis lookup', type: 'main', index: 0 }]] },
+    'Normalize twscrape posts': { main: [[{ node: 'Collected posts?', type: 'main', index: 0 }]] },
+    'Collected posts?': { main: [[{ node: 'Prepare processed-post Redis lookup', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Prepare processed-post Redis lookup': { main: [[{ node: 'Processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
     'Processed-post Redis cache enabled?': { main: [[{ node: 'Lookup processed-posts via Upstash', type: 'main', index: 0 }], [{ node: 'Bypass processed-post Redis cache', type: 'main', index: 0 }]] },
     'Lookup processed-posts via Upstash': { main: [[{ node: 'Filter processed-post Redis hits', type: 'main', index: 0 }]] },
-    'Filter processed-post Redis hits': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
+    'Filter processed-post Redis hits': { main: [[{ node: 'Posts remain after cache?', type: 'main', index: 0 }]] },
+    'Posts remain after cache?': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Bypass processed-post Redis cache': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
     'Load sample collected X posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
     'Persist raw posts': { main: [[{ node: 'Build Qwen request', type: 'main', index: 0 }]] },
@@ -2442,13 +2484,20 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Mark non-transfer ignored': { main: [[{ node: 'Prepare ignored processed-post Redis write', type: 'main', index: 0 }]] },
     'Prepare ignored processed-post Redis write': { main: [[{ node: 'Ignored processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
-    'Ignored processed-post Redis cache enabled?': { main: [[{ node: 'Store ignored processed-post markers via Upstash', type: 'main', index: 0 }]] },
-    'Merge extracted reports': { main: [[{ node: 'Persist merged reports and revisions', type: 'main', index: 0 }]] },
+    'Ignored processed-post Redis cache enabled?': { main: [[{ node: 'Store ignored processed-post markers via Upstash', type: 'main', index: 0 }], [{ node: 'Mark ignored outcome', type: 'main', index: 0 }]] },
+    'Store ignored processed-post markers via Upstash': { main: [[{ node: 'Mark ignored outcome', type: 'main', index: 0 }]] },
+    'Mark ignored outcome': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 1 }]] },
+    'Merge extracted reports': { main: [[{ node: 'Merged report payload?', type: 'main', index: 0 }]] },
+    'Merged report payload?': { main: [[{ node: 'Persist merged reports and revisions', type: 'main', index: 0 }], [{ node: 'Merge workflow outcomes', type: 'main', index: 0 }]] },
     'Persist merged reports and revisions': { main: [[{ node: 'Prepare merged processed-post Redis write', type: 'main', index: 0 }]] },
     'Prepare merged processed-post Redis write': { main: [[{ node: 'Merged processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
     'Merged processed-post Redis cache enabled?': { main: [[{ node: 'Store merged processed-post markers via Upstash', type: 'main', index: 0 }], [{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
     'Store merged processed-post markers via Upstash': { main: [[{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
-    'Resume merged processing after Redis': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }]] },
+    'Resume merged processing after Redis': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 0 }]] },
+    'Record Qwen validation failure': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 2 }]] },
+    'Merge workflow outcomes': { main: [[{ node: 'Route workflow outcomes', type: 'main', index: 0 }]] },
+    'Route workflow outcomes': { main: [[{ node: 'Merged reports ready?', type: 'main', index: 0 }]] },
+    'Merged reports ready?': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Prepare preferred source reset': { main: [[{ node: 'Clear preferred report source', type: 'main', index: 0 }]] },
     'Clear preferred report source': { main: [[{ node: 'Set preferred report source', type: 'main', index: 0 }]] },
     'Set preferred report source': { main: [[{ node: 'Prepare enrichment batch query', type: 'main', index: 0 }]] },
@@ -2462,9 +2511,10 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Persist soccerdata enrichment result': { main: [[{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Prepare digest candidates query': { main: [[{ node: 'Find undelivered revisions', type: 'main', index: 0 }]] },
     'Find undelivered revisions': { main: [[{ node: 'Build bounded Discord digest', type: 'main', index: 0 }]] },
-    'Build bounded Discord digest': { main: [[{ node: 'Reserve digest before delivery', type: 'main', index: 0 }]] },
+    'Build bounded Discord digest': { main: [[{ node: 'Digest has content?', type: 'main', index: 0 }]] },
+    'Digest has content?': { main: [[{ node: 'Reserve digest before delivery', type: 'main', index: 0 }], [{ node: 'Complete workflow run without delivery', type: 'main', index: 0 }]] },
     'Reserve digest before delivery': { main: [[{ node: 'Digest reserved', type: 'main', index: 0 }]] },
-    'Digest reserved': { main: [[{ node: 'Build Discord delivery request', type: 'main', index: 0 }]] },
+    'Digest reserved': { main: [[{ node: 'Build Discord delivery request', type: 'main', index: 0 }], [{ node: 'Complete workflow run without delivery', type: 'main', index: 0 }]] },
     'Build Discord delivery request': { main: [[{ node: 'Send Discord digest once', type: 'main', index: 0 }]] },
     'Send Discord digest once': { main: [[{ node: 'Prepare delivery finalization', type: 'main', index: 0 }]] },
     'Prepare delivery finalization': { main: [[{ node: 'Finalize delivery and run', type: 'main', index: 0 }]] },

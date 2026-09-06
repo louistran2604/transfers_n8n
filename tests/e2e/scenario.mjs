@@ -248,7 +248,7 @@ const qwenBeforeHit = (await json('/state')).body.qwenCalls;
 const hitLookup = await callRedisPipeline(hitPrepared[0].json.commands);
 assert.equal(hitLookup.response.status, 200);
 const hitOutput = await runRedisFilter([{ statusCode: hitLookup.response.status, body: hitLookup.body }], hitPrepared);
-assert.deepEqual(hitOutput, []);
+assert.deepEqual(hitOutput, [{ json: { workflow_outcome: 'all_posts_processed' } }]);
 assert.equal((await json('/state')).body.qwenCalls, qwenBeforeHit);
 
 const outageId = '900000000000000303';

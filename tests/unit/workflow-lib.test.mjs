@@ -2388,7 +2388,62 @@ test('generated digest node ignores n8n no-row placeholders', async () => {
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const runDigest = new AsyncFunction('$input', digestNode.parameters.jsCode);
   const output = await runDigest({ all: () => [{ json: { success: true } }] });
-  assert.deepEqual(output, []);
+  assert.deepEqual(output, [{ json: { workflow_outcome: 'no_delivery', workflow_run_id: '' } }]);
+});
+
+test('generated digest marks no delivery, preserves run identity, and rejects malformed pending payloads', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
+  const deliveryNode = workflow.nodes.find((node) => node.name === 'Build Discord delivery request');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runLookup = (name) => name === 'Register workflow run'
+    ? { isExecuted: true, first: () => ({ json: { workflow_run_id: '77' } }) }
+    : { isExecuted: false };
+  const runDigest = new AsyncFunction('$input', '$', digestNode.parameters.jsCode);
+  const noDelivery = await runDigest({ all: () => [{ json: { row_type: 'sent_history', payload: [] } }] }, runLookup);
+  assert.deepEqual(noDelivery, [{ json: { workflow_outcome: 'no_delivery', workflow_run_id: '77' } }]);
+  const malformedPending = { json: { row_type: 'candidate', payload: {
+    revision_id: 'pending', snapshot: validReport(), post_url: 'https://example.test/pending',
+    priority_rank: '2', reliability_score: '0.95', source_name: 'Source',
+    pending_idempotency_key: 'pending-key', pending_request_payload: '{not-json',
+  } } };
+  await assert.rejects(
+    runDigest({ all: () => [{ json: { row_type: 'sent_history', payload: [] } }, malformedPending] }, runLookup),
+    /Malformed pending Discord payload/,
+  );
+  const runDelivery = new AsyncFunction('$json', deliveryNode.parameters.jsCode);
+  await assert.rejects(() => runDelivery({ digest_delivery_id: '1', request_payload: [] }), /Malformed reserved Discord payload/);
+});
+
+test('generated workflow routes no-work and mixed outcomes through one native merge', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const mergeNode = workflow.nodes.find((node) => node.name === 'Merge workflow outcomes');
+  const mergeReportsNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
+  const routeNode = workflow.nodes.find((node) => node.name === 'Route workflow outcomes');
+  const completeNode = workflow.nodes.find((node) => node.name === 'Complete workflow run without delivery');
+  assert.equal(mergeNode.typeVersion, 3.2);
+  assert.deepEqual(mergeNode.parameters, { mode: 'append', numberInputs: 3 });
+  assert.equal(workflow.connections['Merged report payload?'].main[1][0].node, 'Merge workflow outcomes');
+  assert.equal(workflow.connections['Mark ignored outcome'].main[0][0].node, 'Merge workflow outcomes');
+  assert.equal(workflow.connections['Record Qwen validation failure'].main[0][0].node, 'Merge workflow outcomes');
+  assert.equal(workflow.connections['Digest has content?'].main[1][0].node, 'Complete workflow run without delivery');
+  assert.equal(workflow.connections['Digest reserved'].main[1][0].node, 'Complete workflow run without delivery');
+  assert.match(completeNode.parameters.query, /status = 'succeeded'/);
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const runMergeReports = new AsyncFunction('$input', mergeReportsNode.parameters.jsCode);
+  const noReports = await runMergeReports({ all: () => [] });
+  assert.deepEqual(noReports, [{ json: { workflow_outcome: 'no_merged_reports' } }]);
+  const runRoute = new AsyncFunction('$input', routeNode.parameters.jsCode);
+  const report = { json: { workflow_outcome: 'merged_report', transfer_report_id: '41' } };
+  assert.deepEqual(await runRoute({ all: () => [
+    { json: { workflow_outcome: 'ignored' } },
+    { json: { workflow_outcome: 'qwen_validation_failure' } },
+    report,
+  ] }), [report]);
+  assert.deepEqual(await runRoute({ all: () => [
+    { json: { workflow_outcome: 'ignored' } },
+    { json: { workflow_outcome: 'qwen_validation_failure' } },
+  ] }), [{ json: { workflow_outcome: 'no_merged_reports' } }]);
 });
 
 test('generated twscrape adapter preserves string IDs, keeps quoted posts, filters retweets, and tolerates partial failures', async () => {
@@ -2465,7 +2520,7 @@ test('generated twscrape adapter keeps a legitimate empty collection as a no-op'
     assert.equal(name, 'Build twscrape collect request');
     return { first: () => ({ json: request }) };
   });
-  assert.deepEqual(output, []);
+  assert.deepEqual(output, [{ json: { workflow_outcome: 'no_posts' } }]);
 });
 
 test('generated error workflow preserves the n8n execution ID for failure linkage', async () => {
@@ -2595,7 +2650,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
   assert.equal(activePayload.probability_mode, 'active');
   assert.deepEqual(activePayload.processed_post_external_ids, ['42']);
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare merged processed-post Redis write');
-  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Prepare preferred source reset');
+  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Merge workflow outcomes');
   assert.equal(persistNode.typeVersion, 2.6);
   assert.match(persistNode.parameters.query, /probability_mode.*shadow/is);
   assert.match(persistNode.parameters.query, /apply_probability_v1_shadow/);
@@ -2705,8 +2760,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(qwenParserNode.parameters.jsCode, /report\.extraction_confidence/);
   assert.doesNotMatch(qwenParserNode.parameters.jsCode, /report\.confidence/);
   assert.match(qwenFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
-  assert.match(qwenFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
-  assert.match(qwenFailureNode.parameters.query, /id = \$7::bigint/);
+  assert.doesNotMatch(qwenFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
+  assert.match(qwenFailureNode.parameters.query, /qwen_validation_failure/);
+  assert.match(qwenFailureNode.parameters.query, /\$7::text AS workflow_run_id/);
   assert.match(staleRunCheckNode.parameters.query, /status = 'running'/);
   assert.match(staleRunCheckNode.parameters.query, /interval '12 hours'/);
   assert.equal(staleRunIfNode.parameters.conditions.conditions[0].leftValue, '={{ $json.stale_runs }}');
@@ -2786,6 +2842,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(reserveNode.parameters.query, /status = 'sending'/);
   assert.doesNotMatch(reserveNode.parameters.query, /sending AS/);
   assert.match(reserveNode.parameters.query, /payload->'discord_payload'/);
+  assert.match(reserveNode.parameters.query, /not_reserved/);
+  assert.match(reserveNode.parameters.query, /workflow_run_id/);
   assert.doesNotMatch(reserveNode.parameters.query, /request_payload = EXCLUDED/);
   assert.match(reserveNode.parameters.query, /RETURNING id, status, request_payload/);
   assert.match(deliveryRequestNode.parameters.jsCode, /\$json\.request_payload/);
@@ -2832,7 +2890,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(workflow.connections['Check stale workflow runs'].main[0][0].node, 'Stale workflow runs?');
   assert.equal(workflow.connections['Stale workflow runs?'].main[0][0].node, 'Send stale-run alert');
   assert.equal(workflow.connections['Persist merged reports and revisions'].main[0][0].node, 'Prepare merged processed-post Redis write');
-  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Prepare preferred source reset');
+  assert.equal(workflow.connections['Resume merged processing after Redis'].main[0][0].node, 'Merge workflow outcomes');
   assert.equal(workflow.connections['Set preferred report source'].main[0][0].node, 'Prepare enrichment batch query');
   assert.equal(workflow.connections['Prepare enrichment batch query'].main[0][0].node, 'Enrichment enabled?');
   assert.equal(workflow.connections['Enrichment enabled?'].main[1][0].node, 'Prepare digest candidates query');
@@ -2862,6 +2920,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(mergeReportsNode.parameters.query, /transfer_report_player_resolutions/);
   assert.equal(workflow.connections['Prepare digest candidates query'].main[0][0].node, 'Find undelivered revisions');
   assert.match(digestNode.parameters.jsCode, /pending_idempotency_key/);
+  assert.match(digestNode.parameters.jsCode, /workflow_outcome: 'no_delivery'/);
   assert.match(digestNode.parameters.jsCode, /typeof snapshot\.classification !== 'string'/);
   assert.match(requestNode.parameters.jsCode, /current_club_name: typeof canonicalCurrentClub === 'string'/);
   assert.match(requestNode.parameters.jsCode, /destination_club_name: destinationEligible && typeof canonicalDestinationClub === 'string'/);
