@@ -31,8 +31,12 @@ services:
       - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN:-}
       - UPSTASH_REDIS_POST_TTL_SECONDS=${UPSTASH_REDIS_POST_TTL_SECONDS:-86400}
       - SOFASCORE_ENRICHMENT_BASE_URL=http://sofascore-enrichment:8080
+      - LLM_CHAT_COMPLETIONS_URL=${LLM_CHAT_COMPLETIONS_URL:-http://host.docker.internal:20128/v1/chat/completions}
+      - LLM_API_KEY=${LLM_API_KEY:-}
       - DISCORD_TRANSFERS_WEBHOOK_URL=${DISCORD_TRANSFERS_WEBHOOK_URL:?DISCORD_TRANSFERS_WEBHOOK_URL is required}
       - DISCORD_ERRORS_WEBHOOK_URL=${DISCORD_ERRORS_WEBHOOK_URL:?DISCORD_ERRORS_WEBHOOK_URL is required}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - n8n-ftm-data:/home/node/.n8n
       - ../../workflow:/workflows:ro

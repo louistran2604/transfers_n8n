@@ -2709,6 +2709,9 @@ test('standard n8n deployment exposes probability mode to main and runner servic
   const expected = '- PROBABILITY_MODE=${PROBABILITY_MODE:-off}';
   assert.match(serviceBlock('n8n', 'n8n-runner'), new RegExp(expected.replace(/[${}]/g, '\\$&')));
   assert.match(serviceBlock('n8n-runner', 'twscrape'), new RegExp(expected.replace(/[${}]/g, '\\$&')));
+  assert.match(serviceBlock('n8n', 'n8n-runner'), /LLM_CHAT_COMPLETIONS_URL/);
+  assert.match(serviceBlock('n8n', 'n8n-runner'), /LLM_API_KEY/);
+  assert.match(serviceBlock('n8n', 'n8n-runner'), /host\.docker\.internal:host-gateway/);
 });
 
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
@@ -2784,7 +2787,13 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(failureNode.parameters.query, /finished_at = COALESCE/);
   assert.match(failureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
   assert.doesNotMatch(qwenParserNode.parameters.jsCode, /itemMatching/);
-  assert.match(qwenNode.parameters.jsCode, /delete llamaSchema\.properties\.reports\.items\.properties\.player_name\.minLength/);
+  assert.doesNotMatch(qwenNode.parameters.jsCode, /llamaSchema/);
+  assert.match(qwenNode.parameters.jsCode, /gemini\/gemini-3\.8-flash/);
+  assert.match(qwenNode.parameters.jsCode, /max_tokens/);
+  const extractNode = workflow.nodes.find((node) => node.name === 'Extract with Qwen');
+  assert.match(extractNode.parameters.url, /LLM_CHAT_COMPLETIONS_URL/);
+  assert.doesNotMatch(extractNode.parameters.url, /QWEN_CHAT_COMPLETIONS_URL|llama/);
+  assert.match(JSON.stringify(extractNode.parameters.headerParameters), /LLM_API_KEY/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.player_name\.trim\(\)\.length > 0/);
   assert.match(qwenParserNode.parameters.jsCode, /report\.is_huge_rumor === 'boolean'/);
   assert.match(mergeReportsNode.parameters.query, /payload->>'extraction_confidence'/);

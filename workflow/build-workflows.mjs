@@ -2325,8 +2325,6 @@ return [
     codeNode('Build Qwen request', [980, -40], `
 const prompt = ${JSON.stringify(prompt)};
 const schema = ${schemaJson};
-const llamaSchema = JSON.parse(JSON.stringify(schema));
-delete llamaSchema.properties.reports.items.properties.player_name.minLength;
 const selectedProbabilityMode = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
 const probabilityMode = ['shadow', 'active'].includes(selectedProbabilityMode) ? selectedProbabilityMode : 'off';
 const runContext = $('Create run context').isExecuted
@@ -2341,10 +2339,14 @@ return $input.all().map((item) => ({ json: {
   evaluated_at: runContext.collection_started_at,
   probability_mode: probabilityMode,
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
-  body: { model: 'qwen3.8-27b', temperature: 0, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema: llamaSchema } } }
+  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema } } }
 } }));`),
     httpNode('Extract with Qwen', [1200, -40], {
-      method: 'POST', url: '={{ $env.QWEN_CHAT_COMPLETIONS_URL || "http://llama:8080/v1/chat/completions" }}', sendBody: true,
+      method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
+      headerParameters: { parameters: [
+        { name: 'Authorization', value: '={{ "Bearer " + $env.LLM_API_KEY }}' },
+      ] },
+      sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
     codeNode('Validate Qwen response', [1420, -40], qwenParseCode({ includeExternalPostId: true })),
@@ -2606,8 +2608,6 @@ SELECT * FROM claim_probability_backfill(
     codeNode('Build backfill Qwen request', [-240, 0], `
 const prompt = ${JSON.stringify(prompt)};
 const schema = ${schemaJson};
-const llamaSchema = JSON.parse(JSON.stringify(schema));
-delete llamaSchema.properties.reports.items.properties.player_name.minLength;
 return $input.all().map((item) => ({ json: {
   raw_post_id: String(item.json.raw_post_id), external_post_id: String(item.json.external_post_id),
   post_url: item.json.post_url, posted_at: item.json.posted_at, evaluation_time: item.json.evaluation_time,
@@ -2619,14 +2619,18 @@ return $input.all().map((item) => ({ json: {
     publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind,
     is_aggregator: item.json.is_aggregator, is_official: item.json.is_official,
   },
-  body: { model: 'qwen3.8-27b', temperature: 0, messages: [
+  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, messages: [
     { role: 'system', content: prompt }, { role: 'user', content: item.json.content },
   ], response_format: { type: 'json_schema', json_schema: {
-    name: 'football_transfer_extraction', strict: true, schema: llamaSchema,
+    name: 'football_transfer_extraction', strict: true, schema,
   } } },
 } }));`),
     httpNode('Re-extract with Qwen', [-20, 0], {
-      method: 'POST', url: '={{ $env.QWEN_CHAT_COMPLETIONS_URL || "http://llama:8080/v1/chat/completions" }}',
+      method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}',
+      sendHeaders: true,
+      headerParameters: { parameters: [
+        { name: 'Authorization', value: '={{ "Bearer " + $env.LLM_API_KEY }}' },
+      ] },
       sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
     codeNode('Validate backfill Qwen response', [200, 0], validateCode),
