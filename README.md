@@ -101,7 +101,7 @@ curl --fail --silent --show-error \
   http://127.0.0.1:20128/v1/models | jq -r '.data[].id' | grep 'gemini-3.8-flash'
 ```
 
-n8n sends model `transfers-n8n` (a 9Router fallback combo: Gemini 3.8 Flash first, then a free backup model) with the extraction schema inline in the prompt, requesting one raw JSON object per post.
+n8n sends model `transfers-n8n` (a 9Router fallback combo: Gemini 3.8 Flash first, then the local Qwen fallback) with the extraction schema inline in the prompt, requesting one raw JSON object per post.
 
 ### 4. Generate the workflows and start n8n
 
