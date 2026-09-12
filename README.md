@@ -410,10 +410,6 @@ tree -a -L 4 \
 │   │   │       └── fixtures/         # Offline provider response fixtures
 │   │   └── twscrape/                 # Private X collection service and tests
 │   │       └── tests/                # Collector service tests
-│   ├── retired-local-llm/            # Retired local GPU deployment (9Router is now used)
-│   │   ├── models/                   # Downloaded GGUF model files
-│   │   ├── scripts/                  # Model download, extraction, and server checks
-│   │   └── tests/                    # Extraction fixtures
 │   └── support/                      # PostgreSQL Compose project
 ├── docs/                             # Human-maintained source documentation
 │   └── plans/                        # Planning artifacts (currently empty)
@@ -435,7 +431,6 @@ Detailed guides:
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
 - [n8n deployment, enrichment rollout, and rollback](deploy/n8n/README.md)
-- [Retired local LLM deployment](deploy/retired-local-llm/README.md)
 - [Complete test suite](tests/README.md)
 
 ## Current limitations
