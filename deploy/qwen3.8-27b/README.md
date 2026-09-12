@@ -1,5 +1,12 @@
 # llama.cpp service for n8n transfer extraction
 
+> **Standby role.** This stack is the second slot of the `transfers-n8n`
+> 9Router combo (Gemini 3.8 Flash answers first; this Qwen3.8-27B serves only
+> when Gemini is unavailable). 9Router reaches it as a custom OpenAI provider
+> at `http://127.0.0.1:8081/v1` with model ID `qwen3.8-27b` and no API key.
+> The model unloads after 30 idle seconds by design, so the first fallback
+> call of a run always pays one ~30-second reload.
+
 This Compose project runs the production extraction model **Qwen3.8-27B** from
 the Unsloth **UD-Q3_K_XL** GGUF through the official llama.cpp CUDA 12 server.
 Reasoning is disabled and the extraction context is fixed at 8192 tokens. The
@@ -41,7 +48,7 @@ docker run --rm --pull=never \
 ```
 
 The selected build reports all configured arguments and maps the GGUF
-`qwen35` architecture used by Qwen3.8.
+`qwen35` architecture used by Qwen3.8-27B.
 
 The downloader is pinned to the immutable Hugging Face revision
 `f975863083b62f54a5e6fac11671c750c2bbc59c` because the repository's current
@@ -121,6 +128,23 @@ reloads the model without Docker-control permissions. The service remains
 offline, has no web UI, publishes only `127.0.0.1:8081`, and keeps the existing
 health check, security restrictions, `transfers_net`, and `llama` network alias.
 
+## Standby operating rules
+
+The 16 GB GPU cannot hold Qwen3.8-27B (~12.8 GB resident) together with the
+PRL miner (~4.5 GB). A model load attempted while the miner holds VRAM fails
+with `cudaMalloc failed: out of memory` and the container crash-loops until
+stopped. The miner already stops itself for digest runs; outside digest runs,
+start this stack only while the miner is stopped:
+
+```bash
+docker compose up -d
+curl --fail http://127.0.0.1:8081/health
+```
+
+Keep it stopped when the miner is active. The 30-second idle unload does not
+free the container's weight instantly, so allow a minute after stopping the
+miner before starting a fallback-dependent run.
+
 ## 4. Health, GPU, and VRAM checks
 
 ```bash
@@ -135,6 +159,15 @@ schema-regression timing, and structured reload timing. It verifies the running
 `--gpu-layers all` command, rejects CPU-offload/CUDA/OOM log evidence, and
 requires llama-server VRAM to remain at least 90% of the GGUF size. It fails if
 VRAM headroom is too small or the 30-second unload/reload cycle does not work.
+On a desktop-loaded GPU the 512 MiB headroom gate can fail while the stack
+itself is fine; for standby duty the lighter check is enough: health endpoint,
+`/v1/models` exposing `qwen3.8-27b`, and one extraction fixture:
+
+```bash
+curl --fail --silent http://127.0.0.1:8081/v1/models | jq -r '.data[].id'
+EXTRACTION_FIXTURE_ID=official_confirmed LLAMA_BASE_URL=http://127.0.0.1:8081 \
+  MODEL_ALIAS=qwen3.8-27b node scripts/test-extraction.mjs
+```
 
 ## 5. Extraction regression corpus
 
@@ -142,7 +175,7 @@ The deterministic corpus in `tests/extraction-fixtures.json` covers non-transfer
 posts, rumors, negotiations, official moves, failures, loans, renewals, fees,
 release clauses, nulls, quotes, multiple reports, ambiguous surnames, aliases,
 women's-football exclusion, and adversarial wording. Each case is sent to
-Qwen3.8 with the real `workflow/qwen-response-schema.json`. The test validates
+Qwen3.8-27B with the real `workflow/extraction-response-schema.json`. The test validates
 the schema, important semantic fields, and the absence of reasoning fields or
 thinking tags.
 
@@ -153,17 +186,18 @@ LLAMA_BASE_URL=http://127.0.0.1:8081 MODEL_ALIAS=qwen3.8-27b \
   node scripts/test-extraction.mjs
 ```
 
-## 6. API and n8n endpoints
+## 6. API and 9Router endpoints
 
 ```text
 Host health/API: http://127.0.0.1:8081
-n8n chat endpoint: http://llama:8080/v1/chat/completions
 Model alias: qwen3.8-27b
 ```
 
-In n8n, set the OpenAI-compatible base URL to `http://llama:8080/v1` and use
-`qwen3.8-27b`. No API key is required while access remains limited to
-localhost and `transfers_net`.
+9Router reaches this stack as a custom OpenAI provider with base URL
+`http://127.0.0.1:8081/v1`, model ID `qwen3.8-27b`, and no API key. n8n never
+calls it directly; it goes through the `transfers-n8n` combo, which lists this
+model as `local/qwen3.8-27b`. No API key is required while access remains
+limited to localhost and `transfers_net`.
 
 ## Updating the pinned llama.cpp version
 

@@ -101,7 +101,7 @@ curl --fail --silent --show-error \
   http://127.0.0.1:20128/v1/models | jq -r '.data[].id' | grep 'gemini-3.8-flash'
 ```
 
-n8n sends model `transfers-n8n` (a 9Router fallback combo: Gemini 3.8 Flash first, then the local Qwen fallback) with the extraction schema inline in the prompt, requesting one raw JSON object per post.
+n8n sends model `transfers-n8n` (a 9Router fallback combo: Gemini 3.8 Flash first, then the local Qwen3.8-27B fallback) with the extraction schema inline in the prompt, requesting one raw JSON object per post.
 
 ### 4. Generate the workflows and start n8n
 
@@ -410,7 +410,7 @@ tree -a -L 4 \
 │   │   │       └── fixtures/         # Offline provider response fixtures
 │   │   └── twscrape/                 # Private X collection service and tests
 │   │       └── tests/                # Collector service tests
-│   ├── qwen3.8-27b/                  # Local Qwen fallback (9Router combo's second slot)
+│   ├── qwen3.8-27b/                  # Local Qwen3.8-27B fallback (9Router combo's second slot)
 │   │   ├── models/                   # Downloaded GGUF model files
 │   │   ├── scripts/                  # Model download, extraction, and server checks
 │   │   └── tests/                    # Extraction fixtures
@@ -435,7 +435,7 @@ Detailed guides:
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
 - [n8n deployment, enrichment rollout, and rollback](deploy/n8n/README.md)
-- [Local Qwen fallback deployment](deploy/qwen3.8-27b/README.md)
+- [Local Qwen3.8-27B fallback deployment](deploy/qwen3.8-27b/README.md)
 - [Complete test suite](tests/README.md)
 
 ## Current limitations
