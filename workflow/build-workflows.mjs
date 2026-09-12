@@ -1493,8 +1493,10 @@ return $input.all().flatMap((item, index) => {
   if (!request?.raw_post_id) throw new Error('Missing Qwen request metadata for response item ' + index);
   const response = item.json.body ?? item.json;
   const content = response?.choices?.[0]?.message?.content;
+  const fence = String.fromCharCode(96, 96, 96);
+  const text = typeof content === 'string' ? content.replace(new RegExp('^' + fence + '(json)?\\s*', 'i'), '').replace(new RegExp('\\s*' + fence + '\\s*$'), '') : content;
   let parsed;
-  try { parsed = typeof content === 'string' ? JSON.parse(content) : content; } catch { parsed = null; }
+  try { parsed = typeof text === 'string' ? JSON.parse(text) : text; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
   const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
@@ -2339,7 +2341,7 @@ return $input.all().map((item) => ({ json: {
   evaluated_at: runContext.collection_started_at,
   probability_mode: probabilityMode,
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
-  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, messages: [{ role: 'system', content: prompt }, { role: 'user', content: item.json.content }], response_format: { type: 'json_schema', json_schema: { name: 'football_transfer_extraction', strict: true, schema } } }
+  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, stream: false, messages: [{ role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content }], response_format: { type: 'json_object' } }
 } }));`),
     httpNode('Extract with Qwen', [1200, -40], {
       method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
@@ -2619,11 +2621,9 @@ return $input.all().map((item) => ({ json: {
     publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind,
     is_aggregator: item.json.is_aggregator, is_official: item.json.is_official,
   },
-  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, messages: [
-    { role: 'system', content: prompt }, { role: 'user', content: item.json.content },
-  ], response_format: { type: 'json_schema', json_schema: {
-    name: 'football_transfer_extraction', strict: true, schema,
-  } } },
+  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, stream: false, messages: [
+    { role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content },
+  ], response_format: { type: 'json_object' } },
 } }));`),
     httpNode('Re-extract with Qwen', [-20, 0], {
       method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}',

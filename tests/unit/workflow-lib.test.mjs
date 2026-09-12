@@ -2743,7 +2743,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const qwenFailureNode = workflow.nodes.find((node) => node.name === 'Record Qwen validation failure');
   const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
-  assert.match(qwenNode.parameters.jsCode, /football_transfer_extraction/);
+  assert.match(qwenNode.parameters.jsCode, /conforms exactly to this JSON Schema/);
   assert.match(qwenNode.parameters.jsCode, /explicitly stated current employer or registration holder/);
   assert.match(qwenNode.parameters.jsCode, /women's, girls', and youth football/);
   assert.match(qwenNode.parameters.jsCode, /Women's-football blacklist/);
@@ -2790,6 +2790,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.doesNotMatch(qwenNode.parameters.jsCode, /llamaSchema/);
   assert.match(qwenNode.parameters.jsCode, /gemini\/gemini-3\.8-flash/);
   assert.match(qwenNode.parameters.jsCode, /max_tokens/);
+  assert.match(qwenNode.parameters.jsCode, /stream: false/);
+  assert.match(qwenNode.parameters.jsCode, /json_object/);
+  assert.match(qwenNode.parameters.jsCode, /no markdown fences/);
   const extractNode = workflow.nodes.find((node) => node.name === 'Extract with Qwen');
   assert.match(extractNode.parameters.url, /LLM_CHAT_COMPLETIONS_URL/);
   assert.doesNotMatch(extractNode.parameters.url, /QWEN_CHAT_COMPLETIONS_URL|llama/);
@@ -2804,6 +2807,9 @@ test('generated workflow stays in sync with the registry and extraction contract
   const parsedEvidence = await parseQwen(evidenceReport({ extraction_confidence: 0.84 }));
   assert.equal(parsedEvidence[0].json.valid, true);
   assert.equal(parsedEvidence[0].json.report.extraction_confidence, 0.84);
+  const fencedContent = '```json\n' + JSON.stringify({ transfer_related: true, reports: [evidenceReport({ extraction_confidence: 0.9 })] }) + '\n```';
+  const fencedParsed = await runQwenParser({ all: () => [{ json: { choices: [{ message: { content: fencedContent } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
+  assert.equal(fencedParsed[0].json.valid, true);
   const invalidQwen = (await parseQwen(validReport()))[0].json;
   assert.equal(invalidQwen.valid, false);
   assert.equal(invalidQwen.params.at(-1), '77');
