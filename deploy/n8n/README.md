@@ -9,7 +9,7 @@ The Compose project is `n8n-ftm`. Its Docker resources use the same prefix:
 | twscrape | `n8n-ftm-twscrape:local` | `n8n-ftm-twscrape` | `n8n-ftm-twscrape-accounts` |
 | Sofascore enrichment | `n8n-ftm-sofascore-enrichment:local` | `n8n-ftm-sofascore-enrichment` | `n8n-ftm-sofascore-cache` |
 
-The n8n and external-runner images use matching pinned n8n `2.31.6` manifests. The n8n service joins the shared `transfers_net` network to reach PostgreSQL at `transfers-postgres:5432`, Qwen at `llama:8080`, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. Compose service names remain stable for internal DNS. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
+The n8n and external-runner images use matching pinned n8n `2.31.6` manifests. The n8n service joins the shared `transfers_net` network to reach PostgreSQL at `transfers-postgres:5432`, the 9Router gateway for extraction, and the optional Sofascore enrichment service at `sofascore-enrichment:8080`. Compose service names remain stable for internal DNS. The optional `twscrape` and `enrichment` profile services join only `transfers_net` and have no published host ports.
 
 ```bash
 cd ~/projects/transfers_n8n/deploy/n8n
@@ -42,7 +42,7 @@ docker compose exec -T sofascore-enrichment \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read().decode())"
 ```
 
-Readiness verifies the pinned `soccerdata` package, baked native TLS library, writable cache, fixture manifest, and provider child without contacting Sofascore. The service runs as UID/GID `10001`, has no browser, database credentials, Discord webhooks, X credentials, Qwen credentials, or GPU, and starts with limits of 1 CPU and 1 GiB memory.
+Readiness verifies the pinned `soccerdata` package, baked native TLS library, writable cache, fixture manifest, and provider child without contacting Sofascore. The service runs as UID/GID `10001`, has no browser, database credentials, Discord webhooks, X credentials, LLM credentials, or GPU, and starts with limits of 1 CPU and 1 GiB memory.
 
 The read-only `../../workflow` mount makes generated JSON available at `/workflows` for import:
 
@@ -52,14 +52,16 @@ docker compose exec -T n8n n8n import:workflow --input=/workflows/football-trans
 ```
 
 The ignored local `.env` supplies the runner token, `X_COLLECTOR=twscrape`,
-Discord webhook URLs, and the dedicated-account
-`TWSCRAPE_AUTH_TOKEN`/`TWSCRAPE_CT0` values. It may also supply the optional
+Discord webhook URLs, the dedicated-account
+`TWSCRAPE_AUTH_TOKEN`/`TWSCRAPE_CT0` values, and the 9Router
+`LLM_CHAT_COMPLETIONS_URL`/`LLM_API_KEY` values (extraction sends
+`gemini/gemini-3.8-flash` with a strict JSON-schema contract). It may also supply the optional
 `UPSTASH_REDIS_MODE`, `UPSTASH_REDIS_REST_URL`,
 `UPSTASH_REDIS_REST_TOKEN`, and `UPSTASH_REDIS_POST_TTL_SECONDS` values.
 Redis defaults to `off`; do not enable `active` without valid production
 credentials. Create a Postgres credential named `Transfers PostgreSQL` in the
 n8n UI and map it to every Postgres node before activating the workflow.
-Collector credentials, Redis tokens, and Discord webhooks remain environment
+Collector credentials, LLM keys, Redis tokens, and Discord webhooks remain environment
 expressions, never stored in workflow JSON.
 
 PostgreSQL is the authoritative durable state. Upstash Redis is only a
@@ -69,7 +71,7 @@ sample runs bypass the cache. Keys are
 `ftm:v1:processed-post:x:<external_post_id>`, values are terminal `ignored` or
 `merged`, and the default TTL is 86,400 seconds (24 hours). Markers are written
 only after successful PostgreSQL terminal transitions. Redis errors are
-fail-open and never block PostgreSQL, Qwen, enrichment, digest reservation, or
+fail-open and never block PostgreSQL, extraction, enrichment, digest reservation, or
 Discord. Set `UPSTASH_REDIS_MODE=off` and recreate both `n8n` and
 `n8n-runner` before the next run to disable it.
 The Sofascore service does not use Upstash; its existing local persistent cache

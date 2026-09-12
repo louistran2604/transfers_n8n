@@ -9,7 +9,6 @@ PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --qu
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml --profile enrichment config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 ```
 
 Build the enrichment image and run the complete fixture-backed Python suite with networking disabled:
@@ -42,10 +41,10 @@ Run isolated mock E2E/import validation:
 tests/e2e/run.sh
 ```
 
-It starts disposable PostgreSQL, mock `twscrape`/Upstash/Qwen/Discord/Sofascore
+It starts disposable PostgreSQL, mock `twscrape`/Upstash/LLM/Discord/Sofascore
 endpoints, and the pinned n8n image; runs SQL tests 001–004; imports both
 workflows; then verifies Redis-off pass-through, active cache hit/miss,
-terminal-only writes, Redis outage/malformed-response fail-open, Qwen/merge
+terminal-only writes, Redis outage/malformed-response fail-open, extraction/merge
 no-write paths, manual-sample bypass, off/shadow/active enrichment,
 sparse/ambiguous/malformed/timeout/all-failure paths, transfer-only delivery,
 Discord limits, and interrupted-delivery recovery. Its cleanup removes only

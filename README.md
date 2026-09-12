@@ -1,6 +1,6 @@
 # Football Transfer Monitor
 
-Self-hosted n8n pipeline that collects football-transfer posts from X, extracts structured reports with a local Qwen model, stores restart-safe revisions in PostgreSQL, and sends Discord digests.
+Self-hosted n8n pipeline that collects football-transfer posts from X, extracts structured reports through 9Router (Gemini), stores restart-safe revisions in PostgreSQL, and sends Discord digests.
 
 The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run reads the latest 20 posts from 78 configured sources.
 
@@ -10,19 +10,19 @@ The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run read
 X accounts (twscrape)
   -> n8n filtering and normalization
   -> optional Upstash Redis processed-post lookup (live runs only)
-  -> local Qwen3.8-27B extraction
+  -> 9Router Gemini extraction
   -> PostgreSQL merge, revision, and delivery reservation
   -> optional Sofascore player enrichment
   -> Discord digest
 ```
 
-The main workflow also has manual live and sample triggers. The sample trigger replaces X collection with fixed posts, but still uses the configured PostgreSQL database, Qwen service, and Discord webhook.
+The main workflow also has manual live and sample triggers. The sample trigger replaces X collection with fixed posts, but still uses the configured PostgreSQL database, LLM service, and Discord webhook.
 
 | Component | Role |
 | --- | --- |
 | n8n `2.31.6` plus external runner | Orchestration and JavaScript/Python task execution |
 | PostgreSQL 16 | Source posts, merged reports, revisions, retries, and delivery state |
-| llama.cpp plus Qwen3.8-27B | Local structured transfer extraction |
+| 9Router plus Gemini | Hosted structured transfer extraction |
 | `twscrape` | X post collection |
 | Sofascore service | Optional player profile and statistics enrichment |
 
@@ -34,9 +34,9 @@ correctness and is not used by the Sofascore service.
 ## Requirements
 
 - Linux with Docker Engine and Docker Compose.
-- NVIDIA Container Toolkit and a supported NVIDIA GPU. The supplied Qwen quantization targets 16 GB VRAM.
+- A running 9Router gateway with a Gemini-capable route and its API key.
 - Node.js 20 or newer for workflow generation and JavaScript tests.
-- `curl`, `jq`, `sha256sum`, and `nvidia-smi` for model checks.
+- `curl` and `jq` for gateway checks.
 - A dedicated X account's `auth_token` and `ct0` cookies, plus two Discord webhooks.
 
 ## Quick start
@@ -84,17 +84,24 @@ docker compose -f deploy/support/compose.yaml --profile maintenance run --rm tra
 
 PostgreSQL has no host port. Other containers reach it at `transfers-postgres:5432` on `transfers_net`.
 
-### 3. Download and start Qwen
+### 3. Point n8n at 9Router
 
-```bash
-cd deploy/qwen3.8-27b
-./scripts/download-model.sh
-docker compose up -d
-./scripts/test-server.sh
-cd ../..
+Add these to the ignored `deploy/n8n/.env` (never commit the key):
+
+```dotenv
+LLM_CHAT_COMPLETIONS_URL=http://host.docker.internal:20128/v1/chat/completions
+LLM_API_KEY=<nine-router-api-key>
 ```
 
-The host health endpoint is `http://127.0.0.1:8081/health`. n8n uses `http://llama:8080/v1/chat/completions` with model alias `qwen3.8-27b`.
+Verify the gateway exposes the extraction model before starting n8n:
+
+```bash
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer <nine-router-api-key>" \
+  http://127.0.0.1:20128/v1/models | jq -r '.data[].id' | grep 'gemini-3.8-flash'
+```
+
+n8n sends `gemini/gemini-3.8-flash` with a strict JSON-schema response contract to that endpoint.
 
 ### 4. Generate the workflows and start n8n
 
@@ -156,12 +163,12 @@ Changing `PLAYER_ENRICHMENT_MODE` requires recreating n8n. Keep it `off` until t
 In active mode, live twscrape posts are looked up in Upstash through bounded
 HTTPS REST `/pipeline` batches before PostgreSQL persistence. A valid terminal
 marker skips the post; misses and every Redis error fail open to the existing
-PostgreSQL/Qwen path. Keys use
+PostgreSQL/LLM path. Keys use
 `ftm:v1:processed-post:x:<external_post_id>` and values are `ignored` or
 `merged`.
 
 Markers are written only after PostgreSQL has durably recorded the terminal
-state, with the configured TTL (24 hours by default). Failed Qwen validation,
+state, with the configured TTL (24 hours by default). Failed LLM validation,
 PostgreSQL, or merge operations never create a marker. Set
 `UPSTASH_REDIS_MODE=off` and recreate `n8n` plus `n8n-runner` before the
 next run to disable Redis; PostgreSQL behavior is unchanged. Sofascore
@@ -175,7 +182,7 @@ Edit project behavior through these source files:
 | [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club/player aliases, sibling groups, and common surnames. |
 | [`workflow/womens-football-blacklist.txt`](workflow/womens-football-blacklist.txt) | Senior women's football exclusions. |
 | [`workflow/qwen-system-prompt.md`](workflow/qwen-system-prompt.md) | Extraction instructions. |
-| [`workflow/qwen-response-schema.json`](workflow/qwen-response-schema.json) | Strict Qwen response contract. |
+| [`workflow/qwen-response-schema.json`](workflow/qwen-response-schema.json) | Strict extraction response contract. |
 
 ## Changing the workflow
 
@@ -220,10 +227,9 @@ node --test tests/unit/*.test.mjs
 PLAYER_ENRICHMENT_MODE=off docker compose -f deploy/n8n/compose.yaml config --quiet
 docker compose -f deploy/n8n/compose.yaml --profile twscrape config --quiet
 docker compose -f deploy/support/compose.yaml config --quiet
-docker compose -f deploy/qwen3.8-27b/compose.yaml config --quiet
 ```
 
-The full suite includes isolated PostgreSQL migrations, fixture-backed Python services, and a mock end-to-end n8n import/run. It does not need live X, Discord, Qwen, or Sofascore access. See [tests/README.md](tests/README.md).
+The full suite includes isolated PostgreSQL migrations, fixture-backed Python services, and a mock end-to-end n8n import/run. It does not need live X, Discord, LLM, or Sofascore access. See [tests/README.md](tests/README.md).
 
 ## Operations
 
@@ -248,7 +254,6 @@ Use separate terminals when following logs:
 ```bash
 docker compose -f deploy/n8n/compose.yaml logs --since=15m --follow n8n
 docker compose -f deploy/n8n/compose.yaml --profile enrichment logs --since=15m --follow sofascore-enrichment
-docker compose -f deploy/qwen3.8-27b/compose.yaml logs --since=15m --follow llama
 ```
 
 Open `http://localhost:5678/executions` for node-level n8n execution details. The queries below show the application state recorded by the workflow.
@@ -370,11 +375,10 @@ Stop services without deleting data:
 
 ```bash
 docker compose -f deploy/n8n/compose.yaml down
-docker compose -f deploy/qwen3.8-27b/compose.yaml down
 docker compose -f deploy/support/compose.yaml down
 ```
 
-Do not add `--volumes` unless permanent deletion is intentional. Start again in dependency order: PostgreSQL, Qwen, then n8n.
+Do not add `--volumes` unless permanent deletion is intentional. Start again in dependency order: PostgreSQL, then n8n.
 
 ## Safety behavior
 
@@ -406,7 +410,7 @@ tree -a -L 4 \
 │   │   │       └── fixtures/         # Offline provider response fixtures
 │   │   └── twscrape/                 # Private X collection service and tests
 │   │       └── tests/                # Collector service tests
-│   ├── qwen3.8-27b/                  # Pinned llama.cpp/Qwen GPU deployment
+│   ├── qwen3.8-27b/                  # Retired local GPU deployment (9Router is now used)
 │   │   ├── models/                   # Downloaded GGUF model files
 │   │   ├── scripts/                  # Model download, extraction, and server checks
 │   │   └── tests/                    # Extraction fixtures
@@ -431,7 +435,7 @@ Detailed guides:
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
 - [n8n deployment, enrichment rollout, and rollback](deploy/n8n/README.md)
-- [Qwen deployment and GPU checks](deploy/qwen3.8-27b/README.md)
+- [Retired local Qwen deployment](deploy/qwen3.8-27b/README.md)
 - [Complete test suite](tests/README.md)
 
 ## Current limitations

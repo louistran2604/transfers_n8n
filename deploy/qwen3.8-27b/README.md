@@ -1,5 +1,10 @@
 # llama.cpp service for n8n transfer extraction
 
+> **Retired.** Extraction now runs through 9Router (`gemini/gemini-3.8-flash`)
+> via `LLM_CHAT_COMPLETIONS_URL`/`LLM_API_KEY`. This stack is kept for
+> reference only: stop it with `docker compose down` from this directory and
+> leave the ignored `models/` GGUF file until disk reclamation is approved.
+
 This Compose project runs the production extraction model **Qwen3.8-27B** from
 the Unsloth **UD-Q3_K_XL** GGUF through the official llama.cpp CUDA 12 server.
 Reasoning is disabled and the extraction context is fixed at 8192 tokens. The

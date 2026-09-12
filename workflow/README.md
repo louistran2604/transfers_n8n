@@ -9,14 +9,14 @@ node workflow/build-workflows.mjs --check
 
 Generated files:
 
-- `football-transfer-monitor.json`: scheduled/manual collection, Qwen extraction, PostgreSQL merge, optional Sofascore enrichment, digest reservation, and Discord delivery.
+- `football-transfer-monitor.json`: scheduled/manual collection, LLM extraction, PostgreSQL merge, optional Sofascore enrichment, digest reservation, and Discord delivery.
 - `football-transfer-monitor-errors.json`: n8n error trigger, PostgreSQL failure record, and error webhook.
 
 Both workflows target n8n `2.31.6`, use `Asia/Ho_Chi_Minh`, and contain no secret values. They reference the intentionally missing PostgreSQL credential named `Transfers PostgreSQL`; map it after import in n8n.
 
 ## Extraction contract
 
-`qwen-system-prompt.md` and `qwen-response-schema.json` are embedded verbatim into the generated workflow. The model may output only `transfer_related` and normalized report terms. Journalist/source identity, URL, platform, timestamp, priority, and reliability are injected from the normalized selected-collector post and generated source registry after model output, so Qwen cannot invent them.
+`qwen-system-prompt.md` and `qwen-response-schema.json` are embedded verbatim into the generated workflow. The model may output only `transfer_related` and normalized report terms. Journalist/source identity, URL, platform, timestamp, priority, and reliability are injected from the normalized selected-collector post and generated source registry after model output, so the model cannot invent them.
 
 `PROBABILITY_MODE=shadow` stores the validated `qwen-evidence-v1` evidence and deterministic PostgreSQL `probability-v1` raw revision for each destination. Missing, invalid, or `active` values are treated as `off`; shadow probabilities do not change Discord output. Destination/stay normalization is not part of this stage, so `normalized_probability` temporarily equals `raw_probability`.
 
@@ -28,7 +28,7 @@ normalized posts into the existing raw-post SQL parameters. Its structured
 source failures produce no raw-post rows and do not stop successful sources.
 Live posts pass through the optional processed-post Redis lookup before
 `Persist raw posts`; manual sample runs connect directly to persistence and
-bypass Redis. Qwen, PostgreSQL deduplication, report merging, digest
+bypass Redis. Extraction, PostgreSQL deduplication, report merging, digest
 reservation, and Discord delivery are unchanged.
 
 ## Optional Upstash processed-post cache
@@ -77,12 +77,12 @@ Keep the mode `off` during build, migration, import, and local verification. Pro
 
 ## Retry and delivery rules
 
-The `twscrape` HTTP request has a finite 310-second timeout. Qwen permits at
+The `twscrape` HTTP request has a finite 310-second timeout. Extraction permits at
 most three attempts. The shared logic calculates bounded exponential delay and
 respects `Retry-After` or rate-reset headers. Discord is retryable only for an
 explicit `429` or `5xx`; a request interrupted after the network write is
 marked `unknown` and is never automatically resent.
 
-The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, Qwen-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It has at most 15 normal stories; positions 16–18 are only confirmed transfers or Romano/Ornstein reports. It also caps output at 10 embeds, 25 fields per embed, 1,024 characters per field, and 6,000 aggregate embed characters.
+The digest ranks confirmed transfers first, then Fabrizio Romano or David Ornstein reports, model-marked huge rumors between major clubs, reported €70m/£70m rumors, and all other transfer news. It has at most 15 normal stories; positions 16–18 are only confirmed transfers or Romano/Ornstein reports. It also caps output at 10 embeds, 25 fields per embed, 1,024 characters per field, and 6,000 aggregate embed characters.
 
-`womens-football-blacklist.txt` is the authoritative one-name-or-variant-per-line exclusion list. `entity-aliases.json` contains `clubs`, a single `players` list, exact `sibling_groups`, and normalized `common_surnames`. A player entry without `current_clubs` canonicalizes that name globally in reports; an entry with `current_clubs` applies only to enrichment requests whose canonical current club matches, mapping surname-only reports to the full canonical name. Qwen is instructed to preserve stated given names for common surnames, but the JavaScript digest filter is authoritative. Current requests precede historical retries under the 25-item enrichment cap; retries still only piggyback on runs that reach the enrichment query. Regenerate and re-import after registry edits; never edit generated workflow JSON directly.
+`womens-football-blacklist.txt` is the authoritative one-name-or-variant-per-line exclusion list. `entity-aliases.json` contains `clubs`, a single `players` list, exact `sibling_groups`, and normalized `common_surnames`. A player entry without `current_clubs` canonicalizes that name globally in reports; an entry with `current_clubs` applies only to enrichment requests whose canonical current club matches, mapping surname-only reports to the full canonical name. The model is instructed to preserve stated given names for common surnames, but the JavaScript digest filter is authoritative. Current requests precede historical retries under the 25-item enrichment cap; retries still only piggyback on runs that reach the enrichment query. Regenerate and re-import after registry edits; never edit generated workflow JSON directly.
