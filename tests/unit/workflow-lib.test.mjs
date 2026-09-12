@@ -2788,7 +2788,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(failureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
   assert.doesNotMatch(extractionParserNode.parameters.jsCode, /itemMatching/);
   assert.doesNotMatch(extractionBuildNode.parameters.jsCode, /llamaSchema/);
-  assert.match(extractionBuildNode.parameters.jsCode, /gemini\/gemini-3\.8-flash/);
+  assert.match(extractionBuildNode.parameters.jsCode, /transfers-n8n/);
   assert.match(extractionBuildNode.parameters.jsCode, /max_tokens/);
   assert.match(extractionBuildNode.parameters.jsCode, /stream: false/);
   assert.match(extractionBuildNode.parameters.jsCode, /json_object/);

@@ -2341,7 +2341,7 @@ return $input.all().map((item) => ({ json: {
   evaluated_at: runContext.collection_started_at,
   probability_mode: probabilityMode,
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
-  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, stream: false, messages: [{ role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content }], response_format: { type: 'json_object' } }
+  body: { model: 'transfers-n8n', temperature: 0, max_tokens: 2048, stream: false, messages: [{ role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content }], response_format: { type: 'json_object' } }
 } }));`),
     httpNode('Extract via LLM', [1200, -40], {
       method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
@@ -2621,7 +2621,7 @@ return $input.all().map((item) => ({ json: {
     publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind,
     is_aggregator: item.json.is_aggregator, is_official: item.json.is_official,
   },
-  body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, stream: false, messages: [
+  body: { model: 'transfers-n8n', temperature: 0, max_tokens: 2048, stream: false, messages: [
     { role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content },
   ], response_format: { type: 'json_object' } },
 } }));`),

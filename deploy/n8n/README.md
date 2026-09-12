@@ -54,8 +54,9 @@ docker compose exec -T n8n n8n import:workflow --input=/workflows/football-trans
 The ignored local `.env` supplies the runner token, `X_COLLECTOR=twscrape`,
 Discord webhook URLs, the dedicated-account
 `TWSCRAPE_AUTH_TOKEN`/`TWSCRAPE_CT0` values, and the 9Router
-`LLM_CHAT_COMPLETIONS_URL`/`LLM_API_KEY` values (extraction sends
-`gemini/gemini-3.8-flash` with a strict JSON-schema contract). It may also supply the optional
+`LLM_CHAT_COMPLETIONS_URL`/`LLM_API_KEY` values (extraction sends model
+`transfers-n8n`, a 9Router fallback combo, with the JSON schema inline and
+`json_object` response format). It may also supply the optional
 `UPSTASH_REDIS_MODE`, `UPSTASH_REDIS_REST_URL`,
 `UPSTASH_REDIS_REST_TOKEN`, and `UPSTASH_REDIS_POST_TTL_SECONDS` values.
 Redis defaults to `off`; do not enable `active` without valid production
