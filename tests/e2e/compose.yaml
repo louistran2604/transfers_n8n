@@ -54,7 +54,7 @@ services:
       GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
       X_COLLECTOR: twscrape
       TWSCRAPE_BASE_URL: http://mock-services:18081/twscrape
-      LLM_CHAT_COMPLETIONS_URL: http://mock-services:18081/qwen/valid
+      LLM_CHAT_COMPLETIONS_URL: http://mock-services:18081/llm/valid
       PLAYER_ENRICHMENT_MODE: "off"
       SOFASCORE_ENRICHMENT_BASE_URL: http://sofascore-enrichment:18081
       DISCORD_TRANSFERS_WEBHOOK_URL: http://mock-services:18081/discord/receive

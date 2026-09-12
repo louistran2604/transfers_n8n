@@ -245,7 +245,7 @@ CREATE TEMPORARY TABLE live_payload AS SELECT jsonb_build_object(
   'normalized_data', jsonb_build_object('current_club_key', 'old fc'),
   'sources', jsonb_build_array(jsonb_build_object(
     'raw_post_id', :live_raw_id, 'posted_at', '2026-08-20T12:00:00Z',
-    'report_ordinal', 1, 'extraction_schema_version', 'qwen-evidence-v1',
+    'report_ordinal', 1, 'extraction_schema_version', 'llm-evidence-v1',
     'normalized_evidence', jsonb_build_object(
       'stage_signal', 'link', 'claim_stance', 'supports', 'wording_strength', 'direct',
       'club_agreement_state', 'not_reported', 'personal_terms_state', 'not_reported',
@@ -301,7 +301,7 @@ CREATE TEMPORARY TABLE decay_payload AS SELECT jsonb_build_object(
   'normalized_data', jsonb_build_object('current_club_key', 'old fc'),
   'sources', jsonb_build_array(jsonb_build_object(
     'raw_post_id', :decay_raw_id, 'posted_at', '2026-08-01T12:00:00Z',
-    'report_ordinal', 1, 'extraction_schema_version', 'qwen-evidence-v1',
+    'report_ordinal', 1, 'extraction_schema_version', 'llm-evidence-v1',
     'normalized_evidence', jsonb_build_object(
       'stage_signal', 'link', 'claim_stance', 'supports', 'wording_strength', 'direct',
       'club_agreement_state', 'not_reported', 'personal_terms_state', 'not_reported',
@@ -354,7 +354,7 @@ BEGIN
       report_ordinal, destination_club_name, stage_signal, claim_stance, wording_strength,
       club_agreement_state, personal_terms_state, completion_claim, attribution_kind,
       resolved_independence_key, extraction_confidence, raw_normalized_extraction
-    ) VALUES (report_id, case_id, raw_id, 'qwen-evidence-v1', 1, 'New', 'link', 'supports',
+    ) VALUES (report_id, case_id, raw_id, 'llm-evidence-v1', 1, 'New', 'link', 'supports',
       'direct', 'not_reported', 'not_reported', 'none', 'original', 'reporter:active-test', 0.95,
       jsonb_build_object('stage_signal', 'link', 'claim_stance', 'supports', 'wording_strength', 'direct',
         'club_agreement_state', 'not_reported', 'personal_terms_state', 'not_reported',

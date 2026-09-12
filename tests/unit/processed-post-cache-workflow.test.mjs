@@ -48,7 +48,7 @@ test('generated twscrape topology checks processed-post Redis before PostgreSQL 
   assert.equal(target('Posts remain after cache?', 1), 'Prepare digest candidates query');
   assert.equal(target('Bypass processed-post Redis cache'), 'Persist raw posts');
   assert.equal(target('Load sample collected X posts'), 'Persist raw posts');
-  assert.equal(target('Persist raw posts'), 'Build Qwen request');
+  assert.equal(target('Persist raw posts'), 'Build extraction request');
 });
 
 test('terminal PostgreSQL transitions populate Redis only after success and merged processing always resumes', () => {
@@ -74,11 +74,11 @@ test('terminal PostgreSQL transitions populate Redis only after success and merg
   assert.equal(target('Store merged processed-post markers via Upstash'), 'Resume merged processing after Redis');
   assert.equal(target('Resume merged processing after Redis'), 'Merge workflow outcomes');
   assert.equal(target('Persist merged reports and revisions'), 'Prepare merged processed-post Redis write');
-  assert.equal(target('Record Qwen validation failure'), 'Merge workflow outcomes');
+  assert.equal(target('Record extraction validation failure'), 'Merge workflow outcomes');
   assert.equal(nodeByName('Mark non-transfer ignored').continueOnFail, undefined);
   assert.equal(nodeByName('Persist merged reports and revisions').continueOnFail, undefined);
   assert.match(nodeByName('Persist merged reports and revisions').parameters.query, /processed_post_external_ids/);
-  assert.match(nodeByName('Validate Qwen response').parameters.jsCode, /external_post_id: request\.external_post_id/);
+  assert.match(nodeByName('Validate extraction response').parameters.jsCode, /external_post_id: request\.external_post_id/);
   assert.match(nodeByName('Merge extracted reports').parameters.jsCode, /processed_post_external_ids/);
 });
 

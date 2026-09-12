@@ -7,7 +7,7 @@ import {
   buildDiscordDigest,
   buildProcessedPostLookupBatches,
   buildProcessedPostSetBatches,
-  canonicalizeQwenResponse,
+  canonicalizeExtractionResponse,
   canonicalizeReport,
   chooseClassification,
   dedupeKey,
@@ -29,7 +29,7 @@ import {
   selectDigestReports,
   shouldRetry,
   sourceMetadata,
-  validateQwenResponse,
+  validateExtractionResponse,
 } from '../../workflow/lib.mjs';
 
 const entityAliases = await loadEntityAliases(new URL('../../workflow/entity-aliases.json', import.meta.url));
@@ -269,21 +269,21 @@ test('generated source upserts persist explicit reliability and independence met
   }
 });
 
-test('strict Qwen validation accepts the exact evidence contract and rejects unknown scoring fields', () => {
+test('strict extraction validation accepts the exact evidence contract and rejects unknown scoring fields', () => {
   const accepted = { transfer_related: true, reports: [evidenceReport()] };
-  assert.equal(validateQwenResponse(accepted).valid, true);
-  assert.equal(validateQwenResponse({ ...accepted, source_url: 'https://bad.example' }).valid, false);
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ fee_currency: 'eur' })] }).valid, false);
+  assert.equal(validateExtractionResponse(accepted).valid, true);
+  assert.equal(validateExtractionResponse({ ...accepted, source_url: 'https://bad.example' }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ fee_currency: 'eur' })] }).valid, false);
   for (const field of ['percentage', 'transfer_probability', 'probability_contribution', 'reliability_score', 'independent_source_count', 'explanation']) {
-    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 1 })] }).valid, false, field);
+    assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 1 })] }).valid, false, field);
   }
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ confidence: 0.9 })] }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ confidence: 0.9 })] }).valid, false);
   const missing = evidenceReport();
   delete missing.player_name;
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [missing] }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [missing] }).valid, false);
 });
 
-test('Qwen evidence enums cover stages, gates, completion wording, and attribution', () => {
+test('Extraction evidence enums cover stages, gates, completion wording, and attribution', () => {
   const enumCases = {
     stage_signal: ['link', 'interest', 'talks', 'advanced', 'agreed', 'done', 'setback', 'collapsed', 'official_wording', 'not_reported'],
     claim_stance: ['supports', 'contradicts', 'neutral'],
@@ -294,8 +294,8 @@ test('Qwen evidence enums cover stages, gates, completion wording, and attributi
     attribution_kind: ['original', 'cites_named_source', 'aggregation', 'unknown'],
   };
   for (const [field, values] of Object.entries(enumCases)) {
-    for (const value of values) assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: value })] }).valid, true, `${field}=${value}`);
-    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 'invalid' })] }).valid, false, field);
+    for (const value of values) assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ [field]: value })] }).valid, true, `${field}=${value}`);
+    assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ [field]: 'invalid' })] }).valid, false, field);
   }
 
   for (const report of [
@@ -307,47 +307,47 @@ test('Qwen evidence enums cover stages, gates, completion wording, and attributi
     evidenceReport({ stage_signal: 'official_wording', completion_claim: 'official_announcement' }),
     evidenceReport({ attribution_kind: 'cites_named_source', named_originator: 'David Ornstein' }),
     evidenceReport({ attribution_kind: 'aggregation' }),
-  ]) assert.equal(validateQwenResponse({ transfer_related: true, reports: [report] }).valid, true);
+  ]) assert.equal(validateExtractionResponse({ transfer_related: true, reports: [report] }).valid, true);
 
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: '' })] }).valid, false);
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: 42 })] }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: '' })] }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ named_originator: 42 })] }).valid, false);
   for (const extraction_confidence of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ extraction_confidence })] }).valid, false);
+    assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ extraction_confidence })] }).valid, false);
   }
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [
     evidenceReport({ destination_club_name: 'Club A', stage_signal: 'link' }),
     evidenceReport({ destination_club_name: 'Club B', stage_signal: 'interest' }),
   ] }).valid, true);
 });
 
-test('reusable Qwen compatibility maps the exact legacy confidence report once', () => {
+test('reusable extraction compatibility maps the exact legacy confidence report once', () => {
   const legacy = { transfer_related: true, reports: [validReport({ confidence: 0.83 })] };
-  assert.equal(validateQwenResponse(legacy).valid, true);
-  const canonical = canonicalizeQwenResponse(legacy);
+  assert.equal(validateExtractionResponse(legacy).valid, true);
+  const canonical = canonicalizeExtractionResponse(legacy);
   assert.equal(canonical.reports[0].extraction_confidence, 0.83);
   assert.equal('confidence' in canonical.reports[0], false);
   assert.equal(canonical.reports[0].stage_signal, 'not_reported');
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [{ ...evidenceReport(), confidence: 0.5 }] }).valid, false);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [{ ...evidenceReport(), confidence: 0.5 }] }).valid, false);
 });
 
-test('Qwen contract keeps explicit former senior club separate from omitted current club', async () => {
+test('Extraction contract keeps explicit former senior club separate from omitted current club', async () => {
   const report = evidenceReport({
     player_name: 'Endrick',
     current_club_name: null,
     former_club_name: 'Palmeiras',
     destination_club_name: 'Chelsea',
   });
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [report] }).valid, true);
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [report] }).valid, true);
   const missing = { ...report };
   delete missing.former_club_name;
-  assert.equal(validateQwenResponse({ transfer_related: true, reports: [missing] }).valid, false);
-  const prompt = await readFile(new URL('../../workflow/qwen-system-prompt.md', import.meta.url), 'utf8');
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [missing] }).valid, false);
+  const prompt = await readFile(new URL('../../workflow/extraction-system-prompt.md', import.meta.url), 'utf8');
   assert.match(prompt, /former\/ex-player/);
   assert.match(prompt, /Academy, birthplace, nationality, and origin-only wording must not populate/);
   assert.match(prompt, /same player is linked to multiple distinct destination clubs/);
   assert.match(prompt, /move_effective_on/);
   assert.match(prompt, /completed-market recap/);
-  const schema = JSON.parse(await readFile(new URL('../../workflow/qwen-response-schema.json', import.meta.url), 'utf8'));
+  const schema = JSON.parse(await readFile(new URL('../../workflow/extraction-response-schema.json', import.meta.url), 'utf8'));
   assert.ok(schema.properties.reports.items.required.includes('former_club_name'));
   assert.ok(schema.properties.reports.items.required.includes('extraction_confidence'));
   assert.ok(schema.properties.reports.items.required.includes('move_effective_on'));
@@ -355,12 +355,12 @@ test('Qwen contract keeps explicit former senior club separate from omitted curr
   assert.equal(schema.properties.reports.items.required.includes('confidence'), false);
 });
 
-test('Qwen contract accepts month-precision effective move dates and rejects malformed dates', () => {
+test('Extraction contract accepts month-precision effective move dates and rejects malformed dates', () => {
   for (const move_effective_on of ['2027-06', '2027-06-30', null]) {
-    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, true, move_effective_on);
+    assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, true, move_effective_on);
   }
   for (const move_effective_on of ['2027-6', '2027-13', '2027-00', '2027-06-1', 'June 2027']) {
-    assert.equal(validateQwenResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, false, move_effective_on);
+    assert.equal(validateExtractionResponse({ transfer_related: true, reports: [evidenceReport({ move_effective_on })] }).valid, false, move_effective_on);
   }
 });
 
@@ -1198,7 +1198,7 @@ test('retry timing honors server headers within a bounded exponential backoff po
   assert.equal(retryDelayMs({ attempt: 1, rateResetEpochSeconds: 10, now: 0 }), 10000);
   assert.equal(retryDelayMs({ attempt: 1, retryAfter: '99999', maximumMs: 300000, now: 0 }), 300000);
   assert.equal(shouldRetry('twscrape', 503), true);
-  assert.equal(shouldRetry('qwen', 0), true);
+  assert.equal(shouldRetry('llm', 0), true);
   assert.equal(shouldRetry('discord', 400), false);
   assert.equal(shouldRetry('discord', 429), true);
 });
@@ -2425,7 +2425,7 @@ test('generated workflow routes no-work and mixed outcomes through one native me
   assert.deepEqual(mergeNode.parameters, { mode: 'append', numberInputs: 3 });
   assert.equal(workflow.connections['Merged report payload?'].main[1][0].node, 'Merge workflow outcomes');
   assert.equal(workflow.connections['Mark ignored outcome'].main[0][0].node, 'Merge workflow outcomes');
-  assert.equal(workflow.connections['Record Qwen validation failure'].main[0][0].node, 'Merge workflow outcomes');
+  assert.equal(workflow.connections['Record extraction validation failure'].main[0][0].node, 'Merge workflow outcomes');
   assert.equal(workflow.connections['Digest has content?'].main[1][0].node, 'Complete workflow run without delivery');
   assert.equal(workflow.connections['Digest reserved'].main[1][0].node, 'Complete workflow run without delivery');
   assert.match(completeNode.parameters.query, /status = 'succeeded'/);
@@ -2437,12 +2437,12 @@ test('generated workflow routes no-work and mixed outcomes through one native me
   const report = { json: { workflow_outcome: 'merged_report', transfer_report_id: '41' } };
   assert.deepEqual(await runRoute({ all: () => [
     { json: { workflow_outcome: 'ignored' } },
-    { json: { workflow_outcome: 'qwen_validation_failure' } },
+    { json: { workflow_outcome: 'llm_validation_failure' } },
     report,
   ] }), [report]);
   assert.deepEqual(await runRoute({ all: () => [
     { json: { workflow_outcome: 'ignored' } },
-    { json: { workflow_outcome: 'qwen_validation_failure' } },
+    { json: { workflow_outcome: 'llm_validation_failure' } },
   ] }), [{ json: { workflow_outcome: 'no_merged_reports' } }]);
 });
 
@@ -2591,8 +2591,8 @@ test('generated pending delivery preserves the stored JSONB payload structurally
 
 test('generated workflow carries fail-closed shadow and active probability evidence', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
-  const requestNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
-  const parserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const requestNode = workflow.nodes.find((node) => node.name === 'Build extraction request');
+  const parserNode = workflow.nodes.find((node) => node.name === 'Validate extraction response');
   const mergeNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
   const persistNode = workflow.nodes.find((node) => node.name === 'Persist merged reports and revisions');
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -2619,7 +2619,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
   assert.deepEqual(parsed.map((item) => item.json.report.report_ordinal), [1, 2]);
   for (const item of parsed) {
     const report = item.json.report;
-    assert.equal(report.extraction_schema_version, 'qwen-evidence-v1');
+    assert.equal(report.extraction_schema_version, 'llm-evidence-v1');
     assert.equal(report.probability_mode, 'shadow');
     assert.equal(report.evaluated_at, '2026-08-27T01:05:00.000Z');
     assert.deepEqual(Object.keys(report.normalized_evidence).sort(), [
@@ -2636,7 +2636,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
     assert.equal(payload.probability_mode, 'shadow');
     assert.equal(payload.evaluated_at, '2026-08-27T01:05:00.000Z');
     assert.equal(payload.sources[0].report_ordinal, 1 + (payload.destination_club_name === 'Club B'));
-    assert.equal(payload.sources[0].extraction_schema_version, 'qwen-evidence-v1');
+    assert.equal(payload.sources[0].extraction_schema_version, 'llm-evidence-v1');
     assert.equal(payload.sources[0].normalized_evidence.destination_club_name, undefined);
     for (const [field, value] of Object.entries(payload.sources[0].normalized_evidence)) {
       assert.deepEqual(payload.sources[0][field], value, field);
@@ -2672,7 +2672,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
 
 test('generated extraction preserves future effective dates and connected loan siblings', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
-  const parserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const parserNode = workflow.nodes.find((node) => node.name === 'Validate extraction response');
   const mergeNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const request = { json: {
@@ -2718,12 +2718,12 @@ test('generated workflow stays in sync with the registry and extraction contract
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const errorWorkflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));
   const sourceNode = workflow.nodes.find((node) => node.name === 'Load generated sources');
-  const qwenNode = workflow.nodes.find((node) => node.name === 'Build Qwen request');
+  const extractionBuildNode = workflow.nodes.find((node) => node.name === 'Build extraction request');
   const collectorNode = workflow.nodes.find((node) => node.name === 'Select X collector');
   const twscrapeBuilderNode = workflow.nodes.find((node) => node.name === 'Build twscrape collect request');
   const twscrapeNode = workflow.nodes.find((node) => node.name === 'Collect 20 X posts via twscrape');
   const twscrapeParserNode = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');
-  const qwenParserNode = workflow.nodes.find((node) => node.name === 'Validate Qwen response');
+  const extractionParserNode = workflow.nodes.find((node) => node.name === 'Validate extraction response');
   const mergeExtractedNode = workflow.nodes.find((node) => node.name === 'Merge extracted reports');
   const sampleNode = workflow.nodes.find((node) => node.name === 'Load sample collected X posts');
   const reserveNode = workflow.nodes.find((node) => node.name === 'Reserve digest before delivery');
@@ -2740,32 +2740,32 @@ test('generated workflow stays in sync with the registry and extraction contract
   const staleRunCheckNode = workflow.nodes.find((node) => node.name === 'Check stale workflow runs');
   const staleRunIfNode = workflow.nodes.find((node) => node.name === 'Stale workflow runs?');
   const staleRunAlertNode = workflow.nodes.find((node) => node.name === 'Send stale-run alert');
-  const qwenFailureNode = workflow.nodes.find((node) => node.name === 'Record Qwen validation failure');
+  const extractionFailureNode = workflow.nodes.find((node) => node.name === 'Record extraction validation failure');
   const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
-  assert.match(qwenNode.parameters.jsCode, /conforms exactly to this JSON Schema/);
-  assert.match(qwenNode.parameters.jsCode, /explicitly stated current employer or registration holder/);
-  assert.match(qwenNode.parameters.jsCode, /women's, girls', and youth football/);
-  assert.match(qwenNode.parameters.jsCode, /Women's-football blacklist/);
-  assert.match(qwenNode.parameters.jsCode, /Misa Rodríguez/);
-  assert.match(qwenNode.parameters.jsCode, /Misa Rodriguez/);
-  assert.match(qwenNode.parameters.jsCode, /Known football siblings/);
-  assert.match(qwenNode.parameters.jsCode, /Normalized common football surnames/);
-  assert.match(qwenNode.parameters.jsCode, /preserve any first or given name stated/);
-  assert.match(qwenNode.parameters.jsCode, /never reorder a surname-first name/);
-  assert.match(qwenNode.parameters.jsCode, /A rejected bid is `stage_signal=setback` plus `club_agreement_state=rejected`/);
-  assert.match(qwenNode.parameters.jsCode, /official_announcement` describes wording only/);
-  assert.match(qwenNode.parameters.jsCode, /not the likelihood that the move completes/);
-  assert.match(qwenNode.parameters.jsCode, /Never output any percentage, transfer probability/);
-  assert.match(qwenNode.parameters.jsCode, /"extraction_confidence"/);
-  assert.doesNotMatch(qwenNode.parameters.jsCode, /"confidence":\s*\{\s*"type"/);
-  assert.match(qwenParserNode.parameters.jsCode, /Randal Kolo Muani/);
-  assert.match(qwenParserNode.parameters.jsCode, /report\.extraction_confidence/);
-  assert.doesNotMatch(qwenParserNode.parameters.jsCode, /report\.confidence/);
-  assert.match(qwenFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
-  assert.doesNotMatch(qwenFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
-  assert.match(qwenFailureNode.parameters.query, /qwen_validation_failure/);
-  assert.match(qwenFailureNode.parameters.query, /\$7::text AS workflow_run_id/);
+  assert.match(extractionBuildNode.parameters.jsCode, /conforms exactly to this JSON Schema/);
+  assert.match(extractionBuildNode.parameters.jsCode, /explicitly stated current employer or registration holder/);
+  assert.match(extractionBuildNode.parameters.jsCode, /women's, girls', and youth football/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Women's-football blacklist/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Misa Rodríguez/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Misa Rodriguez/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Known football siblings/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Normalized common football surnames/);
+  assert.match(extractionBuildNode.parameters.jsCode, /preserve any first or given name stated/);
+  assert.match(extractionBuildNode.parameters.jsCode, /never reorder a surname-first name/);
+  assert.match(extractionBuildNode.parameters.jsCode, /A rejected bid is `stage_signal=setback` plus `club_agreement_state=rejected`/);
+  assert.match(extractionBuildNode.parameters.jsCode, /official_announcement` describes wording only/);
+  assert.match(extractionBuildNode.parameters.jsCode, /not the likelihood that the move completes/);
+  assert.match(extractionBuildNode.parameters.jsCode, /Never output any percentage, transfer probability/);
+  assert.match(extractionBuildNode.parameters.jsCode, /"extraction_confidence"/);
+  assert.doesNotMatch(extractionBuildNode.parameters.jsCode, /"confidence":\s*\{\s*"type"/);
+  assert.match(extractionParserNode.parameters.jsCode, /Randal Kolo Muani/);
+  assert.match(extractionParserNode.parameters.jsCode, /report\.extraction_confidence/);
+  assert.doesNotMatch(extractionParserNode.parameters.jsCode, /report\.confidence/);
+  assert.match(extractionFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
+  assert.doesNotMatch(extractionFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
+  assert.match(extractionFailureNode.parameters.query, /llm_validation_failure/);
+  assert.match(extractionFailureNode.parameters.query, /\$7::text AS workflow_run_id/);
   assert.match(staleRunCheckNode.parameters.query, /status = 'running'/);
   assert.match(staleRunCheckNode.parameters.query, /interval '12 hours'/);
   assert.equal(staleRunIfNode.parameters.conditions.conditions[0].leftValue, '={{ $json.stale_runs }}');
@@ -2786,33 +2786,33 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.match(failureNode.parameters.query, /status = 'failed'/);
   assert.match(failureNode.parameters.query, /finished_at = COALESCE/);
   assert.match(failureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
-  assert.doesNotMatch(qwenParserNode.parameters.jsCode, /itemMatching/);
-  assert.doesNotMatch(qwenNode.parameters.jsCode, /llamaSchema/);
-  assert.match(qwenNode.parameters.jsCode, /gemini\/gemini-3\.8-flash/);
-  assert.match(qwenNode.parameters.jsCode, /max_tokens/);
-  assert.match(qwenNode.parameters.jsCode, /stream: false/);
-  assert.match(qwenNode.parameters.jsCode, /json_object/);
-  assert.match(qwenNode.parameters.jsCode, /no markdown fences/);
-  const extractNode = workflow.nodes.find((node) => node.name === 'Extract with Qwen');
+  assert.doesNotMatch(extractionParserNode.parameters.jsCode, /itemMatching/);
+  assert.doesNotMatch(extractionBuildNode.parameters.jsCode, /llamaSchema/);
+  assert.match(extractionBuildNode.parameters.jsCode, /gemini\/gemini-3\.8-flash/);
+  assert.match(extractionBuildNode.parameters.jsCode, /max_tokens/);
+  assert.match(extractionBuildNode.parameters.jsCode, /stream: false/);
+  assert.match(extractionBuildNode.parameters.jsCode, /json_object/);
+  assert.match(extractionBuildNode.parameters.jsCode, /no markdown fences/);
+  const extractNode = workflow.nodes.find((node) => node.name === 'Extract via LLM');
   assert.match(extractNode.parameters.url, /LLM_CHAT_COMPLETIONS_URL/);
   assert.doesNotMatch(extractNode.parameters.url, /QWEN_CHAT_COMPLETIONS_URL|llama/);
   assert.match(JSON.stringify(extractNode.parameters.headerParameters), /LLM_API_KEY/);
-  assert.match(qwenParserNode.parameters.jsCode, /report\.player_name\.trim\(\)\.length > 0/);
-  assert.match(qwenParserNode.parameters.jsCode, /report\.is_huge_rumor === 'boolean'/);
+  assert.match(extractionParserNode.parameters.jsCode, /report\.player_name\.trim\(\)\.length > 0/);
+  assert.match(extractionParserNode.parameters.jsCode, /report\.is_huge_rumor === 'boolean'/);
   assert.match(mergeReportsNode.parameters.query, /payload->>'extraction_confidence'/);
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-  const runQwenParser = new AsyncFunction('$input', '$', qwenParserNode.parameters.jsCode);
+  const runExtractionParser = new AsyncFunction('$input', '$', extractionParserNode.parameters.jsCode);
   const request = { json: { raw_post_id: '1', external_post_id: '2', workflow_run_id: '77', post_url: 'https://x.com/test/status/2', posted_at: '2026-08-27T00:00:00.000Z', source: source('test') } };
-  const parseQwen = (report) => runQwenParser({ all: () => [{ json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [report] }) } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
-  const parsedEvidence = await parseQwen(evidenceReport({ extraction_confidence: 0.84 }));
+  const parseExtraction = (report) => runExtractionParser({ all: () => [{ json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [report] }) } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
+  const parsedEvidence = await parseExtraction(evidenceReport({ extraction_confidence: 0.84 }));
   assert.equal(parsedEvidence[0].json.valid, true);
   assert.equal(parsedEvidence[0].json.report.extraction_confidence, 0.84);
   const fencedContent = '```json\n' + JSON.stringify({ transfer_related: true, reports: [evidenceReport({ extraction_confidence: 0.9 })] }) + '\n```';
-  const fencedParsed = await runQwenParser({ all: () => [{ json: { choices: [{ message: { content: fencedContent } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
+  const fencedParsed = await runExtractionParser({ all: () => [{ json: { choices: [{ message: { content: fencedContent } }] }, pairedItem: { item: 0 } }] }, () => ({ all: () => [request] }));
   assert.equal(fencedParsed[0].json.valid, true);
-  const invalidQwen = (await parseQwen(validReport()))[0].json;
-  assert.equal(invalidQwen.valid, false);
-  assert.equal(invalidQwen.params.at(-1), '77');
+  const invalidExtraction = (await parseExtraction(validReport()))[0].json;
+  assert.equal(invalidExtraction.valid, false);
+  assert.equal(invalidExtraction.params.at(-1), '77');
   const runMerge = new AsyncFunction('$input', mergeExtractedNode.parameters.jsCode);
   const preferredEvidence = evidenceReport({
     stage_signal: 'talks', claim_stance: 'supports', wording_strength: 'direct', club_agreement_state: 'talks', personal_terms_state: 'talks',
@@ -2848,7 +2848,7 @@ test('generated workflow stays in sync with the registry and extraction contract
     ['agreement_status', 'whatever'],
     ['is_digest_worthy', 'yes'],
   ]) {
-    assert.equal((await parseQwen(evidenceReport({ [field]: value })))[0].json.valid, false, field);
+    assert.equal((await parseExtraction(evidenceReport({ [field]: value })))[0].json.valid, false, field);
   }
   assert.doesNotMatch(workflow.nodes.find((node) => node.name === 'Prepare delivery finalization').parameters.jsCode, /itemMatching/);
   assert.match(sampleNode.parameters.jsCode, /TEST DATA/);

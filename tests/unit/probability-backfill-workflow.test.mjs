@@ -54,12 +54,12 @@ test('generated probability backfill code nodes contain valid JavaScript', () =>
 
 test('generated backfill mappings produce completion and failure parameters', () => {
   const transferValidated = runCode(
-    'Validate backfill Qwen response',
+    'Validate backfill extraction response',
     [responseItem({ transfer_related: true, reports: [report] })],
     [request],
   );
   const transfer = runCode('Build shadow report payloads', transferValidated, [request])[0].json.params;
-  assert.deepEqual(transfer.slice(0, 4), ['501', 'qwen-evidence-v1', 'execution-42', request.json.evaluation_time]);
+  assert.deepEqual(transfer.slice(0, 4), ['501', 'llm-evidence-v1', 'execution-42', request.json.evaluation_time]);
   const transferPayload = JSON.parse(transfer[4]);
   assert.equal(transferPayload.length, 1);
   assert.equal(transferPayload[0].sources[0].raw_post_id, '501');
@@ -67,14 +67,14 @@ test('generated backfill mappings produce completion and failure parameters', ()
   assert.equal(transferPayload[0].probability_mode, 'shadow');
 
   const ignoredValidated = runCode(
-    'Validate backfill Qwen response',
+    'Validate backfill extraction response',
     [responseItem({ transfer_related: false, reports: [] })],
     [request],
   );
   const ignored = runCode('Build shadow report payloads', ignoredValidated, [request])[0].json.params;
   assert.deepEqual(JSON.parse(ignored[4]), []);
   const emptyTransferValidated = runCode(
-    'Validate backfill Qwen response',
+    'Validate backfill extraction response',
     [responseItem({ transfer_related: true, reports: [] })],
     [request],
   );
@@ -82,13 +82,13 @@ test('generated backfill mappings produce completion and failure parameters', ()
   assert.deepEqual(JSON.parse(emptyTransfer[4]), []);
 
   const invalidValidated = runCode(
-    'Validate backfill Qwen response',
+    'Validate backfill extraction response',
     [responseItem({ transfer_related: true, reports: [{ player_name: 'Incomplete' }] })],
     [request],
   );
   const failed = runCode('Prepare failed replay release', invalidValidated, [request])[0].json.params;
   assert.deepEqual(failed, [
-    '501', 'qwen-evidence-v1', 'execution-42', 'Malformed or schema-invalid Qwen response',
+    '501', 'llm-evidence-v1', 'execution-42', 'Malformed or schema-invalid LLM response',
   ]);
 });
 
@@ -110,10 +110,10 @@ test('probability backfill claims a fixed oldest-first batch and emits determini
   const claim = workflow.nodes.find((node) => node.name === 'Claim replay batch');
   assert.match(claim.parameters.query, /claim_probability_backfill/);
   assert.match(claim.parameters.query, /100/);
-  const request = workflow.nodes.find((node) => node.name === 'Build backfill Qwen request');
+  const request = workflow.nodes.find((node) => node.name === 'Build backfill extraction request');
   assert.match(request.parameters.jsCode, /evaluation_time/);
   const payloads = workflow.nodes.find((node) => node.name === 'Build shadow report payloads');
-  assert.match(payloads.parameters.jsCode, /qwen-evidence-v1/);
+  assert.match(payloads.parameters.jsCode, /llm-evidence-v1/);
   const audit = workflow.nodes.find((node) => node.name === 'Build deterministic audit');
   assert.match(audit.parameters.query, /probability_backfill_audit/);
 });

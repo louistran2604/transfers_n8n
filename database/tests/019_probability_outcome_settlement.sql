@@ -80,7 +80,7 @@ BEGIN
     wording_strength, club_agreement_state, personal_terms_state, completion_claim,
     attribution_kind, named_originator, resolved_independence_key,
     extraction_confidence, raw_normalized_extraction
-  ) SELECT report_id, case_id, post_id, 'qwen-evidence-v1', 1,
+  ) SELECT report_id, case_id, post_id, 'llm-evidence-v1', 1,
     destination_club_name, stage, 'supports', 'direct', club_state, personal_state,
     completion, attribution, named_originator,
     CASE WHEN named_originator IS NULL THEN 'source:' || account_id ELSE NULL END,

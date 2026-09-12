@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 const redisValues = new Map();
 const state = {
   twscrapeCalls: 0,
-  qwenCalls: 0,
+  llmCalls: 0,
   sofascoreCalls: 0,
   discordRequests: 0,
   discordPayloads: [],
@@ -45,7 +45,7 @@ function stateSnapshot() {
 function resetState() {
   Object.assign(state, {
     twscrapeCalls: 0,
-    qwenCalls: 0,
+    llmCalls: 0,
     sofascoreCalls: 0,
     discordRequests: 0,
     discordPayloads: [],
@@ -236,8 +236,8 @@ createServer(async (request, response) => {
     state.redisCommandCount += commands.length;
     return json(response, 200, commands.map(redisPipelineResult));
   }
-  if (url.pathname.startsWith('/qwen/')) {
-    state.qwenCalls += 1;
+  if (url.pathname.startsWith('/llm/')) {
+    state.llmCalls += 1;
     const mode = url.pathname.split('/').at(-1);
     const content = mode === 'malformed' ? '{not json' : mode === 'invalid'
       ? JSON.stringify({ ...validExtraction, unexpected: true })

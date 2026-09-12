@@ -31,7 +31,7 @@ FROM generate_series(1, 103) value;
 
 CREATE TEMPORARY TABLE first_claim AS
 SELECT * FROM claim_probability_backfill(
-  'shadow', '2026-08-27 12:00:00+00', 'run-a', 'qwen-evidence-v1', 100, interval '15 minutes'
+  'shadow', '2026-08-27 12:00:00+00', 'run-a', 'llm-evidence-v1', 100, interval '15 minutes'
 );
 
 SELECT pg_temp.assert_true('30-day cutoff or batch size is wrong',
@@ -42,10 +42,10 @@ SELECT pg_temp.assert_true('claim order is not stable oldest-first',
    FROM first_claim));
 SELECT pg_temp.assert_true('non-shadow mode claimed rows',
   NOT EXISTS (SELECT 1 FROM claim_probability_backfill(
-    'active', '2026-08-27 12:00:00+00', 'run-off', 'qwen-evidence-v1', 100, interval '15 minutes')));
+    'active', '2026-08-27 12:00:00+00', 'run-off', 'llm-evidence-v1', 100, interval '15 minutes')));
 CREATE TEMPORARY TABLE second_claim AS
 SELECT * FROM claim_probability_backfill(
-  'shadow', '2026-08-27 12:00:00+00', 'run-b', 'qwen-evidence-v1', 100, interval '15 minutes'
+  'shadow', '2026-08-27 12:00:00+00', 'run-b', 'llm-evidence-v1', 100, interval '15 minutes'
 );
 SELECT pg_temp.assert_true('double claim returned leased rows',
   (SELECT count(*) = 2 FROM second_claim)
@@ -55,7 +55,7 @@ SELECT raw_post_id AS transfer_raw_id FROM first_claim ORDER BY claim_ordinal LI
 SELECT raw_post_id AS ignored_raw_id FROM first_claim ORDER BY claim_ordinal OFFSET 1 LIMIT 1 \gset
 
 SELECT complete_probability_backfill(
-  :ignored_raw_id, 'qwen-evidence-v1', 'run-a', '2026-08-27 12:00:00+00', '[]'::jsonb
+  :ignored_raw_id, 'llm-evidence-v1', 'run-a', '2026-08-27 12:00:00+00', '[]'::jsonb
 );
 
 CREATE TEMPORARY TABLE before_material AS
@@ -67,7 +67,7 @@ SELECT
 
 SELECT complete_probability_backfill(
   :transfer_raw_id,
-  'qwen-evidence-v1',
+  'llm-evidence-v1',
   'run-a',
   '2026-08-27 12:00:00+00',
   jsonb_build_array(jsonb_build_object(
@@ -91,7 +91,7 @@ SELECT complete_probability_backfill(
       'raw_post_id', :transfer_raw_id::text,
       'posted_at', '2026-07-28T12:00:00Z',
       'report_ordinal', 1,
-      'extraction_schema_version', 'qwen-evidence-v1',
+      'extraction_schema_version', 'llm-evidence-v1',
       'normalized_evidence', jsonb_build_object(
         'stage_signal', 'advanced', 'claim_stance', 'supports',
         'wording_strength', 'direct', 'club_agreement_state', 'talks',
@@ -129,7 +129,7 @@ SELECT pg_temp.assert_true('shadow backfill changed material/delivery state',
     = (SELECT payloads FROM before_material));
 
 SELECT complete_probability_backfill(
-  :transfer_raw_id, 'qwen-evidence-v1', 'run-a', '2026-08-27 12:00:00+00',
+  :transfer_raw_id, 'llm-evidence-v1', 'run-a', '2026-08-27 12:00:00+00',
   (SELECT result_payload FROM probability_backfill_replays WHERE raw_post_id = :transfer_raw_id)
 );
 SELECT pg_temp.assert_true('identical completion was not idempotent',
@@ -140,7 +140,7 @@ SELECT pg_temp.assert_true('identical completion was not idempotent',
   AND (SELECT coalesce(sum(version_counter), 0) FROM transfer_cases) = (SELECT version_count FROM idempotency_before));
 
 CREATE TEMPORARY TABLE audit_snapshot AS
-SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1');
+SELECT audit FROM probability_backfill_audit('run-a', 'llm-evidence-v1');
 SELECT pg_temp.assert_true('audit output is missing deterministic distributions/sample',
   (SELECT audit ? 'stage_counts' AND audit ? 'probability_buckets' AND audit ? 'post_counts'
       AND audit ? 'review_sample'
@@ -157,14 +157,14 @@ SET lease_expires_at = CURRENT_TIMESTAMP - interval '1 second'
 WHERE completed_at IS NULL;
 CREATE TEMPORARY TABLE retry_claim AS
 SELECT * FROM claim_probability_backfill(
-  'shadow', '2026-08-27 12:00:00+00', 'run-c', 'qwen-evidence-v1', 100, interval '15 minutes'
+  'shadow', '2026-08-27 12:00:00+00', 'run-c', 'llm-evidence-v1', 100, interval '15 minutes'
 );
 SELECT pg_temp.assert_true('expired claims were not retryable or completed claims replayed',
   (SELECT count(*) = 100 FROM retry_claim)
   AND NOT EXISTS (SELECT 1 FROM retry_claim WHERE raw_post_id IN (:transfer_raw_id, :ignored_raw_id)));
 
 SELECT pg_temp.assert_true('run audit changed after expired posts were reclaimed',
-  (SELECT audit FROM probability_backfill_audit('run-a', 'qwen-evidence-v1'))
+  (SELECT audit FROM probability_backfill_audit('run-a', 'llm-evidence-v1'))
     = (SELECT audit FROM audit_snapshot));
 
 ROLLBACK;

@@ -185,4 +185,18 @@ END AS migration_012_pending \gset
   COMMIT;
 \endif
 
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM app_schema_migrations
+    WHERE version = '013_llm_extraction_identifiers'
+  ) THEN 'false' ELSE 'true'
+END AS migration_013_pending \gset
+
+\if :migration_013_pending
+  BEGIN;
+  \i /database/migrations/013_llm_extraction_identifiers.sql
+  INSERT INTO app_schema_migrations (version) VALUES ('013_llm_extraction_identifiers');
+  COMMIT;
+\endif
+
 SELECT pg_advisory_unlock(hashtext('transfers_net_schema_migrations'));

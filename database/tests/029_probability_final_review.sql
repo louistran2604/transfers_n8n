@@ -92,7 +92,7 @@ BEGIN
         'raw_post_id', raw_id,
         'posted_at', requested_posted_at,
         'report_ordinal', (SELECT count(*) + 1 FROM raw_posts WHERE id = raw_id),
-        'extraction_schema_version', 'qwen-evidence-v1',
+        'extraction_schema_version', 'llm-evidence-v1',
         'normalized_evidence', jsonb_build_object(
           'stage_signal', requested_stage,
           'claim_stance', requested_stance,
@@ -225,7 +225,7 @@ SELECT apply_probability_v1_active(
       'raw_post_id', :denial_raw_id,
       'posted_at', '2026-08-04 10:00+00',
       'report_ordinal', (SELECT report_ordinal FROM transfer_evidence WHERE raw_post_id = :denial_raw_id),
-      'extraction_schema_version', 'qwen-evidence-v1',
+      'extraction_schema_version', 'llm-evidence-v1',
       'normalized_evidence', jsonb_build_object(
         'stage_signal', 'not_reported', 'claim_stance', 'contradicts',
         'wording_strength', 'direct', 'club_agreement_state', 'talks',

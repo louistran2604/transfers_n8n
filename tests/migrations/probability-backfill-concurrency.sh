@@ -47,7 +47,7 @@ claim() {
   docker exec -e PGAPPNAME="$app_name" "$container" psql \
     --username transfers --dbname transfers --set ON_ERROR_STOP=1 --tuples-only --no-align \
     --command "SELECT raw_post_id FROM claim_probability_backfill(
-      'shadow', '2026-08-27 12:00:00+00', '$run_key', 'qwen-evidence-v1', 100, interval '15 minutes'
+      'shadow', '2026-08-27 12:00:00+00', '$run_key', 'llm-evidence-v1', 100, interval '15 minutes'
     ) ORDER BY raw_post_id;" >"$output"
 }
 

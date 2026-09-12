@@ -72,7 +72,7 @@ INSERT INTO transfer_evidence (
   club_agreement_state, personal_terms_state, completion_claim, attribution_kind,
   resolved_independence_key, extraction_confidence, raw_normalized_extraction
 )
-SELECT report.id, report.transfer_case_id, post.id, 'qwen-evidence-v1', 1,
+SELECT report.id, report.transfer_case_id, post.id, 'llm-evidence-v1', 1,
   report.destination_club_name, 'link', 'supports', 'direct', 'not_reported',
   'not_reported', 'none', 'original', 'reporter:lifecycle-upgrade', 0.95,
   jsonb_build_object('stage_signal', 'link', 'claim_stance', 'supports',

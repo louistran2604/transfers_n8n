@@ -51,7 +51,7 @@ BEGIN
       report_ordinal, destination_club_name, stage_signal, claim_stance, wording_strength,
       club_agreement_state, personal_terms_state, completion_claim, attribution_kind,
       resolved_independence_key, extraction_confidence, raw_normalized_extraction
-    ) VALUES (report_id, case_id, raw_id, 'qwen-evidence-v1', 1, 'New', 'link', 'supports',
+    ) VALUES (report_id, case_id, raw_id, 'llm-evidence-v1', 1, 'New', 'link', 'supports',
       'direct', 'not_reported', 'not_reported', 'none', 'original', 'reporter:stale-concurrency', 0.95,
       jsonb_build_object('stage_signal', 'link', 'claim_stance', 'supports',
         'wording_strength', 'direct', 'club_agreement_state', 'not_reported',

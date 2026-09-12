@@ -105,7 +105,7 @@ RETURNS jsonb LANGUAGE sql AS $$
     'raw_post_id', raw_post_id,
     'posted_at', post.posted_at,
     'report_ordinal', report_ordinal,
-    'extraction_schema_version', 'qwen-evidence-v1',
+    'extraction_schema_version', 'llm-evidence-v1',
     'normalized_evidence', jsonb_build_object(
       'stage_signal', stage_signal,
       'claim_stance', claim_stance,
@@ -151,7 +151,7 @@ BEGIN
     personal_terms_state, completion_claim, attribution_kind, named_originator,
     resolved_independence_key, extraction_confidence, raw_normalized_extraction
   ) SELECT
-    report_id, transfer_case_id, post_id, 'qwen-evidence-v1', 1,
+    report_id, transfer_case_id, post_id, 'llm-evidence-v1', 1,
     destination_club_name, $4, $5, $6, $7,
     $8, $9, $10, $11,
     COALESCE($12, 'source:' || source_id), $13,

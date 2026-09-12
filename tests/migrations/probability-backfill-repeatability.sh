@@ -21,13 +21,13 @@ docker exec "$container" psql --username transfers --dbname transfers --set ON_E
     INSERT INTO probability_backfill_replays (
       raw_post_id, extraction_schema_version, claimed_run_key, evaluation_time,
       claimed_at, lease_expires_at
-    ) SELECT id, 'qwen-evidence-v1', 'interrupted-run', '2026-08-27 12:00:00+00',
+    ) SELECT id, 'llm-evidence-v1', 'interrupted-run', '2026-08-27 12:00:00+00',
       '2026-08-27 11:00:00+00', '2026-08-27 11:15:00+00'
     FROM raw_posts WHERE external_post_id = '940000000000000101';
     INSERT INTO probability_backfill_claim_attempts (
       raw_post_id, extraction_schema_version, run_key, evaluation_time,
       claimed_at, lease_expires_at
-    ) SELECT id, 'qwen-evidence-v1', 'interrupted-run', '2026-08-27 12:00:00+00',
+    ) SELECT id, 'llm-evidence-v1', 'interrupted-run', '2026-08-27 12:00:00+00',
       '2026-08-27 11:00:00+00', '2026-08-27 11:15:00+00'
     FROM raw_posts WHERE external_post_id = '940000000000000101';" >/dev/null
 

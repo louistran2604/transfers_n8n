@@ -36,7 +36,7 @@ INSERT INTO transfer_evidence (
   wording_strength, club_agreement_state, personal_terms_state, completion_claim,
   attribution_kind, resolved_independence_key, extraction_confidence,
   raw_normalized_extraction
-) VALUES (:report_id, :case_id, :raw_post_id, 'qwen-evidence-v1', 1, 'New FC',
+) VALUES (:report_id, :case_id, :raw_post_id, 'llm-evidence-v1', 1, 'New FC',
   'advanced', 'supports', 'direct', 'not_reported', 'not_reported', 'none',
   'original', 'reporter:time-travel', 0.95, jsonb_build_object(
     'stage_signal', 'advanced', 'claim_stance', 'supports', 'wording_strength', 'direct',

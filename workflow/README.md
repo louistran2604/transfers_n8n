@@ -16,9 +16,9 @@ Both workflows target n8n `2.31.6`, use `Asia/Ho_Chi_Minh`, and contain no secre
 
 ## Extraction contract
 
-`qwen-system-prompt.md` and `qwen-response-schema.json` are embedded verbatim into the generated workflow. The model may output only `transfer_related` and normalized report terms. Journalist/source identity, URL, platform, timestamp, priority, and reliability are injected from the normalized selected-collector post and generated source registry after model output, so the model cannot invent them.
+`extraction-system-prompt.md` and `extraction-response-schema.json` are embedded verbatim into the generated workflow. The model may output only `transfer_related` and normalized report terms. Journalist/source identity, URL, platform, timestamp, priority, and reliability are injected from the normalized selected-collector post and generated source registry after model output, so the model cannot invent them.
 
-`PROBABILITY_MODE=shadow` stores the validated `qwen-evidence-v1` evidence and deterministic PostgreSQL `probability-v1` raw revision for each destination. Missing, invalid, or `active` values are treated as `off`; shadow probabilities do not change Discord output. Destination/stay normalization is not part of this stage, so `normalized_probability` temporarily equals `raw_probability`.
+`PROBABILITY_MODE=shadow` stores the validated `llm-evidence-v1` evidence and deterministic PostgreSQL `probability-v1` raw revision for each destination. Missing, invalid, or `active` values are treated as `off`; shadow probabilities do not change Discord output. Destination/stay normalization is not part of this stage, so `normalized_probability` temporarily equals `raw_probability`.
 
 ## X collector selection
 

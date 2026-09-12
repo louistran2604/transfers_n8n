@@ -7,7 +7,7 @@ import {
   normalizeEnrichmentResponse,
   recoverInterruptedDelivery,
   sourceMetadata,
-  validateQwenResponse,
+  validateExtractionResponse,
 } from '../../workflow/lib.mjs';
 
 const base = process.env.MOCK_BASE_URL ?? 'http://127.0.0.1:18081';
@@ -230,11 +230,11 @@ assert.equal(emptyLookup.response.status, 200);
 assert.deepEqual(emptyLookup.body, [{ result: null }]);
 const missOutput = await runRedisFilter([{ statusCode: emptyLookup.response.status, body: emptyLookup.body }], missPrepared);
 assert.deepEqual(missOutput.map((item) => item.json), missPosts);
-const qwenBeforeMiss = (await json('/state')).body.qwenCalls;
-const qwenSuccess = await json('/qwen/valid');
-assert.equal(qwenSuccess.response.status, 200);
-assert.equal((await json('/state')).body.qwenCalls, qwenBeforeMiss + 1);
-assert.equal(validateQwenResponse(JSON.parse(qwenSuccess.body.choices[0].message.content)).valid, true);
+const llmBeforeMiss = (await json('/state')).body.llmCalls;
+const llmSuccess = await json('/llm/valid');
+assert.equal(llmSuccess.response.status, 200);
+assert.equal((await json('/state')).body.llmCalls, llmBeforeMiss + 1);
+assert.equal(validateExtractionResponse(JSON.parse(llmSuccess.body.choices[0].message.content)).valid, true);
 
 const terminalPrepared = await runRedisSetPrepare('Prepare merged processed-post Redis write', [{ processed_post_external_ids: [missId] }], activeRedisEnv);
 assert.equal(terminalPrepared.length, 1);
@@ -244,12 +244,12 @@ assert.deepEqual(terminalWrite.body, [{ result: 'OK' }]);
 assert.equal((await json('/state')).body.redisValues[redisKey(missId)], 'merged');
 
 const hitPrepared = await runRedisPrepare(missPosts, activeRedisEnv);
-const qwenBeforeHit = (await json('/state')).body.qwenCalls;
+const llmBeforeHit = (await json('/state')).body.llmCalls;
 const hitLookup = await callRedisPipeline(hitPrepared[0].json.commands);
 assert.equal(hitLookup.response.status, 200);
 const hitOutput = await runRedisFilter([{ statusCode: hitLookup.response.status, body: hitLookup.body }], hitPrepared);
 assert.deepEqual(hitOutput, [{ json: { workflow_outcome: 'all_posts_processed' } }]);
-assert.equal((await json('/state')).body.qwenCalls, qwenBeforeHit);
+assert.equal((await json('/state')).body.llmCalls, llmBeforeHit);
 
 const outageId = '900000000000000303';
 const outagePrepared = await runRedisPrepare([post(outageId)], activeRedisEnv);
@@ -265,13 +265,13 @@ assert.equal(malformedRedis.response.status, 200);
 assert.equal(malformedRedis.body, null);
 assert.deepEqual((await runRedisFilter([{ statusCode: malformedRedis.response.status, body: malformedRedis.body }], malformedPrepared)).map((item) => item.json), [{ ...post(malformedId), redis_cache_diagnostic: 'fail_open' }]);
 
-const qwenFailureId = '900000000000000305';
-const qwenFailurePrepared = await runRedisPrepare([post(qwenFailureId)], activeRedisEnv);
-const qwenFailureLookup = await callRedisPipeline(qwenFailurePrepared[0].json.commands);
-assert.deepEqual(qwenFailureLookup.body, [{ result: null }]);
-const qwenFailure = await json('/qwen/invalid');
-assert.equal(validateQwenResponse(JSON.parse(qwenFailure.body.choices[0].message.content)).valid, false);
-assert.equal((await json('/state')).body.redisValues[redisKey(qwenFailureId)], undefined);
+const llmFailureId = '900000000000000305';
+const llmFailurePrepared = await runRedisPrepare([post(llmFailureId)], activeRedisEnv);
+const llmFailureLookup = await callRedisPipeline(llmFailurePrepared[0].json.commands);
+assert.deepEqual(llmFailureLookup.body, [{ result: null }]);
+const llmFailure = await json('/llm/invalid');
+assert.equal(validateExtractionResponse(JSON.parse(llmFailure.body.choices[0].message.content)).valid, false);
+assert.equal((await json('/state')).body.redisValues[redisKey(llmFailureId)], undefined);
 
 const mergeFailureId = '900000000000000306';
 const mergeFailurePrepared = await runRedisSetPrepare('Prepare merged processed-post Redis write', [], activeRedisEnv);
@@ -292,16 +292,16 @@ assert.equal(target('Load sample collected X posts'), 'Persist raw posts');
 assert.equal((await json('/state')).body.redisPipelineRequests, beforeSample);
 
 for (const mode of ['malformed', 'invalid']) {
-  const result = await json(`/qwen/${mode}`);
+  const result = await json(`/llm/${mode}`);
   const content = result.body.choices[0].message.content;
   const extracted = (() => { try { return JSON.parse(content); } catch { return null; } })();
-  assert.equal(validateQwenResponse(extracted).valid, false);
+  assert.equal(validateExtractionResponse(extracted).valid, false);
 }
-const valid = await json('/qwen/valid');
-assert.equal(validateQwenResponse(JSON.parse(valid.body.choices[0].message.content)).valid, true);
-const women = await json('/qwen/women');
+const valid = await json('/llm/valid');
+assert.equal(validateExtractionResponse(JSON.parse(valid.body.choices[0].message.content)).valid, true);
+const women = await json('/llm/women');
 const womenExtraction = JSON.parse(women.body.choices[0].message.content);
-assert.equal(validateQwenResponse(womenExtraction).valid, true);
+assert.equal(validateExtractionResponse(womenExtraction).valid, true);
 assert.equal(womenExtraction.transfer_related, false);
 
 const reports = Array.from({ length: 20 }, (_, index) => ({

@@ -69,7 +69,7 @@ const EVIDENCE_FIELDS = Object.freeze([
   'named_originator',
   'extraction_confidence',
 ]);
-const QWEN_REPORT_FIELDS = Object.freeze([
+const EXTRACTION_REPORT_FIELDS = Object.freeze([
   ...REPORT_FIELDS.filter((field) => field !== 'confidence'),
   ...EVIDENCE_FIELDS,
 ]);
@@ -883,8 +883,8 @@ function isNullableCurrency(value) {
   return value === null || (typeof value === 'string' && ISO_CURRENCY.test(value));
 }
 
-export function validateQwenResponse(value) {
-  const canonical = canonicalizeQwenResponse(value);
+export function validateExtractionResponse(value) {
+  const canonical = canonicalizeExtractionResponse(value);
   const errors = [];
   if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
     return { valid: false, errors: ['response must be an object'] };
@@ -903,8 +903,8 @@ export function validateQwenResponse(value) {
         return;
       }
       const keys = new Set(Object.keys(report));
-      for (const field of QWEN_REPORT_FIELDS) if (!keys.has(field)) errors.push(`${label}.${field} is required`);
-      for (const field of keys) if (!QWEN_REPORT_FIELDS.includes(field)) errors.push(`${label}.${field} is not allowed`);
+      for (const field of EXTRACTION_REPORT_FIELDS) if (!keys.has(field)) errors.push(`${label}.${field} is required`);
+      for (const field of keys) if (!EXTRACTION_REPORT_FIELDS.includes(field)) errors.push(`${label}.${field} is not allowed`);
       if (typeof report.player_name !== 'string' || !report.player_name.trim()) errors.push(`${label}.player_name must be non-empty string`);
       for (const field of ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name']) {
         if (!isNullableString(report[field])) errors.push(`${label}.${field} must be string or null`);
@@ -943,7 +943,7 @@ export function validateQwenResponse(value) {
   return { valid: errors.length === 0, errors, value: canonical };
 }
 
-export function canonicalizeQwenResponse(value) {
+export function canonicalizeExtractionResponse(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(value.reports)) return value;
   return {
     ...value,
@@ -1546,4 +1546,4 @@ export function recoverInterruptedDelivery(delivery) {
 }
 
 export const REPORT_FIELD_NAMES = REPORT_FIELDS;
-export const QWEN_REPORT_FIELD_NAMES = QWEN_REPORT_FIELDS;
+export const EXTRACTION_REPORT_FIELD_NAMES = EXTRACTION_REPORT_FIELDS;

@@ -181,8 +181,8 @@ Edit project behavior through these source files:
 | [`docs/journalist_list.md`](docs/journalist_list.md) | Authoritative 78-source X registry. |
 | [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club/player aliases, sibling groups, and common surnames. |
 | [`workflow/womens-football-blacklist.txt`](workflow/womens-football-blacklist.txt) | Senior women's football exclusions. |
-| [`workflow/qwen-system-prompt.md`](workflow/qwen-system-prompt.md) | Extraction instructions. |
-| [`workflow/qwen-response-schema.json`](workflow/qwen-response-schema.json) | Strict extraction response contract. |
+| [`workflow/extraction-system-prompt.md`](workflow/extraction-system-prompt.md) | Extraction instructions. |
+| [`workflow/extraction-response-schema.json`](workflow/extraction-response-schema.json) | Strict extraction response contract. |
 
 ## Changing the workflow
 
@@ -410,7 +410,7 @@ tree -a -L 4 \
 │   │   │       └── fixtures/         # Offline provider response fixtures
 │   │   └── twscrape/                 # Private X collection service and tests
 │   │       └── tests/                # Collector service tests
-│   ├── qwen3.8-27b/                  # Retired local GPU deployment (9Router is now used)
+│   ├── retired-local-llm/            # Retired local GPU deployment (9Router is now used)
 │   │   ├── models/                   # Downloaded GGUF model files
 │   │   ├── scripts/                  # Model download, extraction, and server checks
 │   │   └── tests/                    # Extraction fixtures
@@ -435,7 +435,7 @@ Detailed guides:
 - [Workflow generation and contracts](workflow/README.md)
 - [PostgreSQL persistence](database/README.md)
 - [n8n deployment, enrichment rollout, and rollback](deploy/n8n/README.md)
-- [Retired local Qwen deployment](deploy/qwen3.8-27b/README.md)
+- [Retired local LLM deployment](deploy/retired-local-llm/README.md)
 - [Complete test suite](tests/README.md)
 
 ## Current limitations

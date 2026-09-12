@@ -118,7 +118,7 @@ SELECT raw.id::text AS raw_post_id, $1::text AS external_account_id, $2::text AS
 FROM raw CROSS JOIN source;`.trim();
 }
 
-function qwenFailureSql() {
+function extractionFailureSql() {
   return `
 WITH raw AS (
   UPDATE raw_posts SET processing_state = 'failed'
@@ -126,21 +126,21 @@ WITH raw AS (
   RETURNING id
 ), failure AS (
   INSERT INTO failures (workflow_run_id, operation_name, error_fingerprint, error_class, error_message, details)
-  VALUES ($7::bigint, 'qwen_extract', $2, 'ValidationError', $3, $4::jsonb)
+  VALUES ($7::bigint, 'llm_extract', $2, 'ValidationError', $3, $4::jsonb)
   ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE
   SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,
       error_message = EXCLUDED.error_message, details = EXCLUDED.details
   RETURNING id
 )
 INSERT INTO retry_states (resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at, last_failure_id)
-VALUES ('raw_post', $5, 'qwen_extract', 'retrying', 1, CURRENT_TIMESTAMP + ($6::integer * interval '1 millisecond'), (SELECT id FROM failure))
+VALUES ('raw_post', $5, 'llm_extract', 'retrying', 1, CURRENT_TIMESTAMP + ($6::integer * interval '1 millisecond'), (SELECT id FROM failure))
 ON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE
 SET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELSE 'retrying' END,
     attempt_count = retry_states.attempt_count + 1,
     next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,
     last_failure_id = EXCLUDED.last_failure_id
 RETURNING id::text AS retry_state_id, state, attempt_count;
-SELECT 'qwen_validation_failure'::text AS workflow_outcome, $7::text AS workflow_run_id;`.trim();
+SELECT 'llm_validation_failure'::text AS workflow_outcome, $7::text AS workflow_run_id;`.trim();
 }
 
 function mergeReportSql() {
@@ -1465,10 +1465,10 @@ function processedPostCacheResumeCode() {
 return $('Persist merged reports and revisions').all().map((item) => ({ json: { ...item.json, workflow_outcome: 'merged_report' } }));`;
 }
 
-function qwenParseCode({ includeExternalPostId = false } = {}) {
+function extractionParseCode({ includeExternalPostId = false } = {}) {
   return `
 ${entityAliasHelpers()}
-const requests = $('Build Qwen request').all();
+const requests = $('Build extraction request').all();
 const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'move_effective_on', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 const stages = ${JSON.stringify(STAGE_SIGNALS)};
@@ -1490,7 +1490,7 @@ const nullableBoolean = (value) => value === null || typeof value === 'boolean';
 return $input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
   const request = requests[requestIndex]?.json;
-  if (!request?.raw_post_id) throw new Error('Missing Qwen request metadata for response item ' + index);
+  if (!request?.raw_post_id) throw new Error('Missing extraction request metadata for response item ' + index);
   const response = item.json.body ?? item.json;
   const content = response?.choices?.[0]?.message?.content;
   const fence = String.fromCharCode(96, 96, 96);
@@ -1501,7 +1501,7 @@ return $input.all().flatMap((item, index) => {
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
   const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
-    return [{ json: { valid: false, params: [request.raw_post_id, 'qwen-schema-' + request.external_post_id, 'Malformed or schema-invalid Qwen response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];
+    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
@@ -1512,7 +1512,7 @@ ${includeExternalPostId ? '    external_post_id: request.external_post_id,\n' : 
     posted_at: request.posted_at,
     source: request.source,
     report_ordinal: reportIndex + 1,
-    extraction_schema_version: 'qwen-evidence-v1',
+    extraction_schema_version: 'llm-evidence-v1',
     normalized_evidence: Object.fromEntries(evidenceFields.map((field) => [field, report[field]])),
     evaluated_at: request.evaluated_at,
     probability_mode: request.probability_mode,
@@ -2324,7 +2324,7 @@ return [
     node('Posts remain after cache?', 'n8n-nodes-base.if', [1780, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome !== "all_posts_processed" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Bypass processed-post Redis cache', [1340, -120], processedPostCacheBypassCode()),
     postgresNode('Persist raw posts', [760, -40], rawPostUpsertSql()),
-    codeNode('Build Qwen request', [980, -40], `
+    codeNode('Build extraction request', [980, -40], `
 const prompt = ${JSON.stringify(prompt)};
 const schema = ${schemaJson};
 const selectedProbabilityMode = String($env.PROBABILITY_MODE ?? '').trim().toLowerCase();
@@ -2343,7 +2343,7 @@ return $input.all().map((item) => ({ json: {
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
   body: { model: 'gemini/gemini-3.8-flash', temperature: 0, max_tokens: 2048, stream: false, messages: [{ role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content }], response_format: { type: 'json_object' } }
 } }));`),
-    httpNode('Extract with Qwen', [1200, -40], {
+    httpNode('Extract via LLM', [1200, -40], {
       method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
       headerParameters: { parameters: [
         { name: 'Authorization', value: '={{ "Bearer " + $env.LLM_API_KEY }}' },
@@ -2351,9 +2351,9 @@ return $input.all().map((item) => ({ json: {
       sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
-    codeNode('Validate Qwen response', [1420, -40], qwenParseCode({ includeExternalPostId: true })),
-    node('Qwen response valid', 'n8n-nodes-base.if', [1640, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    postgresNode('Record Qwen validation failure', [1640, 160], qwenFailureSql()),
+    codeNode('Validate extraction response', [1420, -40], extractionParseCode({ includeExternalPostId: true })),
+    node('Extraction response valid', 'n8n-nodes-base.if', [1640, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    postgresNode('Record extraction validation failure', [1640, 160], extractionFailureSql()),
     node('Transfer related', 'n8n-nodes-base.if', [1860, -100], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !$json.ignored }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id, external_post_id::text AS external_post_id;`),
     codeNode('Prepare ignored processed-post Redis write', [2080, 80], processedPostCacheSetPrepareCode('ignored')),
@@ -2480,11 +2480,11 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Posts remain after cache?': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
     'Bypass processed-post Redis cache': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
     'Load sample collected X posts': { main: [[{ node: 'Persist raw posts', type: 'main', index: 0 }]] },
-    'Persist raw posts': { main: [[{ node: 'Build Qwen request', type: 'main', index: 0 }]] },
-    'Build Qwen request': { main: [[{ node: 'Extract with Qwen', type: 'main', index: 0 }]] },
-    'Extract with Qwen': { main: [[{ node: 'Validate Qwen response', type: 'main', index: 0 }]] },
-    'Validate Qwen response': { main: [[{ node: 'Qwen response valid', type: 'main', index: 0 }]] },
-    'Qwen response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record Qwen validation failure', type: 'main', index: 0 }]] },
+    'Persist raw posts': { main: [[{ node: 'Build extraction request', type: 'main', index: 0 }]] },
+    'Build extraction request': { main: [[{ node: 'Extract via LLM', type: 'main', index: 0 }]] },
+    'Extract via LLM': { main: [[{ node: 'Validate extraction response', type: 'main', index: 0 }]] },
+    'Validate extraction response': { main: [[{ node: 'Extraction response valid', type: 'main', index: 0 }]] },
+    'Extraction response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record extraction validation failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Mark non-transfer ignored': { main: [[{ node: 'Prepare ignored processed-post Redis write', type: 'main', index: 0 }]] },
     'Prepare ignored processed-post Redis write': { main: [[{ node: 'Ignored processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
@@ -2498,7 +2498,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Merged processed-post Redis cache enabled?': { main: [[{ node: 'Store merged processed-post markers via Upstash', type: 'main', index: 0 }], [{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
     'Store merged processed-post markers via Upstash': { main: [[{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
     'Resume merged processing after Redis': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 0 }]] },
-    'Record Qwen validation failure': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 2 }]] },
+    'Record extraction validation failure': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 2 }]] },
     'Merge workflow outcomes': { main: [[{ node: 'Route workflow outcomes', type: 'main', index: 0 }]] },
     'Route workflow outcomes': { main: [[{ node: 'Merged reports ready?', type: 'main', index: 0 }]] },
     'Merged reports ready?': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
@@ -2540,7 +2540,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
 function backfillPayloadCode() {
   return `
 ${runtimeHelpers()}
-const requests = new Map($('Build backfill Qwen request').all().map((item) => [String(item.json.raw_post_id), item.json]));
+const requests = new Map($('Build backfill extraction request').all().map((item) => [String(item.json.raw_post_id), item.json]));
 const grouped = new Map();
 for (const item of $input.all()) {
   const rawPostId = String(item.json.raw_post_id ?? item.json.report?.raw_post_id ?? '');
@@ -2580,21 +2580,21 @@ for (const [rawPostId, group] of grouped) {
         post_url: report.post_url,
         source: report.source,
         report_ordinal: report.report_ordinal,
-        extraction_schema_version: 'qwen-evidence-v1',
+        extraction_schema_version: 'llm-evidence-v1',
         ...normalizedEvidence,
         normalized_evidence: normalizedEvidence,
       }],
     };
   });
-  outputs.push({ json: { params: [rawPostId, 'qwen-evidence-v1', String($execution.id), request.evaluation_time, JSON.stringify(payloads)] } });
+  outputs.push({ json: { params: [rawPostId, 'llm-evidence-v1', String($execution.id), request.evaluation_time, JSON.stringify(payloads)] } });
 }
 return outputs;`;
 }
 
 function probabilityBackfillWorkflow({ prompt, schema }) {
   const schemaJson = JSON.stringify(schema);
-  const validateCode = qwenParseCode()
-    .replace("$('Build Qwen request').all()", "$('Build backfill Qwen request').all()")
+  const validateCode = extractionParseCode()
+    .replace("$('Build extraction request').all()", "$('Build backfill extraction request').all()")
     .replace("if (!parsed.transfer_related) return", "if (!parsed.transfer_related || parsed.reports.length === 0) return");
   const nodes = [
     node('Manual shadow backfill', 'n8n-nodes-base.manualTrigger', [-900, 0], {}, { typeVersion: 1 }),
@@ -2602,12 +2602,12 @@ function probabilityBackfillWorkflow({ prompt, schema }) {
 const selected = String($env.PROBABILITY_MODE ?? '').trim();
 if (selected !== 'shadow') return [];
 const evaluationTime = new Date().toISOString();
-return [{ json: { params: ['shadow', evaluationTime, String($execution.id), 'qwen-evidence-v1'], evaluation_time: evaluationTime } }];`),
+return [{ json: { params: ['shadow', evaluationTime, String($execution.id), 'llm-evidence-v1'], evaluation_time: evaluationTime } }];`),
     postgresNode('Claim replay batch', [-460, 0], `
 SELECT * FROM claim_probability_backfill(
   $1::text, $2::timestamptz, $3::text, $4::text, 100, interval '15 minutes'
 );`),
-    codeNode('Build backfill Qwen request', [-240, 0], `
+    codeNode('Build backfill extraction request', [-240, 0], `
 const prompt = ${JSON.stringify(prompt)};
 const schema = ${schemaJson};
 return $input.all().map((item) => ({ json: {
@@ -2625,7 +2625,7 @@ return $input.all().map((item) => ({ json: {
     { role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content },
   ], response_format: { type: 'json_object' } },
 } }));`),
-    httpNode('Re-extract with Qwen', [-20, 0], {
+    httpNode('Re-extract via LLM', [-20, 0], {
       method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}',
       sendHeaders: true,
       headerParameters: { parameters: [
@@ -2633,8 +2633,8 @@ return $input.all().map((item) => ({ json: {
       ] },
       sendBody: true, contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
-    codeNode('Validate backfill Qwen response', [200, 0], validateCode),
-    node('Backfill Qwen response valid', 'n8n-nodes-base.if', [420, 0], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    codeNode('Validate backfill extraction response', [200, 0], validateCode),
+    node('Backfill Extraction response valid', 'n8n-nodes-base.if', [420, 0], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Build shadow report payloads', [640, -100], backfillPayloadCode()),
     postgresNode('Persist shadow results', [860, -100], `
 SELECT complete_probability_backfill(
@@ -2643,16 +2643,16 @@ SELECT complete_probability_backfill(
     codeNode('Prepare failed replay release', [640, 120], `
 return $input.all().map((item) => ({ json: { params: [
   String(item.json.params?.[0] ?? ''),
-  'qwen-evidence-v1',
+  'llm-evidence-v1',
   String($execution.id),
-  String(item.json.params?.[2] ?? 'Malformed or schema-invalid Qwen response'),
+  String(item.json.params?.[2] ?? 'Malformed or schema-invalid LLM response'),
 ] } }));`),
     postgresNode('Release failed claim', [860, 120], `
 SELECT fail_probability_backfill_claim(
   $1::bigint, $2::text, $3::text, $4::text
 )::text AS raw_post_id;`),
     codeNode('Aggregate replay outcomes', [1080, 0], `
-return [{ json: { params: [String($execution.id), 'qwen-evidence-v1'] } }];`),
+return [{ json: { params: [String($execution.id), 'llm-evidence-v1'] } }];`),
     postgresNode('Build deterministic audit', [1300, 0], `
 SELECT audit FROM probability_backfill_audit($1::text, $2::text);`),
   ];
@@ -2664,11 +2664,11 @@ SELECT audit FROM probability_backfill_audit($1::text, $2::text);`),
     connections: {
       'Manual shadow backfill': { main: [[{ node: 'Prepare shadow backfill', type: 'main', index: 0 }]] },
       'Prepare shadow backfill': { main: [[{ node: 'Claim replay batch', type: 'main', index: 0 }]] },
-      'Claim replay batch': { main: [[{ node: 'Build backfill Qwen request', type: 'main', index: 0 }]] },
-      'Build backfill Qwen request': { main: [[{ node: 'Re-extract with Qwen', type: 'main', index: 0 }]] },
-      'Re-extract with Qwen': { main: [[{ node: 'Validate backfill Qwen response', type: 'main', index: 0 }]] },
-      'Validate backfill Qwen response': { main: [[{ node: 'Backfill Qwen response valid', type: 'main', index: 0 }]] },
-      'Backfill Qwen response valid': { main: [[{ node: 'Build shadow report payloads', type: 'main', index: 0 }], [{ node: 'Prepare failed replay release', type: 'main', index: 0 }]] },
+      'Claim replay batch': { main: [[{ node: 'Build backfill extraction request', type: 'main', index: 0 }]] },
+      'Build backfill extraction request': { main: [[{ node: 'Re-extract via LLM', type: 'main', index: 0 }]] },
+      'Re-extract via LLM': { main: [[{ node: 'Validate backfill extraction response', type: 'main', index: 0 }]] },
+      'Validate backfill extraction response': { main: [[{ node: 'Backfill Extraction response valid', type: 'main', index: 0 }]] },
+      'Backfill Extraction response valid': { main: [[{ node: 'Build shadow report payloads', type: 'main', index: 0 }], [{ node: 'Prepare failed replay release', type: 'main', index: 0 }]] },
       'Build shadow report payloads': { main: [[{ node: 'Persist shadow results', type: 'main', index: 0 }]] },
       'Persist shadow results': { main: [[{ node: 'Aggregate replay outcomes', type: 'main', index: 0 }]] },
       'Prepare failed replay release': { main: [[{ node: 'Release failed claim', type: 'main', index: 0 }]] },
@@ -2733,7 +2733,7 @@ async function sameFile(path, content) {
   try { return await readFile(path, 'utf8') === content; } catch { return false; }
 }
 
-async function qwenPromptWithWomensBlacklist(prompt) {
+async function extractionPromptWithWomensBlacklist(prompt) {
   const names = (await readFile(womensBlacklistPath, 'utf8'))
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -2751,8 +2751,8 @@ async function main() {
     loadEntityAliases(entityAliasesPath),
   ]);
   entityAliases = aliases;
-  const prompt = await qwenPromptWithWomensBlacklist(await readFile(resolve(here, 'qwen-system-prompt.md'), 'utf8'));
-  const schema = JSON.parse(await readFile(resolve(here, 'qwen-response-schema.json'), 'utf8'));
+  const prompt = await extractionPromptWithWomensBlacklist(await readFile(resolve(here, 'extraction-system-prompt.md'), 'utf8'));
+  const schema = JSON.parse(await readFile(resolve(here, 'extraction-response-schema.json'), 'utf8'));
   const files = [
     [outputPath, `${JSON.stringify(mainWorkflow({ registry, prompt, schema }), null, 2)}\n`],
     [errorOutputPath, `${JSON.stringify(errorWorkflow(), null, 2)}\n`],

@@ -14,7 +14,7 @@ host API is available only on localhost; containers on `transfers_net` use the
 Expected project directory:
 
 ```bash
-cd ~/projects/transfers_n8n/deploy/qwen3.8-27b
+cd ~/projects/transfers_n8n/deploy/retired-local-llm
 ```
 
 ## Pinned runtime and model

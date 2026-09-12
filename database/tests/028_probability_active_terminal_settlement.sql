@@ -65,7 +65,7 @@ BEGIN
     'normalized_data', jsonb_build_object('current_club_key', 'old'),
     'sources', jsonb_build_array(jsonb_build_object(
       'raw_post_id', raw_id, 'posted_at', posted_at, 'report_ordinal', 1,
-      'extraction_schema_version', 'qwen-evidence-v1',
+      'extraction_schema_version', 'llm-evidence-v1',
       'normalized_evidence', jsonb_build_object(
         'stage_signal', stage, 'claim_stance', 'supports', 'wording_strength', 'direct',
         'club_agreement_state', club_state, 'personal_terms_state', 'not_reported',

@@ -79,7 +79,7 @@ BEGIN
     wording_strength, club_agreement_state, personal_terms_state, completion_claim,
     attribution_kind, resolved_independence_key, extraction_confidence,
     raw_normalized_extraction
-  ) VALUES (report_id, case_id, post_id, 'qwen-evidence-v1', 1,
+  ) VALUES (report_id, case_id, post_id, 'llm-evidence-v1', 1,
     destination, stage, 'supports', 'direct', club_state, personal_state,
     completion, 'original', independence_key, 0.95,
     jsonb_build_object(
@@ -199,7 +199,7 @@ BEGIN
       report_ordinal, destination_club_name, stage_signal, claim_stance, wording_strength,
       club_agreement_state, personal_terms_state, completion_claim, attribution_kind,
       resolved_independence_key, extraction_confidence, raw_normalized_extraction
-    ) VALUES (report_id, case_id, raw_id, 'qwen-evidence-v1', 1, 'New', 'advanced',
+    ) VALUES (report_id, case_id, raw_id, 'llm-evidence-v1', 1, 'New', 'advanced',
       'supports', 'direct', 'talks', 'talks', 'none', 'original', 'reporter:round-one', 0.95,
       jsonb_build_object('stage_signal', 'advanced', 'claim_stance', 'supports',
         'wording_strength', 'direct', 'club_agreement_state', 'talks',

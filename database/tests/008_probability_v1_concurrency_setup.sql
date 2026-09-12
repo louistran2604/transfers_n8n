@@ -54,7 +54,7 @@ RETURNS jsonb LANGUAGE sql AS $$
       'raw_post_id', post.id,
       'posted_at', post.posted_at,
       'report_ordinal', 1,
-      'extraction_schema_version', 'qwen-evidence-v1',
+      'extraction_schema_version', 'llm-evidence-v1',
       'normalized_evidence', jsonb_build_object(
         'stage_signal', 'advanced',
         'claim_stance', 'supports',

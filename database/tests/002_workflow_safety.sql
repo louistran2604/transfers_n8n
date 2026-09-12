@@ -126,7 +126,7 @@ UPDATE digest_deliveries SET status = 'unknown' WHERE status = 'sending';
 INSERT INTO retry_states (
   resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at
 ) VALUES (
-  'raw_post', 'x:900000000000000202', 'qwen_extract', 'retrying', 1,
+  'raw_post', 'x:900000000000000202', 'llm_extract', 'retrying', 1,
   '2026-07-26 06:00:01+00'
 )
 ON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE
@@ -137,7 +137,7 @@ RETURNING id \gset retry_state_
 INSERT INTO retry_states (
   resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at
 ) VALUES (
-  'raw_post', 'x:900000000000000202', 'qwen_extract', 'retrying', 1,
+  'raw_post', 'x:900000000000000202', 'llm_extract', 'retrying', 1,
   '2026-07-26 06:00:02+00'
 )
 ON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE

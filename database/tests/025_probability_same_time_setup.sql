@@ -48,12 +48,12 @@ BEGIN
       club_agreement_state, personal_terms_state, completion_claim, attribution_kind,
       resolved_independence_key, extraction_confidence, raw_normalized_extraction
     ) VALUES
-      (report_id, case_id, reporter_post, 'qwen-evidence-v1', 1, 'New', 'advanced',
+      (report_id, case_id, reporter_post, 'llm-evidence-v1', 1, 'New', 'advanced',
         'supports', 'direct', 'talks', 'talks', 'none', 'original',
         'reporter:same-time', 0.95, jsonb_build_object('_resolved_source', jsonb_build_object(
           'account_id', reporter_id, 'username', 'sametimerep', 'source_kind', 'journalist',
           'seed_reliability', 0.75))),
-      (report_id, case_id, official_post, 'qwen-evidence-v1', 1, 'New', 'official_wording',
+      (report_id, case_id, official_post, 'llm-evidence-v1', 1, 'New', 'official_wording',
         'supports', 'definitive', 'agreed', 'agreed', 'official_announcement', 'original',
         'official:same-time', 0.95, jsonb_build_object('_resolved_source', jsonb_build_object(
           'account_id', official_id, 'username', 'sametimefc', 'source_kind', 'club_official',
