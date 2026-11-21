@@ -2,7 +2,7 @@
 
 Self-hosted n8n pipeline that collects football-transfer posts from X, extracts structured reports through 9Router (Gemini), stores restart-safe revisions in PostgreSQL, and sends Discord digests.
 
-The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run reads the latest 20 posts from 78 configured sources.
+The workflow runs at `00:00`, `06:00`, `12:00`, and `18:00` GMT+7. Each run reads the latest 20 posts from 79 configured sources.
 
 ## How it works
 
@@ -178,7 +178,7 @@ Edit project behavior through these source files:
 
 | File | Purpose |
 | --- | --- |
-| [`docs/journalist_list.md`](docs/journalist_list.md) | Authoritative 78-source X registry. |
+| [`docs/journalist_list.md`](docs/journalist_list.md) | Authoritative 79-source X registry. |
 | [`workflow/entity-aliases.json`](workflow/entity-aliases.json) | Club/player aliases, sibling groups, and common surnames. |
 | [`workflow/womens-football-blacklist.txt`](workflow/womens-football-blacklist.txt) | Senior women's football exclusions. |
 | [`workflow/extraction-system-prompt.md`](workflow/extraction-system-prompt.md) | Extraction instructions. |

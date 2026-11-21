@@ -203,10 +203,11 @@ test('processed-post SET batches deduplicate IDs and include terminal state and 
   assert.throws(() => buildProcessedPostSetBatches([{ externalPostId: '1', state: 'ignored' }], 0), /TTL/i);
 });
 
-test('source registry exposes valid explicit metadata for all 78 unique decimal IDs', async () => {
+test('source registry exposes valid explicit metadata for all 79 unique decimal IDs', async () => {
   const registry = await loadSourceRegistry(new URL('../../docs/journalist_list.md', import.meta.url));
-  assert.equal(registry.length, 78);
-  assert.equal(new Set(registry.map((account) => account.external_account_id)).size, 78);
+  assert.equal(registry.length, 79);
+  assert.equal(new Set(registry.map((account) => account.external_account_id)).size, 79);
+  assert.equal(registry.find((account) => account.username === 'Rodra10_97')?.external_account_id, '560492465');
   assert.ok(registry.every((account) => /^\d+$/.test(account.external_account_id)));
   assert.ok(registry.every((account) => ['journalist', 'publisher', 'club_official', 'league_official', 'aggregator'].includes(account.source_kind)));
   assert.ok(registry.every((account) => /^[a-z0-9]+(?::[a-z0-9]+(?:-[a-z0-9]+)*)?$/.test(account.publisher_group_key)));
@@ -2425,7 +2426,7 @@ test('generated workflow routes no-work and mixed outcomes through one native me
   assert.deepEqual(mergeNode.parameters, { mode: 'append', numberInputs: 3 });
   assert.equal(workflow.connections['Merged report payload?'].main[1][0].node, 'Merge workflow outcomes');
   assert.equal(workflow.connections['Mark ignored outcome'].main[0][0].node, 'Merge workflow outcomes');
-  assert.equal(workflow.connections['Record extraction validation failure'].main[0][0].node, 'Merge workflow outcomes');
+  assert.equal(workflow.connections['Record extraction failure'].main[0][0].node, 'Merge workflow outcomes');
   assert.equal(workflow.connections['Digest has content?'].main[1][0].node, 'Complete workflow run without delivery');
   assert.equal(workflow.connections['Digest reserved'].main[1][0].node, 'Complete workflow run without delivery');
   assert.match(completeNode.parameters.query, /status = 'succeeded'/);
@@ -2437,13 +2438,48 @@ test('generated workflow routes no-work and mixed outcomes through one native me
   const report = { json: { workflow_outcome: 'merged_report', transfer_report_id: '41' } };
   assert.deepEqual(await runRoute({ all: () => [
     { json: { workflow_outcome: 'ignored' } },
-    { json: { workflow_outcome: 'llm_validation_failure' } },
+    { json: { workflow_outcome: 'llm_extraction_failure', all_extractions_failed: false } },
     report,
   ] }), [report]);
   assert.deepEqual(await runRoute({ all: () => [
     { json: { workflow_outcome: 'ignored' } },
-    { json: { workflow_outcome: 'llm_validation_failure' } },
+    { json: { workflow_outcome: 'llm_extraction_failure', all_extractions_failed: false } },
   ] }), [{ json: { workflow_outcome: 'no_merged_reports' } }]);
+});
+
+test('generated workflow records extraction outages and fails the run after recording all failed posts', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const jsCode = (name) => workflow.nodes.find((node) => node.name === name).parameters.jsCode;
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const validate = new AsyncFunction('$input', '$', jsCode('Validate extraction response'));
+  const route = new AsyncFunction('$input', jsCode('Route workflow outcomes'));
+  const failedResponses = [
+    { error: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 172.17.0.1:20128' } },
+    { error: { statusCode: 503, message: 'Service unavailable' } },
+    { body: { choices: [{ message: { content: 'bad model JSON' } }] } },
+  ];
+  const parse = (responses) => validate({ all: () => responses.map((json) => ({ json })) }, () => ({
+    all: () => responses.map((_, index) => ({ json: {
+      raw_post_id: String(index + 1), external_post_id: String(100 + index), workflow_run_id: '575',
+    } })),
+  }));
+  const failed = await parse(failedResponses);
+  assert.deepEqual(failed.map(({ json }) => [json.valid, json.params[2], ...json.params.slice(6)]), [
+    [false, 'LLM transport failure (ECONNREFUSED)', '575', 'TransportError', true],
+    [false, 'LLM request returned HTTP 503', '575', 'HttpError', true],
+    [false, 'Malformed or schema-invalid LLM response', '575', 'ValidationError', true],
+  ]);
+  const recorded = failed.map(({ json }) => ({ json: {
+    workflow_outcome: 'llm_extraction_failure',
+    error_class: json.params[7],
+    all_extractions_failed: json.params[8],
+  } }));
+  await assert.rejects(route({ all: () => recorded }), /All 3 LLM extractions failed \(TransportError, HttpError, ValidationError\)/);
+  const validNoTransfer = { body: { choices: [{ message: { content: '{"transfer_related":false,"reports":[]}' } }] } };
+  const mixed = await parse([failedResponses[0], validNoTransfer]);
+  assert.equal(mixed[0].json.params[8], false);
+  assert.equal(mixed[1].json.ignored, true);
+  assert.deepEqual(await parse([]), []);
 });
 
 test('generated twscrape adapter preserves string IDs, keeps quoted posts, filters retweets, and tolerates partial failures', async () => {
@@ -2740,7 +2776,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   const staleRunCheckNode = workflow.nodes.find((node) => node.name === 'Check stale workflow runs');
   const staleRunIfNode = workflow.nodes.find((node) => node.name === 'Stale workflow runs?');
   const staleRunAlertNode = workflow.nodes.find((node) => node.name === 'Send stale-run alert');
-  const extractionFailureNode = workflow.nodes.find((node) => node.name === 'Record extraction validation failure');
+  const extractionFailureNode = workflow.nodes.find((node) => node.name === 'Record extraction failure');
   const failureNode = errorWorkflow.nodes.find((node) => node.name === 'Upsert workflow failure');
   assert.match(sourceNode.parameters.jsCode, /922928582866980864/);
   assert.match(extractionBuildNode.parameters.jsCode, /conforms exactly to this JSON Schema/);
@@ -2764,7 +2800,8 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.doesNotMatch(extractionParserNode.parameters.jsCode, /report\.confidence/);
   assert.match(extractionFailureNode.parameters.query, /INSERT INTO failures \(workflow_run_id,/);
   assert.doesNotMatch(extractionFailureNode.parameters.query, /UPDATE workflow_runs SET status = 'succeeded'/);
-  assert.match(extractionFailureNode.parameters.query, /llm_validation_failure/);
+  assert.match(extractionFailureNode.parameters.query, /llm_extraction_failure/);
+  assert.match(extractionFailureNode.parameters.query, /SET status = 'failed', finished_at = CURRENT_TIMESTAMP[\s\S]*status = 'running' AND \$9::boolean/);
   assert.match(extractionFailureNode.parameters.query, /\$7::text AS workflow_run_id/);
   assert.match(staleRunCheckNode.parameters.query, /status = 'running'/);
   assert.match(staleRunCheckNode.parameters.query, /interval '12 hours'/);
@@ -2812,7 +2849,7 @@ test('generated workflow stays in sync with the registry and extraction contract
   assert.equal(fencedParsed[0].json.valid, true);
   const invalidExtraction = (await parseExtraction(validReport()))[0].json;
   assert.equal(invalidExtraction.valid, false);
-  assert.equal(invalidExtraction.params.at(-1), '77');
+  assert.deepEqual(invalidExtraction.params.slice(6), ['77', 'ValidationError', true]);
   const runMerge = new AsyncFunction('$input', mergeExtractedNode.parameters.jsCode);
   const preferredEvidence = evidenceReport({
     stage_signal: 'talks', claim_stance: 'supports', wording_strength: 'direct', club_agreement_state: 'talks', personal_terms_state: 'talks',

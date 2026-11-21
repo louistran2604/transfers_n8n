@@ -74,7 +74,7 @@ test('terminal PostgreSQL transitions populate Redis only after success and merg
   assert.equal(target('Store merged processed-post markers via Upstash'), 'Resume merged processing after Redis');
   assert.equal(target('Resume merged processing after Redis'), 'Merge workflow outcomes');
   assert.equal(target('Persist merged reports and revisions'), 'Prepare merged processed-post Redis write');
-  assert.equal(target('Record extraction validation failure'), 'Merge workflow outcomes');
+  assert.equal(target('Record extraction failure'), 'Merge workflow outcomes');
   assert.equal(nodeByName('Mark non-transfer ignored').continueOnFail, undefined);
   assert.equal(nodeByName('Persist merged reports and revisions').continueOnFail, undefined);
   assert.match(nodeByName('Persist merged reports and revisions').parameters.query, /processed_post_external_ids/);

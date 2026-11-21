@@ -126,21 +126,27 @@ WITH raw AS (
   RETURNING id
 ), failure AS (
   INSERT INTO failures (workflow_run_id, operation_name, error_fingerprint, error_class, error_message, details)
-  VALUES ($7::bigint, 'llm_extract', $2, 'ValidationError', $3, $4::jsonb)
+  VALUES ($7::bigint, 'llm_extract', $2, $8::text, $3, $4::jsonb)
   ON CONFLICT (workflow_run_id, operation_name, error_fingerprint) DO UPDATE
   SET occurrences = failures.occurrences + 1, last_seen_at = CURRENT_TIMESTAMP,
-      error_message = EXCLUDED.error_message, details = EXCLUDED.details
+      error_class = EXCLUDED.error_class, error_message = EXCLUDED.error_message, details = EXCLUDED.details
   RETURNING id
+), retry AS (
+  INSERT INTO retry_states (resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at, last_failure_id)
+  VALUES ('raw_post', $5, 'llm_extract', 'retrying', 1, CURRENT_TIMESTAMP + ($6::integer * interval '1 millisecond'), (SELECT id FROM failure))
+  ON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE
+  SET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELSE 'retrying' END,
+      attempt_count = retry_states.attempt_count + 1,
+      next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,
+      last_failure_id = EXCLUDED.last_failure_id
+  RETURNING id
+), failed_run AS (
+  UPDATE workflow_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP
+  WHERE id = $7::bigint AND status = 'running' AND $9::boolean
 )
-INSERT INTO retry_states (resource_type, resource_key, operation_name, state, attempt_count, next_attempt_at, last_failure_id)
-VALUES ('raw_post', $5, 'llm_extract', 'retrying', 1, CURRENT_TIMESTAMP + ($6::integer * interval '1 millisecond'), (SELECT id FROM failure))
-ON CONFLICT (resource_type, resource_key, operation_name) DO UPDATE
-SET state = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN 'dead_letter' ELSE 'retrying' END,
-    attempt_count = retry_states.attempt_count + 1,
-    next_attempt_at = CASE WHEN retry_states.attempt_count + 1 >= 3 THEN NULL ELSE EXCLUDED.next_attempt_at END,
-    last_failure_id = EXCLUDED.last_failure_id
-RETURNING id::text AS retry_state_id, state, attempt_count;
-SELECT 'llm_validation_failure'::text AS workflow_outcome, $7::text AS workflow_run_id;`.trim();
+SELECT 'llm_extraction_failure'::text AS workflow_outcome, $7::text AS workflow_run_id,
+       $8::text AS error_class, $9::boolean AS all_extractions_failed
+FROM retry;`.trim();
 }
 
 function mergeReportSql() {
@@ -1465,7 +1471,7 @@ function processedPostCacheResumeCode() {
 return $('Persist merged reports and revisions').all().map((item) => ({ json: { ...item.json, workflow_outcome: 'merged_report' } }));`;
 }
 
-function extractionParseCode({ includeExternalPostId = false } = {}) {
+function extractionParseCode({ forMonitor = false } = {}) {
   return `
 ${entityAliasHelpers()}
 const requests = $('Build extraction request').all();
@@ -1487,7 +1493,7 @@ const nullableCurrency = (value) => value === null || (typeof value === 'string'
 const nullableDate = (value) => value === null || (typeof value === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(value));
 const nullableMoveEffectiveOn = (value) => value === null || (typeof value === 'string' && /^\\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\\d|3[01]))?$/.test(value));
 const nullableBoolean = (value) => value === null || typeof value === 'boolean';
-return $input.all().flatMap((item, index) => {
+${forMonitor ? 'const outcomes = ' : 'return '}$input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
   const request = requests[requestIndex]?.json;
   if (!request?.raw_post_id) throw new Error('Missing extraction request metadata for response item ' + index);
@@ -1501,14 +1507,29 @@ return $input.all().flatMap((item, index) => {
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
   const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid) {
-    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];
+${forMonitor ? `    const error = item.json.error ?? response?.error;
+    const status = Number(error?.statusCode ?? error?.httpCode ?? item.json.statusCode);
+    const code = String(error?.code ?? '');
+    let errorClass = 'ValidationError';
+    let message = 'Malformed or schema-invalid LLM response';
+    if (Number.isInteger(status) && status >= 400 && status <= 599) {
+      errorClass = 'HttpError';
+      message = 'LLM request returned HTTP ' + status;
+    } else if (/^E[A-Z0-9_]{1,31}$/.test(code)) {
+      errorClass = 'TransportError';
+      message = 'LLM transport failure (' + code + ')';
+    } else if (error) {
+      errorClass = 'RequestError';
+      message = 'LLM request failed';
+    }
+    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-extract-' + request.external_post_id, message, JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id, errorClass] } }];` : `    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];`}
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
   return parsed.reports.map((report, reportIndex) => ({ json: { valid: true, ignored: false, report: {
     ...report,
     raw_post_id: request.raw_post_id,
-${includeExternalPostId ? '    external_post_id: request.external_post_id,\n' : ''}    post_url: request.post_url,
+${forMonitor ? '    external_post_id: request.external_post_id,\n' : ''}    post_url: request.post_url,
     posted_at: request.posted_at,
     source: request.source,
     report_ordinal: reportIndex + 1,
@@ -1517,7 +1538,12 @@ ${includeExternalPostId ? '    external_post_id: request.external_post_id,\n' : 
     evaluated_at: request.evaluated_at,
     probability_mode: request.probability_mode,
   } } }));
-});`;
+});${forMonitor ? `
+const allFailed = outcomes.length === requests.length && outcomes.every((item) => !item.json.valid);
+for (const item of outcomes) {
+  if (!item.json.valid) item.json.params.push(allFailed);
+}
+return outcomes;` : ''}`;
 }
 
 function mergeCode() {
@@ -2351,9 +2377,9 @@ return $input.all().map((item) => ({ json: {
       sendBody: true,
       contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
     }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
-    codeNode('Validate extraction response', [1420, -40], extractionParseCode({ includeExternalPostId: true })),
+    codeNode('Validate extraction response', [1420, -40], extractionParseCode({ forMonitor: true })),
     node('Extraction response valid', 'n8n-nodes-base.if', [1640, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
-    postgresNode('Record extraction validation failure', [1640, 160], extractionFailureSql()),
+    postgresNode('Record extraction failure', [1640, 160], extractionFailureSql()),
     node('Transfer related', 'n8n-nodes-base.if', [1860, -100], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !$json.ignored }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Mark non-transfer ignored', [1860, 80], `UPDATE raw_posts SET processing_state = 'ignored', classified_at = CURRENT_TIMESTAMP WHERE id = $1::bigint RETURNING id::text AS raw_post_id, external_post_id::text AS external_post_id;`),
     codeNode('Prepare ignored processed-post Redis write', [2080, 80], processedPostCacheSetPrepareCode('ignored')),
@@ -2370,7 +2396,12 @@ return [{ json: { workflow_outcome: 'ignored' } }];`),
     codeNode('Resume merged processing after Redis', [3180, -380], processedPostCacheResumeCode()),
     node('Merge workflow outcomes', 'n8n-nodes-base.merge', [3400, -380], { mode: 'append', numberInputs: 3 }, { typeVersion: 3.2 }),
     codeNode('Route workflow outcomes', [3620, -380], `
-const reports = $input.all().filter((item) => item.json?.workflow_outcome === 'merged_report');
+const outcomes = $input.all();
+if (outcomes.some((item) => item.json.all_extractions_failed === true)) {
+  const classes = [...new Set(outcomes.map((item) => item.json.error_class))];
+  throw new Error('All ' + outcomes.length + ' LLM extractions failed (' + classes.join(', ') + '). See recorded extraction failures.');
+}
+const reports = outcomes.filter((item) => item.json?.workflow_outcome === 'merged_report');
 return reports.length ? reports : [{ json: { workflow_outcome: 'no_merged_reports' } }];`),
     node('Merged reports ready?', 'n8n-nodes-base.if', [3840, -380], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.workflow_outcome === "merged_report" }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     codeNode('Prepare preferred source reset', [2520, -180], `
@@ -2484,7 +2515,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Build extraction request': { main: [[{ node: 'Extract via LLM', type: 'main', index: 0 }]] },
     'Extract via LLM': { main: [[{ node: 'Validate extraction response', type: 'main', index: 0 }]] },
     'Validate extraction response': { main: [[{ node: 'Extraction response valid', type: 'main', index: 0 }]] },
-    'Extraction response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record extraction validation failure', type: 'main', index: 0 }]] },
+    'Extraction response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record extraction failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Mark non-transfer ignored': { main: [[{ node: 'Prepare ignored processed-post Redis write', type: 'main', index: 0 }]] },
     'Prepare ignored processed-post Redis write': { main: [[{ node: 'Ignored processed-post Redis cache enabled?', type: 'main', index: 0 }]] },
@@ -2498,7 +2529,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Merged processed-post Redis cache enabled?': { main: [[{ node: 'Store merged processed-post markers via Upstash', type: 'main', index: 0 }], [{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
     'Store merged processed-post markers via Upstash': { main: [[{ node: 'Resume merged processing after Redis', type: 'main', index: 0 }]] },
     'Resume merged processing after Redis': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 0 }]] },
-    'Record extraction validation failure': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 2 }]] },
+    'Record extraction failure': { main: [[{ node: 'Merge workflow outcomes', type: 'main', index: 2 }]] },
     'Merge workflow outcomes': { main: [[{ node: 'Route workflow outcomes', type: 'main', index: 0 }]] },
     'Route workflow outcomes': { main: [[{ node: 'Merged reports ready?', type: 'main', index: 0 }]] },
     'Merged reports ready?': { main: [[{ node: 'Prepare preferred source reset', type: 'main', index: 0 }], [{ node: 'Prepare digest candidates query', type: 'main', index: 0 }]] },
