@@ -53,6 +53,7 @@
 | Simon Peach | `@SimonPeach` | [x.com/SimonPeach](https://x.com/SimonPeach) | `19569290` | journalist | `reporter:simonpeach` | false | 0.7000 |
 | Simon Stone | `@sistoney67` | [x.com/sistoney67](https://x.com/sistoney67) | `274057120` | journalist | `reporter:sistoney67` | false | 0.7000 |
 | Stephen Railston | `@StevenRailston` | [x.com/StevenRailston](https://x.com/StevenRailston) | `430106072` | journalist | `reporter:stevenrailston` | false | 0.7000 |
+| Rodra | `@Rodra10_97` | [x.com/Rodra10_97](https://x.com/Rodra10_97) | `560492465` | journalist | `reporter:rodra10-97` | false | 0.7000 |
 
 ## Organizations:
 
