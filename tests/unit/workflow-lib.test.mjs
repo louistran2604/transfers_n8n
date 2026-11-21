@@ -2753,6 +2753,7 @@ test('standard n8n deployment exposes probability mode to main and runner servic
 test('generated workflow stays in sync with the registry and extraction contract', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const errorWorkflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor-errors.json', import.meta.url), 'utf8'));
+  assert.equal(workflow.settings.errorWorkflow, errorWorkflow.id);
   const sourceNode = workflow.nodes.find((node) => node.name === 'Load generated sources');
   const extractionBuildNode = workflow.nodes.find((node) => node.name === 'Build extraction request');
   const collectorNode = workflow.nodes.find((node) => node.name === 'Select X collector');

@@ -18,6 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outputPath = resolve(here, 'football-transfer-monitor.json');
 const errorOutputPath = resolve(here, 'football-transfer-monitor-errors.json');
+const errorWorkflowId = 'football-transfer-monitor-errors';
 const backfillOutputPath = resolve(here, 'football-transfer-probability-backfill.json');
 const womensBlacklistPath = resolve(here, 'womens-football-blacklist.txt');
 const entityAliasesPath = resolve(here, 'entity-aliases.json');
@@ -2561,7 +2562,7 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     pinData: {},
     connections,
     active: false,
-    settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh', errorWorkflow: 'Football Transfer Monitor Errors' },
+    settings: { executionOrder: 'v1', timezone: 'Asia/Ho_Chi_Minh', errorWorkflow: errorWorkflowId },
     versionId: '2.31.6',
     meta: { templateCredsSetupCompleted: false, instanceId: 'generated-without-secrets' },
     tags: [],
@@ -2749,7 +2750,7 @@ FROM failure;`),
     }, { continueOnFail: true }),
   ];
   return {
-    id: 'football-transfer-monitor-errors',
+    id: errorWorkflowId,
     name: 'Football Transfer Monitor Errors', nodes, pinData: {}, active: false,
     connections: {
       'Workflow error trigger': { main: [[{ node: 'Prepare failure record', type: 'main', index: 0 }]] },

@@ -2643,7 +2643,7 @@
   "settings": {
     "executionOrder": "v1",
     "timezone": "Asia/Ho_Chi_Minh",
-    "errorWorkflow": "Football Transfer Monitor Errors"
+    "errorWorkflow": "football-transfer-monitor-errors"
   },
   "versionId": "2.31.6",
   "meta": {
