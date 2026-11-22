@@ -1526,19 +1526,30 @@ ${forMonitor ? `    const error = item.json.error ?? response?.error;
     return [{ json: { valid: false, params: [request.raw_post_id, 'llm-extract-' + request.external_post_id, message, JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id, errorClass] } }];` : `    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];`}
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
+  const post = request.body?.messages?.find((message) => message.role === 'user')?.content ?? '';
+  const singleContractReport = parsed.reports.length === 1
+    && /\\b(?:new contract|contract (?:renewal|extension)|(?:renew|extend)(?:s|ed|ing)? (?:his |the )?contract)\\b/i.test(post);
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
-  return parsed.reports.map((report, reportIndex) => ({ json: { valid: true, ignored: false, report: {
-    ...report,
-    raw_post_id: request.raw_post_id,
-${forMonitor ? '    external_post_id: request.external_post_id,\n' : ''}    post_url: request.post_url,
-    posted_at: request.posted_at,
-    source: request.source,
-    report_ordinal: reportIndex + 1,
-    extraction_schema_version: 'llm-evidence-v1',
-    normalized_evidence: Object.fromEntries(evidenceFields.map((field) => [field, report[field]])),
-    evaluated_at: request.evaluated_at,
-    probability_mode: request.probability_mode,
-  } } }));
+  return parsed.reports.map((extracted, reportIndex) => {
+    const club = normalizeAlias(extracted.current_club_name);
+    const sameClubContract = singleContractReport && club && club === normalizeAlias(extracted.destination_club_name)
+      && extracted.move_type !== 'loan' && !['loan', 'rejected_failed'].includes(extracted.classification);
+    const report = extracted.classification === 'contract_renewal' || sameClubContract
+      ? { ...extracted, classification: 'contract_renewal', move_type: 'unknown', club_agreement_state: 'not_applicable' }
+      : extracted;
+    return { json: { valid: true, ignored: false, report: {
+      ...report,
+      raw_post_id: request.raw_post_id,
+${forMonitor ? '      external_post_id: request.external_post_id,\n' : ''}      post_url: request.post_url,
+      posted_at: request.posted_at,
+      source: request.source,
+      report_ordinal: reportIndex + 1,
+      extraction_schema_version: 'llm-evidence-v1',
+      normalized_evidence: Object.fromEntries(evidenceFields.map((field) => [field, report[field]])),
+      evaluated_at: request.evaluated_at,
+      probability_mode: request.probability_mode,
+    } } };
+  });
 });${forMonitor ? `
 const allFailed = outcomes.length === requests.length && outcomes.every((item) => !item.json.valid);
 for (const item of outcomes) {
@@ -1572,6 +1583,10 @@ for (const reports of groups.values()) {
     if (new Set(conflictValues.map((value) => JSON.stringify(value))).size > 1) conflicts[field] = conflictValues;
   }
   merged.classification = reports.map((report) => report.classification).sort((a, b) => precedence[b] - precedence[a])[0];
+  if (merged.classification === 'contract_renewal') {
+    merged.move_type = 'unknown';
+    merged.club_agreement_state = 'not_applicable';
+  }
   merged.dedupe_key = key(merged);
   merged.first_reported_at = reports.map((report) => report.posted_at).sort()[0];
   merged.last_reported_at = reports.map((report) => report.posted_at).sort().at(-1);
@@ -1920,11 +1935,11 @@ const truncate = (value, maximum) => {
   return result + '…';
 };
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
-const moveEffectiveLine = (value) => {
+const moveEffectiveLine = (value, renewal) => {
   const match = /^(\\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\\d|3[01]))?$/.exec(String(value ?? ''));
   if (!match) return null;
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  return 'Move starts: ' + months[Number(match[2]) - 1] + ' ' + match[1];
+  return (renewal ? 'Renewal starts: ' : 'Move starts: ') + months[Number(match[2]) - 1] + ' ' + match[1];
 };
 const finiteNumber = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -2097,7 +2112,7 @@ const withPresentationCurrentClub = (report) => {
   if (report.pending_idempotency_key) return report;
   const profile = report.enrichment?.profile;
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
-  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
+  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed'].includes(report.classification);
   if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name) || equivalentClub(profileClub, report.current_club_name)) return report;
   return { ...report, current_club_name: profileClub };
 };
@@ -2179,12 +2194,13 @@ for (const report of selected) {
   const name = truncate(String(fields.length + 1) + '. ' + report.player_name, 256);
   const sourceLine = report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name;
   const feeComparison = feeContextLine(report);
+  const renewal = report.classification === 'contract_renewal';
   const transferLines = [
-    report.current_club_name + ' → ' + report.destination_club_name,
-    '**Transfer details**',
-    'Classification: ' + report.classification.replaceAll('_', ' '),
-    report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
-    moveEffectiveLine(report.move_effective_on),
+    renewal ? 'Contract renewal at ' + report.destination_club_name : report.current_club_name + ' → ' + report.destination_club_name,
+    renewal ? '**Contract details**' : '**Transfer details**',
+    renewal ? null : 'Classification: ' + report.classification.replaceAll('_', ' '),
+    !renewal && report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
+    moveEffectiveLine(report.move_effective_on, renewal),
     feeComparison?.line ?? (amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null),
     !feeComparison?.includesAddOns && amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,
     amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,
@@ -2197,7 +2213,7 @@ for (const report of selected) {
     report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? 'Medical: ' + report.medical_status : null,
     report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? 'Agreement: ' + report.agreement_status : null,
   ].filter(Boolean);
-  const assessmentLines = ['**Transfer assessment**', ...probabilityLines(report)];
+  const assessmentLines = [renewal ? '**Renewal assessment**' : '**Transfer assessment**', ...probabilityLines(report)];
   const source = sourceLine;
   const transferOnlyLines = [
     ...transferLines,

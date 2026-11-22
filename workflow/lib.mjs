@@ -999,6 +999,7 @@ export function mergeReportGroup(group, entityAliases = EMPTY_ENTITY_ALIASES) {
   for (const field of REPORT_FIELDS) merged[field] = firstDefined(sorted, field, conflicts);
   merged.player_name = firstDefined(sorted, 'player_name', conflicts) ?? 'Unknown player';
   merged.classification = chooseClassification(sorted.map((report) => report.classification));
+  if (merged.classification === 'contract_renewal') merged.move_type = 'unknown';
   merged.confidence = Math.max(...sorted.map((report) => report.confidence));
   merged.dedupe_key = dedupeKey(merged, entityAliases);
   merged.first_reported_at = sorted.map((report) => report.posted_at).sort()[0];
@@ -1131,7 +1132,7 @@ function withPresentationCurrentClub(report, entityAliases) {
   if (report.pending_idempotency_key) return report;
   const profile = report.enrichment?.profile;
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
-  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed', 'contract_renewal'].includes(report.classification);
+  const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed'].includes(report.classification);
   if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan') return report;
   if (equivalentClub(profileClub, report.destination_club_name, entityAliases)) return report;
   if (equivalentClub(profileClub, report.current_club_name, entityAliases)) return report;
@@ -1211,21 +1212,22 @@ function isNewDigestUpdate(report, entityAliases, now) {
   return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
 }
 
-function moveEffectiveLine(value) {
+function moveEffectiveLine(value, renewal) {
   const match = /^(\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$/.exec(String(value ?? ''));
   if (!match) return null;
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  return `Move starts: ${months[Number(match[2]) - 1]} ${match[1]}`;
+  return `${renewal ? 'Renewal' : 'Move'} starts: ${months[Number(match[2]) - 1]} ${match[1]}`;
 }
 
 function storySections(report) {
-  const clubDirection = `${report.current_club_name} → ${report.destination_club_name}`;
+  const renewal = report.classification === 'contract_renewal';
+  const clubDirection = renewal ? `Contract renewal at ${report.destination_club_name}` : `${report.current_club_name} → ${report.destination_club_name}`;
   const feeComparison = feeContextLine(report);
   const details = [
-    '**Transfer details**',
-    `Classification: ${report.classification.replaceAll('_', ' ')}`,
-    report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
-    moveEffectiveLine(report.move_effective_on),
+    renewal ? '**Contract details**' : '**Transfer details**',
+    renewal ? null : `Classification: ${report.classification.replaceAll('_', ' ')}`,
+    !renewal && report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
+    moveEffectiveLine(report.move_effective_on, renewal),
     feeComparison?.line ?? (formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null),
     !feeComparison?.includesAddOns && formatAmount(report.add_ons_amount, report.add_ons_currency) ? `Add-ons: ${formatAmount(report.add_ons_amount, report.add_ons_currency)}` : null,
     formatAmount(report.release_clause_amount, report.release_clause_currency) ? `Release clause: ${formatAmount(report.release_clause_amount, report.release_clause_currency)}` : null,
@@ -1291,7 +1293,7 @@ function storySections(report) {
   }
   return {
     transferLines: [clubDirection, ...details].filter(Boolean),
-    assessmentLines: ['**Transfer assessment**', ...probabilityLines],
+    assessmentLines: [renewal ? '**Renewal assessment**' : '**Transfer assessment**', ...probabilityLines],
     sourceLine: sourceUrl ? `[${source}](${sourceUrl})` : source,
   };
 }

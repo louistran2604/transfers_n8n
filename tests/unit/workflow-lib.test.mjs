@@ -2364,6 +2364,62 @@ test('library and generated Discord formatters match across rich, sparse, null, 
   }
 });
 
+test('Rabiot new-contract talks persist and render as a renewal without changing real transfers', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const backfill = JSON.parse(await readFile(new URL('../../workflow/football-transfer-probability-backfill.json', import.meta.url), 'utf8'));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const code = (definition, name) => definition.nodes.find((node) => node.name === name).parameters.jsCode;
+  const postUrl = 'https://x.com/FabrizioRomano/status/2124166997777027557';
+  const preferredSource = source('FabrizioRomano');
+  const mislabeled = evidenceReport({
+    player_name: 'Adrien Rabiot', current_club_name: 'AC Milan', destination_club_name: 'AC Milan',
+    classification: 'advanced_negotiations', agreement_status: 'negotiating',
+  });
+  const parse = async (validate, report, content) => {
+    const request = { json: {
+      raw_post_id: '1', external_post_id: '2124166997777027557', post_url: postUrl,
+      posted_at: '2026-11-21T15:44:12.041Z', source: preferredSource,
+      body: { messages: [{ role: 'user', content }] },
+    } };
+    return (await validate({ all: () => [{
+      json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [report] }) } }] },
+    }] }, () => ({ all: () => [request] })))[0].json.report;
+  };
+  let renewal;
+  for (const [definition, name] of [[workflow, 'Validate extraction response'], [backfill, 'Validate backfill extraction response']]) {
+    const validate = new AsyncFunction('$input', '$', code(definition, name));
+    renewal = await parse(validate, mislabeled, 'AC Milan keep advancing to get new contract done for Adrien Rabiot.');
+    assert.equal(renewal.classification, 'contract_renewal');
+    assert.equal(renewal.move_type, 'unknown');
+    assert.equal(renewal.normalized_evidence.club_agreement_state, 'not_applicable');
+    assert.equal(renewal.stage_signal, 'talks');
+    const ambiguous = await parse(validate, mislabeled, 'Adrien Rabiot and AC Milan are in talks.');
+    assert.equal(ambiguous.classification, 'advanced_negotiations');
+    const transfer = await parse(validate, { ...mislabeled, current_club_name: 'Marseille' },
+      'Marseille midfielder Adrien Rabiot is close to signing a new contract with AC Milan.');
+    assert.equal(transfer.classification, 'advanced_negotiations');
+    assert.equal(transfer.move_type, 'permanent');
+  }
+  const competingReport = { ...renewal, ...mislabeled, raw_post_id: '2', source: source('realmadrid') };
+  const merge = new AsyncFunction('$input', code(workflow, 'Merge extracted reports'));
+  const [merged] = await merge({ all: () => [competingReport, renewal].map((report) => ({ json: { report } })) });
+  const { snapshot } = JSON.parse(merged.json.params[0]);
+  assert.equal(snapshot.classification, 'contract_renewal');
+  assert.equal(snapshot.move_type, 'unknown');
+
+  const runDigest = new AsyncFunction('$input', code(workflow, 'Build bounded Discord digest'));
+  const report = { ...snapshot, revision_id: '1', post_url: postUrl, preferred_source: preferredSource };
+  const generated = await runDigest({ all: () => [{ json: {
+    row_type: 'candidate',
+    payload: { snapshot: report, revision_id: '1', post_url: postUrl, source_name: preferredSource.display_name },
+  } }] });
+  const generatedPayload = JSON.parse(generated[0].json.params[0]).discord_payload;
+  assert.deepEqual(generatedPayload, buildDiscordDigest([report]));
+  const value = generatedPayload.embeds[0].fields[0].value;
+  assert.match(value, /Contract renewal at AC Milan/);
+  assert.doesNotMatch(value, /→|Move: permanent/);
+});
+
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {
   assert.deepEqual(recoverInterruptedDelivery({ id: '1', status: 'sending' }), { id: '1', status: 'unknown', retryable: false });
   assert.deepEqual(recoverInterruptedDelivery({ id: '2', status: 'pending' }), { id: '2', status: 'pending', retryable: true });
