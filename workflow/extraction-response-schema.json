@@ -76,7 +76,7 @@
           },
           "agreement_status": {
             "type": "string",
-            "enum": ["not_reported", "reached", "close", "negotiating", "rejected", "unknown"]
+            "enum": ["not_reported", "reached", "close", "negotiating", "offered_no_talks", "rejected", "unknown"]
           },
           "is_huge_rumor": { "type": "boolean" },
           "is_digest_worthy": { "type": "boolean" },

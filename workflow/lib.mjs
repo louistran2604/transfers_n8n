@@ -15,7 +15,7 @@ export const MEDICAL_STATES = Object.freeze([
   'not_reported', 'scheduled', 'passed', 'failed', 'pending', 'unknown',
 ]);
 export const AGREEMENT_STATES = Object.freeze([
-  'not_reported', 'reached', 'close', 'negotiating', 'rejected', 'unknown',
+  'not_reported', 'reached', 'close', 'negotiating', 'offered_no_talks', 'rejected', 'unknown',
 ]);
 export const STAGE_SIGNALS = Object.freeze([
   'link', 'interest', 'talks', 'advanced', 'agreed', 'done',

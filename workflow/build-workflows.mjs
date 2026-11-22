@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  AGREEMENT_STATES,
   ATTRIBUTION_KINDS,
   CLAIM_STANCES,
   CLUB_AGREEMENT_STATES,
@@ -1487,7 +1488,7 @@ const completionClaims = ${JSON.stringify(COMPLETION_CLAIMS)};
 const attributionKinds = ${JSON.stringify(ATTRIBUTION_KINDS)};
 const moveTypes = ${JSON.stringify(['permanent', 'loan', 'unknown'])};
 const medicalStates = ${JSON.stringify(['not_reported', 'scheduled', 'passed', 'failed', 'pending', 'unknown'])};
-const agreementStates = ${JSON.stringify(['not_reported', 'reached', 'close', 'negotiating', 'rejected', 'unknown'])};
+const agreementStates = ${JSON.stringify(AGREEMENT_STATES)};
 const nullableString = (value) => value === null || typeof value === 'string';
 const nullableNumber = (value) => value === null || (Number.isFinite(value) && value >= 0);
 const nullableCurrency = (value) => value === null || (typeof value === 'string' && /^[A-Z]{3}$/.test(value));

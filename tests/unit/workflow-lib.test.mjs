@@ -2376,6 +2376,12 @@ test('Rabiot new-contract talks persist and render as a renewal without changing
     player_name: 'Adrien Rabiot', current_club_name: 'AC Milan', destination_club_name: 'AC Milan',
     classification: 'advanced_negotiations', agreement_status: 'negotiating',
   });
+  const brunoOffer = evidenceReport({
+    player_name: 'Bruno Fernandes', current_club_name: 'Manchester United', destination_club_name: 'Manchester United',
+    classification: 'contract_renewal', move_type: 'unknown', agreement_status: 'offered_no_talks',
+    stage_signal: 'interest', claim_stance: 'supports', club_agreement_state: 'not_applicable',
+  });
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [brunoOffer] }).valid, true);
   const parse = async (validate, report, content) => {
     const request = { json: {
       raw_post_id: '1', external_post_id: '2124166997777027557', post_url: postUrl,
@@ -2394,6 +2400,9 @@ test('Rabiot new-contract talks persist and render as a renewal without changing
     assert.equal(renewal.move_type, 'unknown');
     assert.equal(renewal.normalized_evidence.club_agreement_state, 'not_applicable');
     assert.equal(renewal.stage_signal, 'talks');
+    const offer = await parse(validate, brunoOffer, 'Man United offered me a new contract. But there are no negotiations going on.');
+    assert.equal(offer.agreement_status, 'offered_no_talks');
+    assert.equal(offer.normalized_evidence.stage_signal, 'interest');
     const ambiguous = await parse(validate, mislabeled, 'Adrien Rabiot and AC Milan are in talks.');
     assert.equal(ambiguous.classification, 'advanced_negotiations');
     const transfer = await parse(validate, { ...mislabeled, current_club_name: 'Marseille' },
