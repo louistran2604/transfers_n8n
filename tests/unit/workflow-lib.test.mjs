@@ -2365,7 +2365,7 @@ test('library and generated Discord formatters match across rich, sparse, null, 
   }
 });
 
-test('Rabiot new-contract talks persist and render as a renewal without changing real transfers', async () => {
+test('Contract renewal talks and offers without active talks extract and render distinctly', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const backfill = JSON.parse(await readFile(new URL('../../workflow/football-transfer-probability-backfill.json', import.meta.url), 'utf8'));
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -2418,16 +2418,37 @@ test('Rabiot new-contract talks persist and render as a renewal without changing
   assert.equal(snapshot.move_type, 'unknown');
 
   const runDigest = new AsyncFunction('$input', code(workflow, 'Build bounded Discord digest'));
-  const report = { ...snapshot, revision_id: '1', post_url: postUrl, preferred_source: preferredSource };
-  const generated = await runDigest({ all: () => [{ json: {
-    row_type: 'candidate',
-    payload: { snapshot: report, revision_id: '1', post_url: postUrl, source_name: preferredSource.display_name },
-  } }] });
-  const generatedPayload = JSON.parse(generated[0].json.params[0]).discord_payload;
-  assert.deepEqual(generatedPayload, buildDiscordDigest([report]));
-  const value = generatedPayload.embeds[0].fields[0].value;
+  const render = async (data) => {
+    const report = { ...data, revision_id: '1', post_url: postUrl, preferred_source: preferredSource };
+    const generated = await runDigest({ all: () => [{ json: {
+      row_type: 'candidate',
+      payload: { snapshot: report, revision_id: '1', post_url: postUrl, source_name: preferredSource.display_name },
+    } }] });
+    const generatedPayload = JSON.parse(generated[0].json.params[0]).discord_payload;
+    assert.deepEqual(generatedPayload, buildDiscordDigest([report]));
+    return generatedPayload.embeds[0].fields[0].value;
+  };
+  const value = await render(snapshot);
   assert.match(value, /Contract renewal at AC Milan/);
   assert.doesNotMatch(value, /→|Move: permanent/);
+
+  const offer = await render({
+    ...brunoOffer,
+    contract_length_months: 24,
+    contract_expires_on: '2029-06-30',
+    probability_status: 'active_scored',
+    probability: {
+      engine_version: 'probability-v1', normalized_probability: 0.45,
+      current_stage: 'interest', terminal_state: 'open', explanation: {},
+    },
+  });
+  assert.deepEqual(offer.split('\n'), [
+    'Contract renewal at Manchester United',
+    'Offered · no active talks',
+    'Contract length: 24 months',
+    'Contract expires: 2029-06-30',
+    `[${preferredSource.display_name}](${postUrl})`,
+  ]);
 });
 
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {

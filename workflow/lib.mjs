@@ -1221,10 +1221,11 @@ function moveEffectiveLine(value, renewal) {
 
 function storySections(report) {
   const renewal = report.classification === 'contract_renewal';
+  const offerWithoutTalks = renewal && report.agreement_status === 'offered_no_talks';
   const clubDirection = renewal ? `Contract renewal at ${report.destination_club_name}` : `${report.current_club_name} → ${report.destination_club_name}`;
   const feeComparison = feeContextLine(report);
   const details = [
-    renewal ? '**Contract details**' : '**Transfer details**',
+    offerWithoutTalks ? 'Offered · no active talks' : renewal ? '**Contract details**' : '**Transfer details**',
     renewal ? null : `Classification: ${report.classification.replaceAll('_', ' ')}`,
     !renewal && report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
     moveEffectiveLine(report.move_effective_on, renewal),
@@ -1238,7 +1239,7 @@ function storySections(report) {
     report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? `Obligation to buy: ${report.has_obligation_to_buy ? 'Yes' : 'No'}` : null,
     report.sell_on_percentage !== null && report.sell_on_percentage !== undefined ? `Sell-on: ${report.sell_on_percentage}%` : null,
     report.medical_status && !['not_reported', 'unknown'].includes(report.medical_status) ? `Medical: ${report.medical_status}` : null,
-    report.agreement_status && !['not_reported', 'unknown'].includes(report.agreement_status) ? `Agreement: ${report.agreement_status}` : null,
+    report.agreement_status && !['not_reported', 'unknown', 'offered_no_talks'].includes(report.agreement_status) ? `Agreement: ${report.agreement_status}` : null,
   ];
   const source = report.preferred_source?.display_name ?? report.source?.display_name ?? 'Source';
   const sourceUrl = report.sources?.[0]?.post_url ?? report.post_url;
@@ -1293,7 +1294,7 @@ function storySections(report) {
   }
   return {
     transferLines: [clubDirection, ...details].filter(Boolean),
-    assessmentLines: [renewal ? '**Renewal assessment**' : '**Transfer assessment**', ...probabilityLines],
+    assessmentLines: offerWithoutTalks ? [] : [renewal ? '**Renewal assessment**' : '**Transfer assessment**', ...probabilityLines],
     sourceLine: sourceUrl ? `[${source}](${sourceUrl})` : source,
   };
 }
