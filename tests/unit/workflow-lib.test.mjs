@@ -2538,6 +2538,74 @@ test('generated workflow records extraction outages and fails the run after reco
   assert.deepEqual(await parse([]), []);
 });
 
+test('generated monitor retries invalid K2 responses once and keeps the original batch together', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const find = (name) => workflow.nodes.find((node) => node.name === name);
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const run = (name, items, inputs = {}) => new AsyncFunction('$input', '$', find(name).parameters.jsCode)(
+    { all: () => items }, (node) => ({ all: () => inputs[node] }),
+  );
+  const request = (id) => ({ json: {
+    raw_post_id: id, external_post_id: id, workflow_run_id: '1',
+    body: { model: 'transfers-n8n', max_tokens: 2048, messages: [{ role: 'user', content: 'fixture ' + id }] },
+  } });
+  const k2 = 'IFM/K2-Horizon-375B-A23B';
+  const response = (model, content, finish_reason = 'stop', item = 0, statusCode = 200) => ({
+    json: { statusCode, body: { model, choices: [{ finish_reason, message: { content } }] } },
+    pairedItem: { item },
+  });
+  const ignored = JSON.stringify({ transfer_related: false, reports: [] });
+  const transfer = JSON.stringify({ transfer_related: true, reports: [evidenceReport()] });
+  const requests = ['11', '12', '13', '14', '15'].map(request);
+  const inputNodes = { 'Build extraction request': requests };
+  const initial = await run('Validate extraction response', [
+    response(k2, ignored, 'length', 0),
+    response(k2, '{"transfer_related":true,"reports":[{}]}', 'stop', 1),
+    response(k2, ignored, 'stop', 2),
+    response('gemini-3.8-flash', 'malformed', 'stop', 3),
+    response(k2, 'unexpected HTTP failure', 'stop', 4, 503),
+  ], inputNodes);
+  assert.deepEqual(initial.map(({ json }) => json.valid), [false, false, true, false, false]);
+  const prepared = await run('Prepare local Qwen retries', initial);
+  assert.deepEqual(prepared.map(({ json }) => json), requests.slice(0, 2).map(({ json }) => ({
+    ...json, body: { ...json.body, model: 'local/qwen3.8-27b' },
+  })));
+  assert.equal(requests[0].json.body.model, 'transfers-n8n');
+  const local = await run('Validate local Qwen retry', [
+    response('qwen3.8-27b', 'malformed', 'stop', 1),
+    response('qwen3.8-27b', transfer, 'stop', 0),
+  ], { 'Prepare local Qwen retries': prepared });
+  const finalized = await run('Finalize extraction responses', local, {
+    ...inputNodes, 'Validate extraction response': initial,
+  });
+  assert.deepEqual(finalized.map(({ json }) => [json.report?.raw_post_id ?? json.raw_post_id ?? json.params?.[0], json.valid]),
+    [['11', true], ['12', false], ['13', true], ['14', false], ['15', false]]);
+  assert.deepEqual(finalized.filter(({ json }) => !json.valid).map(({ json }) => [json.params[7], json.params[8]]),
+    [['ValidationError', false], ['ValidationError', false], ['HttpError', false]]);
+  assert.ok(finalized.every(({ json }) => !json.retry_request));
+  const firstOnly = await run('Validate extraction response', [response(k2, 'malformed')], {
+    'Build extraction request': requests.slice(0, 1),
+  });
+  const retryFailed = await run('Validate local Qwen retry', [response('qwen3.8-27b', '', 'stop', 0, 503)], {
+    'Prepare local Qwen retries': prepared.slice(0, 1),
+  });
+  const [allFailed] = await run('Finalize extraction responses', retryFailed, {
+    'Build extraction request': requests.slice(0, 1), 'Validate extraction response': firstOnly,
+  });
+  assert.deepEqual(allFailed.json.params.slice(7), ['HttpError', true]);
+
+  const healthy = initial.slice(2, 3);
+  const sentinel = await run('Prepare local Qwen retries', healthy);
+  assert.deepEqual(sentinel, [{ json: {} }]);
+  assert.deepEqual(await run('Finalize extraction responses', sentinel, {
+    'Build extraction request': requests.slice(2, 3), 'Validate extraction response': healthy,
+  }), healthy);
+  const retryPaths = workflow.connections['Retry K2 extraction?'].main;
+  assert.deepEqual(retryPaths.map(([connection]) => connection.node), ['Retry extraction via local Qwen', 'Finalize extraction responses']);
+  assert.equal(find('Retry extraction via local Qwen').retryOnFail, undefined);
+  assert.equal(workflow.connections['Validate local Qwen retry'].main[0][0].node, 'Finalize extraction responses');
+});
+
 test('generated twscrape adapter preserves string IDs, keeps quoted posts, filters retweets, and tolerates partial failures', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const adapter = workflow.nodes.find((node) => node.name === 'Normalize twscrape posts');

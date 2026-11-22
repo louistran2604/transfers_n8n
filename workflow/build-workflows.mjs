@@ -1472,10 +1472,10 @@ function processedPostCacheResumeCode() {
 return $('Persist merged reports and revisions').all().map((item) => ({ json: { ...item.json, workflow_outcome: 'merged_report' } }));`;
 }
 
-function extractionParseCode({ forMonitor = false } = {}) {
+function extractionParseCode({ forMonitor = false, retryK2 = false, requestsNode = 'Build extraction request' } = {}) {
   return `
 ${entityAliasHelpers()}
-const requests = $('Build extraction request').all();
+const requests = $('${requestsNode}').all();
 const required = ${JSON.stringify(['player_name', 'player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name', 'move_effective_on', 'classification', 'move_type', 'fee_amount', 'fee_currency', 'add_ons_amount', 'add_ons_currency', 'release_clause_amount', 'release_clause_currency', 'contract_length_months', 'contract_expires_on', 'loan_ends_on', 'has_option_to_buy', 'has_obligation_to_buy', 'sell_on_percentage', 'medical_status', 'agreement_status', 'is_huge_rumor', 'is_digest_worthy', 'stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
 const classes = ${JSON.stringify(['official_confirmed', 'advanced_negotiations', 'rumor', 'rejected_failed', 'contract_renewal', 'loan'])};
 const stages = ${JSON.stringify(STAGE_SIGNALS)};
@@ -1500,14 +1500,17 @@ ${forMonitor ? 'const outcomes = ' : 'return '}$input.all().flatMap((item, index
   if (!request?.raw_post_id) throw new Error('Missing extraction request metadata for response item ' + index);
   const response = item.json.body ?? item.json;
   const content = response?.choices?.[0]?.message?.content;
-  const fence = String.fromCharCode(96, 96, 96);
+${retryK2 ? `  const statusCode = item.json.statusCode ?? 200;
+  const k2Response = statusCode >= 200 && statusCode < 300
+    && response?.model === 'IFM/K2-Horizon-375B-A23B';
+` : ''}  const fence = String.fromCharCode(96, 96, 96);
   const text = typeof content === 'string' ? content.replace(new RegExp('^' + fence + '(json)?\\s*', 'i'), '').replace(new RegExp('\\s*' + fence + '\\s*$'), '') : content;
   let parsed;
   try { parsed = typeof text === 'string' ? JSON.parse(text) : text; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
   const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
-  if (!valid) {
+  if (!valid${retryK2 ? " || (k2Response && response?.choices?.[0]?.finish_reason === 'length')" : ''}) {
 ${forMonitor ? `    const error = item.json.error ?? response?.error;
     const status = Number(error?.statusCode ?? error?.httpCode ?? item.json.statusCode);
     const code = String(error?.code ?? '');
@@ -1523,7 +1526,9 @@ ${forMonitor ? `    const error = item.json.error ?? response?.error;
       errorClass = 'RequestError';
       message = 'LLM request failed';
     }
-    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-extract-' + request.external_post_id, message, JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id, errorClass] } }];` : `    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];`}
+    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-extract-' + request.external_post_id, message, JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id, errorClass]${retryK2 ? `,
+      ...(k2Response ? { retry_request: { ...request, body: { ...request.body, model: 'local/qwen3.8-27b' } } } : {}),
+    ` : ''} } }];` : `    return [{ json: { valid: false, params: [request.raw_post_id, 'llm-schema-' + request.external_post_id, 'Malformed or schema-invalid LLM response', JSON.stringify({ response }), 'x:' + request.external_post_id, 1000, request.workflow_run_id] } }];`}
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const post = request.body?.messages?.find((message) => message.role === 'user')?.content ?? '';
@@ -2267,6 +2272,14 @@ return [{ json: { params: [JSON.stringify({ workflow_run_id: String(workflowRunI
 function mainWorkflow({ registry, prompt, schema }) {
   const registryJson = JSON.stringify(registry);
   const schemaJson = JSON.stringify(schema);
+  const extractionHttpParameters = {
+    method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
+    headerParameters: { parameters: [
+      { name: 'Authorization', value: '={{ "Bearer " + $env.LLM_API_KEY }}' },
+    ] },
+    sendBody: true,
+    contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
+  };
   const nodes = [
     node('Every six hours', 'n8n-nodes-base.scheduleTrigger', [-1120, -140], {
       rule: { interval: [{ field: 'cronExpression', expression: '0 0,6,12,18 * * *' }] },
@@ -2386,15 +2399,37 @@ return $input.all().map((item) => ({ json: {
   source: { external_account_id: item.json.external_account_id, username: item.json.username, display_name: item.json.display_name, priority_rank: Number(item.json.priority_rank), reliability_score: Number(item.json.reliability_score), seed_reliability: Number(item.json.seed_reliability), publisher_group_key: item.json.publisher_group_key, source_kind: item.json.source_kind, is_aggregator: item.json.is_aggregator, is_official: item.json.is_official },
   body: { model: 'transfers-n8n', temperature: 0, max_tokens: 2048, stream: false, messages: [{ role: 'system', content: prompt + '\\n\\nReturn only raw JSON with no markdown fences that conforms exactly to this JSON Schema:\\n' + JSON.stringify(schema) }, { role: 'user', content: item.json.content }], response_format: { type: 'json_object' } }
 } }));`),
-    httpNode('Extract via LLM', [1200, -40], {
-      method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
-      headerParameters: { parameters: [
-        { name: 'Authorization', value: '={{ "Bearer " + $env.LLM_API_KEY }}' },
-      ] },
-      sendBody: true,
-      contentType: 'json', specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
-    }, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
-    codeNode('Validate extraction response', [1420, -40], extractionParseCode({ forMonitor: true })),
+    httpNode('Extract via LLM', [1200, -40], extractionHttpParameters, { continueOnFail: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 1000 }),
+    codeNode('Validate extraction response', [1420, -40], extractionParseCode({ forMonitor: true, retryK2: true })),
+    codeNode('Prepare local Qwen retries', [1420, 200], `
+const retries = $input.all().flatMap(({ json }, index) => json.retry_request
+  ? [{ json: json.retry_request, pairedItem: { item: index } }]
+  : []);
+return retries.length ? retries : [{ json: {} }];`),
+    node('Retry K2 extraction?', 'n8n-nodes-base.if', [1640, 200], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.raw_post_id !== undefined }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
+    httpNode('Retry extraction via local Qwen', [1860, 400], extractionHttpParameters, { continueOnFail: true }),
+    codeNode('Validate local Qwen retry', [2080, 400], extractionParseCode({ forMonitor: true, requestsNode: 'Prepare local Qwen retries' })),
+    codeNode('Finalize extraction responses', [2300, 400], `
+const retries = new Map();
+for (const { json } of $input.all()) {
+  const id = json.report?.raw_post_id ?? json.raw_post_id ?? json.params?.[0];
+  if (id === undefined) continue;
+  const reports = retries.get(id) ?? [];
+  reports.push({ json });
+  retries.set(id, reports);
+}
+const outcomes = $('Validate extraction response').all().flatMap(({ json }) => {
+  const { retry_request, ...original } = json;
+  return retry_request && retries.has(retry_request.raw_post_id)
+    ? retries.get(retry_request.raw_post_id)
+    : [{ json: original }];
+});
+const allFailed = outcomes.length === $('Build extraction request').all().length
+  && outcomes.every(({ json }) => !json.valid);
+for (const { json } of outcomes) {
+  if (!json.valid) json.params = [...json.params.slice(0, 8), allFailed];
+}
+return outcomes;`),
     node('Extraction response valid', 'n8n-nodes-base.if', [1640, -40], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ $json.valid }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
     postgresNode('Record extraction failure', [1640, 160], extractionFailureSql()),
     node('Transfer related', 'n8n-nodes-base.if', [1860, -100], { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: '={{ !$json.ignored }}', rightValue: true, operator: { type: 'boolean', operation: 'true', singleValue: true } }], combinator: 'and' } }, { typeVersion: 2.2 }),
@@ -2531,7 +2566,12 @@ return [{ json: { params: [request.digest_delivery_id, status, String(response?.
     'Persist raw posts': { main: [[{ node: 'Build extraction request', type: 'main', index: 0 }]] },
     'Build extraction request': { main: [[{ node: 'Extract via LLM', type: 'main', index: 0 }]] },
     'Extract via LLM': { main: [[{ node: 'Validate extraction response', type: 'main', index: 0 }]] },
-    'Validate extraction response': { main: [[{ node: 'Extraction response valid', type: 'main', index: 0 }]] },
+    'Validate extraction response': { main: [[{ node: 'Prepare local Qwen retries', type: 'main', index: 0 }]] },
+    'Prepare local Qwen retries': { main: [[{ node: 'Retry K2 extraction?', type: 'main', index: 0 }]] },
+    'Retry K2 extraction?': { main: [[{ node: 'Retry extraction via local Qwen', type: 'main', index: 0 }], [{ node: 'Finalize extraction responses', type: 'main', index: 0 }]] },
+    'Retry extraction via local Qwen': { main: [[{ node: 'Validate local Qwen retry', type: 'main', index: 0 }]] },
+    'Validate local Qwen retry': { main: [[{ node: 'Finalize extraction responses', type: 'main', index: 0 }]] },
+    'Finalize extraction responses': { main: [[{ node: 'Extraction response valid', type: 'main', index: 0 }]] },
     'Extraction response valid': { main: [[{ node: 'Transfer related', type: 'main', index: 0 }], [{ node: 'Record extraction failure', type: 'main', index: 0 }]] },
     'Transfer related': { main: [[{ node: 'Merge extracted reports', type: 'main', index: 0 }], [{ node: 'Mark non-transfer ignored', type: 'main', index: 0 }]] },
     'Mark non-transfer ignored': { main: [[{ node: 'Prepare ignored processed-post Redis write', type: 'main', index: 0 }]] },
