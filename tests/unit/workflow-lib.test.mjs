@@ -219,8 +219,9 @@ test('source registry exposes valid explicit metadata for all 79 unique decimal 
   const expected = {
     realmadrid: ['club_official', 'club:real-madrid', 1, false, true, 1],
     David_Ornstein: ['journalist', 'reporter:david-ornstein', 0.95, false, false, 2],
-    AdamCrafton_: ['journalist', 'reporter:adamcrafton', 0.7, false, false, 4],
-    BBCSport: ['publisher', 'publisher:bbc-sport', 0.8, false, false, 3],
+    FabrizioRomano: ['journalist', 'reporter:fabrizioromano', 0.9, false, false, 4],
+    AdamCrafton_: ['journalist', 'reporter:adamcrafton', 0.8, false, false, 4],
+    BBCSport: ['publisher', 'publisher:bbc-sport', 0.9, false, false, 3],
   };
   for (const [username, values] of Object.entries(expected)) {
     const account = registry.find((candidate) => candidate.username === username);
@@ -231,11 +232,11 @@ test('source registry exposes valid explicit metadata for all 79 unique decimal 
 
 test('source metadata rejects missing, malformed, and inconsistent explicit values', async () => {
   const markdown = await readFile(new URL('../../docs/journalist_list.md', import.meta.url), 'utf8');
-  const missing = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '|  | `reporter:adamcrafton` | false | 0.7000 |');
-  const malformed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `Reporter:Adam Crafton` | false | 1.2000 |');
-  const invalidSeed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `reporter:adamcrafton` | false | NaN |');
-  const invalidBoolean = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| journalist | `reporter:adamcrafton` | no | 0.7000 |');
-  const inconsistent = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.7000 |', '| aggregator | `reporter:adamcrafton` | false | 0.7000 |');
+  const missing = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.8000 |', '|  | `reporter:adamcrafton` | false | 0.8000 |');
+  const malformed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.8000 |', '| journalist | `Reporter:Adam Crafton` | false | 1.2000 |');
+  const invalidSeed = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.8000 |', '| journalist | `reporter:adamcrafton` | false | NaN |');
+  const invalidBoolean = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.8000 |', '| journalist | `reporter:adamcrafton` | no | 0.8000 |');
+  const inconsistent = markdown.replace('| journalist | `reporter:adamcrafton` | false | 0.8000 |', '| aggregator | `reporter:adamcrafton` | false | 0.8000 |');
   assert.throws(() => parseSourceRegistry(missing), /source kind/i);
   assert.throws(() => parseSourceRegistry(malformed), /publisher group|seed reliability/i);
   assert.throws(() => parseSourceRegistry(invalidSeed), /seed reliability/i);
@@ -263,7 +264,7 @@ test('generated source upserts persist explicit reliability and independence met
     assert.ok(query.includes(updateClause));
     assert.ok(query.includes(returningClause));
   }
-  const expectedParams = ['x', '242077026', 'AdamCrafton_', 'Adam Crafton', 'individual', false, 4, 0.7, 0.7, 'reporter:adamcrafton', 'journalist', false];
+  const expectedParams = ['x', '242077026', 'AdamCrafton_', 'Adam Crafton', 'individual', false, 4, 0.8, 0.8, 'reporter:adamcrafton', 'journalist', false];
   for (const name of ['Load generated sources', 'Load sample source']) {
     const output = Function(workflow.nodes.find((node) => node.name === name).parameters.jsCode)();
     assert.deepEqual(output[0].json.params, expectedParams);

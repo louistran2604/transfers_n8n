@@ -2271,6 +2271,8 @@ return [{ json: { params: [JSON.stringify({ workflow_run_id: String(workflowRunI
 }
 function mainWorkflow({ registry, prompt, schema }) {
   const registryJson = JSON.stringify(registry);
+  const sampleSource = registry.find((source) => source.external_account_id === '242077026');
+  if (!sampleSource) throw new Error('Adam Crafton is missing from the source registry');
   const schemaJson = JSON.stringify(schema);
   const extractionHttpParameters = {
     method: 'POST', url: '={{ $env.LLM_CHAT_COMPLETIONS_URL || "http://host.docker.internal:20128/v1/chat/completions" }}', sendHeaders: true,
@@ -2333,7 +2335,7 @@ const sources = ${registryJson};
 return sources.map((source) => ({ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }));`),
     postgresNode('Upsert source accounts', [-100, -40], sourceUpsertSql()),
     codeNode('Load sample source', [-300, 220], `
-const source = { platform: 'x', external_account_id: '242077026', username: 'AdamCrafton_', display_name: 'Adam Crafton', account_type: 'individual', is_official: false, priority_rank: 4, reliability_score: 0.70, seed_reliability: 0.70, publisher_group_key: 'reporter:adamcrafton', source_kind: 'journalist', is_aggregator: false };
+const source = ${JSON.stringify(sampleSource)};
 return [{ json: { source, params: [source.platform, source.external_account_id, source.username, source.display_name, source.account_type, source.is_official, source.priority_rank, source.reliability_score, source.seed_reliability, source.publisher_group_key, source.source_kind, source.is_aggregator] } }];`),
     postgresNode('Upsert sample source account', [-100, 220], sourceUpsertSql()),
     codeNode('Select X collector', [100, -40], `
