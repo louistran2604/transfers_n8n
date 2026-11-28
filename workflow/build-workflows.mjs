@@ -1493,7 +1493,7 @@ const nullableString = (value) => value === null || typeof value === 'string';
 const nullableNumber = (value) => value === null || (Number.isFinite(value) && value >= 0);
 const nullableCurrency = (value) => value === null || (typeof value === 'string' && /^[A-Z]{3}$/.test(value));
 const nullableDate = (value) => value === null || (typeof value === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(value));
-const nullableMoveEffectiveOn = (value) => value === null || (typeof value === 'string' && /^\\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\\d|3[01]))?$/.test(value));
+const nullableMonthOrDate = (value) => value === null || (typeof value === 'string' && /^\\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\\d|3[01]))?$/.test(value));
 const nullableBoolean = (value) => value === null || typeof value === 'boolean';
 ${forMonitor ? 'const outcomes = ' : 'return '}$input.all().flatMap((item, index) => {
   const requestIndex = item.pairedItem?.item ?? index;
@@ -1510,7 +1510,7 @@ ${retryK2 ? `  const statusCode = item.json.statusCode ?? 200;
   try { parsed = typeof text === 'string' ? JSON.parse(text) : text; } catch { parsed = null; }
   const nullableClub = (value) => typeof value === 'string' && /^(not[ _-]?reported|unknown|n\\/?a)$/i.test(value.trim()) ? null : value;
   if (parsed && Array.isArray(parsed.reports)) parsed.reports = parsed.reports.map((report) => report && typeof report === 'object' && !Array.isArray(report) ? canonicalizeReport({ ...report, current_club_name: nullableClub(report.current_club_name), former_club_name: nullableClub(report.former_club_name), destination_club_name: nullableClub(report.destination_club_name) }) : report);
-  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMoveEffectiveOn(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && ['contract_expires_on', 'loan_ends_on'].every((field) => nullableDate(report[field])) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
+  const valid = parsed && Object.keys(parsed).length === 2 && 'transfer_related' in parsed && 'reports' in parsed && typeof parsed.transfer_related === 'boolean' && Array.isArray(parsed.reports) && (parsed.transfer_related || parsed.reports.length === 0) && parsed.reports.every((report) => report && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).length === required.length && required.every((field) => field in report) && typeof report.player_name === 'string' && report.player_name.trim().length > 0 && ['player_identity_hint', 'current_club_name', 'former_club_name', 'destination_club_name'].every((field) => nullableString(report[field])) && nullableMonthOrDate(report.move_effective_on) && classes.includes(report.classification) && moveTypes.includes(report.move_type) && ['fee_amount', 'add_ons_amount', 'release_clause_amount', 'sell_on_percentage'].every((field) => nullableNumber(report[field])) && (report.sell_on_percentage === null || report.sell_on_percentage <= 100) && ['fee_currency', 'add_ons_currency', 'release_clause_currency'].every((field) => nullableCurrency(report[field])) && (report.contract_length_months === null || (Number.isInteger(report.contract_length_months) && report.contract_length_months > 0)) && nullableMonthOrDate(report.contract_expires_on) && nullableDate(report.loan_ends_on) && ['has_option_to_buy', 'has_obligation_to_buy'].every((field) => nullableBoolean(report[field])) && medicalStates.includes(report.medical_status) && agreementStates.includes(report.agreement_status) && typeof report.is_huge_rumor === 'boolean' && typeof report.is_digest_worthy === 'boolean' && stages.includes(report.stage_signal) && stances.includes(report.claim_stance) && strengths.includes(report.wording_strength) && clubAgreementStates.includes(report.club_agreement_state) && personalTermsStates.includes(report.personal_terms_state) && completionClaims.includes(report.completion_claim) && attributionKinds.includes(report.attribution_kind) && (report.named_originator === null || (typeof report.named_originator === 'string' && report.named_originator.trim().length > 0)) && Number.isFinite(report.extraction_confidence) && report.extraction_confidence >= 0 && report.extraction_confidence <= 1);
   if (!valid${retryK2 ? " || (k2Response && response?.choices?.[0]?.finish_reason === 'length')" : ''}) {
 ${forMonitor ? `    const error = item.json.error ?? response?.error;
     const status = Number(error?.statusCode ?? error?.httpCode ?? item.json.statusCode);
@@ -1533,15 +1533,21 @@ ${forMonitor ? `    const error = item.json.error ?? response?.error;
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const post = request.body?.messages?.find((message) => message.role === 'user')?.content ?? '';
+  const exercisedOption = /\\bconfirm(?:s|ed)? (?:that )?(?:they |it )?(?:activate[ds]?|exercise[ds]?) (?:the |an )?option to extend\\b/i.test(post);
   const singleContractReport = parsed.reports.length === 1
-    && /\\b(?:new contract|contract (?:renewal|extension)|(?:renew|extend)(?:s|ed|ing)? (?:his |the )?contract)\\b/i.test(post);
+    && (exercisedOption || /\\b(?:new contract|contract (?:renewal|extension)|(?:renew|extend)(?:s|ed|ing)? (?:his |the )?contract)\\b/i.test(post));
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
   return parsed.reports.map((extracted, reportIndex) => {
     const club = normalizeAlias(extracted.current_club_name);
     const sameClubContract = singleContractReport && club && club === normalizeAlias(extracted.destination_club_name)
       && extracted.move_type !== 'loan' && !['loan', 'rejected_failed'].includes(extracted.classification);
+    const confirmedExtension = sameClubContract && exercisedOption
+      ? { agreement_status: 'reached', claim_stance: 'supports',
+          stage_signal: extracted.completion_claim === 'official_announcement' ? 'official_wording' : 'done',
+          completion_claim: extracted.completion_claim === 'official_announcement' ? 'official_announcement' : 'reporter_done' }
+      : {};
     const report = extracted.classification === 'contract_renewal' || sameClubContract
-      ? { ...extracted, classification: 'contract_renewal', move_type: 'unknown', club_agreement_state: 'not_applicable' }
+      ? { ...extracted, classification: 'contract_renewal', move_type: 'unknown', club_agreement_state: 'not_applicable', ...confirmedExtension }
       : extracted;
     return { json: { valid: true, ignored: false, report: {
       ...report,
@@ -1601,6 +1607,8 @@ for (const reports of groups.values()) {
   snapshot.dedupe_key = merged.dedupe_key;
   const payload = {
     ...snapshot,
+    // The SQL date column requires day precision. The revision keeps month-only expiry.
+    contract_expires_on: snapshot.contract_expires_on?.length === 10 ? snapshot.contract_expires_on : null,
     player_identity_key: normalize(merged.player_name).replace(/\\s/g, '-'),
     normalized_player_name: normalize(merged.player_name),
     extraction_confidence: merged.extraction_confidence,
@@ -1941,11 +1949,11 @@ const truncate = (value, maximum) => {
   return result + '…';
 };
 const amount = (value, currency) => value === null || value === undefined ? null : (Number(value).toLocaleString('en-US') + ' ' + (currency ?? '')).trim();
-const moveEffectiveLine = (value, renewal) => {
+const monthDateLine = (value, label) => {
   const match = /^(\\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\\d|3[01]))?$/.exec(String(value ?? ''));
   if (!match) return null;
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  return (renewal ? 'Renewal starts: ' : 'Move starts: ') + months[Number(match[2]) - 1] + ' ' + match[1];
+  return label + ': ' + months[Number(match[2]) - 1] + ' ' + match[1];
 };
 const finiteNumber = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -2122,7 +2130,9 @@ const withPresentationCurrentClub = (report) => {
   if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name) || equivalentClub(profileClub, report.current_club_name)) return report;
   return { ...report, current_club_name: profileClub };
 };
-const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.current_club_name) && hasNamedClub(report.destination_club_name);
+const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.destination_club_name)
+  && (hasNamedClub(report.current_club_name) || (report.classification === 'official_confirmed'
+    && ['reporter_done', 'official_announcement'].includes(report.completion_claim)));
 const digestHistoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
 const configuredSiblingPair = (left, right) => {
   const leftName = normalizeAlias(left.player_name);
@@ -2201,18 +2211,24 @@ for (const report of selected) {
   const sourceLine = report.post_url ? '[' + report.preferred_source.display_name + '](' + report.post_url + ')' : report.preferred_source.display_name;
   const feeComparison = feeContextLine(report);
   const renewal = report.classification === 'contract_renewal';
+  const hasCurrentClub = hasNamedClub(report.current_club_name);
+  const reportedSigning = !hasCurrentClub && report.classification === 'official_confirmed'
+    && report.completion_claim === 'reporter_done';
   const offerWithoutTalks = renewal && report.agreement_status === 'offered_no_talks';
   const transferLines = [
-    renewal ? 'Contract renewal at ' + report.destination_club_name : report.current_club_name + ' → ' + report.destination_club_name,
+    renewal ? 'Contract renewal at ' + report.destination_club_name
+      : hasCurrentClub ? report.current_club_name + ' → ' + report.destination_club_name : 'Joining ' + report.destination_club_name,
+    reportedSigning ? 'Deal reported complete' : null,
     offerWithoutTalks ? 'Offered · no active talks' : renewal ? '**Contract details**' : '**Transfer details**',
-    renewal ? null : 'Classification: ' + report.classification.replaceAll('_', ' '),
+    renewal || reportedSigning ? null : 'Classification: ' + report.classification.replaceAll('_', ' '),
     !renewal && report.move_type && report.move_type !== 'unknown' ? 'Move: ' + report.move_type : null,
-    moveEffectiveLine(report.move_effective_on, renewal),
+    monthDateLine(report.move_effective_on, renewal ? 'Renewal starts' : 'Move starts'),
     feeComparison?.line ?? (amount(report.fee_amount, report.fee_currency) ? 'Fee: ' + amount(report.fee_amount, report.fee_currency) : null),
     !feeComparison?.includesAddOns && amount(report.add_ons_amount, report.add_ons_currency) ? 'Add-ons: ' + amount(report.add_ons_amount, report.add_ons_currency) : null,
     amount(report.release_clause_amount, report.release_clause_currency) ? 'Release clause: ' + amount(report.release_clause_amount, report.release_clause_currency) : null,
     report.contract_length_months !== null && report.contract_length_months !== undefined ? 'Contract length: ' + report.contract_length_months + ' months' : null,
-    report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,
+    report.contract_expires_on?.length === 7 ? monthDateLine(report.contract_expires_on, 'Contract expires')
+      : report.contract_expires_on ? 'Contract expires: ' + report.contract_expires_on : null,
     report.loan_ends_on ? 'Loan ends: ' + report.loan_ends_on : null,
     report.has_option_to_buy !== null && report.has_option_to_buy !== undefined ? 'Option to buy: ' + (report.has_option_to_buy ? 'Yes' : 'No') : null,
     report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? 'Obligation to buy: ' + (report.has_obligation_to_buy ? 'Yes' : 'No') : null,
@@ -2653,6 +2669,7 @@ for (const [rawPostId, group] of grouped) {
     const normalizedEvidence = report.normalized_evidence;
     return {
       ...report,
+      contract_expires_on: report.contract_expires_on?.length === 10 ? report.contract_expires_on : null,
       dedupe_key,
       player_identity_key: normalize(report.player_name).replace(/\\s/g, '-'),
       normalized_player_name: normalize(report.player_name),

@@ -95,7 +95,7 @@ const CLASSIFICATION_PRECEDENCE = Object.freeze({
 
 const SOURCE_KINDS = new Set(['journalist', 'publisher', 'club_official', 'league_official', 'aggregator']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_MOVE_EFFECTIVE_ON = /^\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/;
+const ISO_MONTH_OR_DATE = /^\d{4}-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const DECIMAL_ID = /^\d+$/;
 const PROCESSED_POST_CACHE_KEY_PREFIX = 'ftm:v1:processed-post:x:';
@@ -875,8 +875,8 @@ function isNullableDate(value) {
   return value === null || (typeof value === 'string' && ISO_DATE.test(value));
 }
 
-function isNullableMoveEffectiveOn(value) {
-  return value === null || (typeof value === 'string' && ISO_MOVE_EFFECTIVE_ON.test(value));
+function isNullableMonthOrDate(value) {
+  return value === null || (typeof value === 'string' && ISO_MONTH_OR_DATE.test(value));
 }
 
 function isNullableCurrency(value) {
@@ -918,10 +918,10 @@ export function validateExtractionResponse(value) {
         if (!isNullableCurrency(report[field])) errors.push(`${label}.${field} must be ISO currency or null`);
       }
       if (!isNullableInteger(report.contract_length_months)) errors.push(`${label}.contract_length_months must be positive integer or null`);
-      for (const field of ['contract_expires_on', 'loan_ends_on']) {
-        if (!isNullableDate(report[field])) errors.push(`${label}.${field} must be ISO date or null`);
+      for (const field of ['contract_expires_on', 'move_effective_on']) {
+        if (!isNullableMonthOrDate(report[field])) errors.push(`${label}.${field} must be YYYY-MM or YYYY-MM-DD or null`);
       }
-      if (!isNullableMoveEffectiveOn(report.move_effective_on)) errors.push(`${label}.move_effective_on must be YYYY-MM or YYYY-MM-DD or null`);
+      if (!isNullableDate(report.loan_ends_on)) errors.push(`${label}.loan_ends_on must be ISO date or null`);
       for (const field of ['has_option_to_buy', 'has_obligation_to_buy']) {
         if (!isNullableBoolean(report[field])) errors.push(`${label}.${field} must be boolean or null`);
       }
@@ -1022,7 +1022,7 @@ export function mergeReportGroup(group, entityAliases = EMPTY_ENTITY_ALIASES) {
 }
 
 function effectiveMoveTimestamp(value) {
-  if (typeof value !== 'string' || !ISO_MOVE_EFFECTIVE_ON.test(value)) return null;
+  if (typeof value !== 'string' || !ISO_MONTH_OR_DATE.test(value)) return null;
   const timestamp = Date.parse(value.length === 7 ? `${value}-01T00:00:00Z` : `${value}T00:00:00Z`);
   return Number.isFinite(timestamp) ? timestamp : null;
 }
@@ -1178,8 +1178,9 @@ function digestPlayerConflict(left, right, entityAliases) {
 
 function isDigestEligible(report) {
   return report.is_digest_worthy === true
-    && hasNamedClub(report.current_club_name)
-    && hasNamedClub(report.destination_club_name);
+    && hasNamedClub(report.destination_club_name)
+    && (hasNamedClub(report.current_club_name) || (report.classification === 'official_confirmed'
+      && ['reporter_done', 'official_announcement'].includes(report.completion_claim)));
 }
 
 const DIGEST_UPDATE_FIELDS = Object.freeze([
@@ -1212,28 +1213,33 @@ function isNewDigestUpdate(report, entityAliases, now) {
   return !sent.some((entry) => digestMaterialKey(entry.snapshot) === digestMaterialKey(report));
 }
 
-function moveEffectiveLine(value, renewal) {
+function monthDateLine(value, label) {
   const match = /^(\d{4})-(0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$/.exec(String(value ?? ''));
   if (!match) return null;
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  return `${renewal ? 'Renewal' : 'Move'} starts: ${months[Number(match[2]) - 1]} ${match[1]}`;
+  return `${label}: ${months[Number(match[2]) - 1]} ${match[1]}`;
 }
 
 function storySections(report) {
   const renewal = report.classification === 'contract_renewal';
+  const hasCurrentClub = hasNamedClub(report.current_club_name);
+  const reportedSigning = !hasCurrentClub && report.classification === 'official_confirmed'
+    && report.completion_claim === 'reporter_done';
   const offerWithoutTalks = renewal && report.agreement_status === 'offered_no_talks';
-  const clubDirection = renewal ? `Contract renewal at ${report.destination_club_name}` : `${report.current_club_name} → ${report.destination_club_name}`;
+  const clubDirection = renewal ? `Contract renewal at ${report.destination_club_name}`
+    : hasCurrentClub ? `${report.current_club_name} → ${report.destination_club_name}` : `Joining ${report.destination_club_name}`;
   const feeComparison = feeContextLine(report);
   const details = [
     offerWithoutTalks ? 'Offered · no active talks' : renewal ? '**Contract details**' : '**Transfer details**',
-    renewal ? null : `Classification: ${report.classification.replaceAll('_', ' ')}`,
+    renewal || reportedSigning ? null : `Classification: ${report.classification.replaceAll('_', ' ')}`,
     !renewal && report.move_type && report.move_type !== 'unknown' ? `Move: ${report.move_type}` : null,
-    moveEffectiveLine(report.move_effective_on, renewal),
+    monthDateLine(report.move_effective_on, renewal ? 'Renewal starts' : 'Move starts'),
     feeComparison?.line ?? (formatAmount(report.fee_amount, report.fee_currency) ? `Fee: ${formatAmount(report.fee_amount, report.fee_currency)}` : null),
     !feeComparison?.includesAddOns && formatAmount(report.add_ons_amount, report.add_ons_currency) ? `Add-ons: ${formatAmount(report.add_ons_amount, report.add_ons_currency)}` : null,
     formatAmount(report.release_clause_amount, report.release_clause_currency) ? `Release clause: ${formatAmount(report.release_clause_amount, report.release_clause_currency)}` : null,
     report.contract_length_months !== null && report.contract_length_months !== undefined ? `Contract length: ${report.contract_length_months} months` : null,
-    report.contract_expires_on ? `Contract expires: ${report.contract_expires_on}` : null,
+    report.contract_expires_on?.length === 7 ? monthDateLine(report.contract_expires_on, 'Contract expires')
+      : report.contract_expires_on ? `Contract expires: ${report.contract_expires_on}` : null,
     report.loan_ends_on ? `Loan ends: ${report.loan_ends_on}` : null,
     report.has_option_to_buy !== null && report.has_option_to_buy !== undefined ? `Option to buy: ${report.has_option_to_buy ? 'Yes' : 'No'}` : null,
     report.has_obligation_to_buy !== null && report.has_obligation_to_buy !== undefined ? `Obligation to buy: ${report.has_obligation_to_buy ? 'Yes' : 'No'}` : null,
@@ -1293,7 +1299,7 @@ function storySections(report) {
     probabilityLines.push(`Confidence of Model Understanding (CoMU): ${Math.round(report.confidence * 100)}%`);
   }
   return {
-    transferLines: [clubDirection, ...details].filter(Boolean),
+    transferLines: [clubDirection, reportedSigning ? 'Deal reported complete' : null, ...details].filter(Boolean),
     assessmentLines: offerWithoutTalks ? [] : [renewal ? '**Renewal assessment**' : '**Transfer assessment**', ...probabilityLines],
     sourceLine: sourceUrl ? `[${source}](${sourceUrl})` : source,
   };

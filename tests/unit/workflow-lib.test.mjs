@@ -2381,6 +2381,11 @@ test('Contract renewal talks and offers without active talks extract and render 
     classification: 'contract_renewal', move_type: 'unknown', agreement_status: 'offered_no_talks',
     stage_signal: 'interest', claim_stance: 'supports', club_agreement_state: 'not_applicable',
   });
+  const brunoExtension = {
+    ...brunoOffer, classification: 'official_confirmed', contract_expires_on: '2028-06',
+  };
+  const brunoPost = 'Man United confirm they activate option to extend Bruno Fernandes deal until June 2028. Talks over new long term deal are on stand-by since October.';
+  assert.equal(validateExtractionResponse({ transfer_related: true, reports: [brunoExtension] }).valid, true);
   assert.equal(validateExtractionResponse({ transfer_related: true, reports: [brunoOffer] }).valid, true);
   const parse = async (validate, report, content) => {
     const request = { json: {
@@ -2393,6 +2398,7 @@ test('Contract renewal talks and offers without active talks extract and render 
     }] }, () => ({ all: () => [request] })))[0].json.report;
   };
   let renewal;
+  let extension;
   for (const [definition, name] of [[workflow, 'Validate extraction response'], [backfill, 'Validate backfill extraction response']]) {
     const validate = new AsyncFunction('$input', '$', code(definition, name));
     renewal = await parse(validate, mislabeled, 'AC Milan keep advancing to get new contract done for Adrien Rabiot.');
@@ -2403,6 +2409,13 @@ test('Contract renewal talks and offers without active talks extract and render 
     const offer = await parse(validate, brunoOffer, 'Man United offered me a new contract. But there are no negotiations going on.');
     assert.equal(offer.agreement_status, 'offered_no_talks');
     assert.equal(offer.normalized_evidence.stage_signal, 'interest');
+    extension = await parse(validate, brunoExtension, brunoPost);
+    assert.equal(extension.classification, 'contract_renewal');
+    assert.equal(extension.agreement_status, 'reached');
+    assert.equal(extension.normalized_evidence.stage_signal, 'done');
+    assert.equal(extension.contract_expires_on, '2028-06');
+    const unexercised = await parse(validate, brunoOffer, 'Man United have an option to extend Bruno Fernandes deal.');
+    assert.equal(unexercised.agreement_status, 'offered_no_talks');
     const ambiguous = await parse(validate, mislabeled, 'Adrien Rabiot and AC Milan are in talks.');
     assert.equal(ambiguous.classification, 'advanced_negotiations');
     const transfer = await parse(validate, { ...mislabeled, current_club_name: 'Marseille' },
@@ -2416,6 +2429,10 @@ test('Contract renewal talks and offers without active talks extract and render 
   const { snapshot } = JSON.parse(merged.json.params[0]);
   assert.equal(snapshot.classification, 'contract_renewal');
   assert.equal(snapshot.move_type, 'unknown');
+  const [mergedExtension] = await merge({ all: () => [{ json: { report: extension } }] });
+  const extensionPayload = JSON.parse(mergedExtension.json.params[0]);
+  assert.equal(extensionPayload.contract_expires_on, null);
+  assert.equal(extensionPayload.snapshot.contract_expires_on, '2028-06');
 
   const runDigest = new AsyncFunction('$input', code(workflow, 'Build bounded Discord digest'));
   const render = async (data) => {
@@ -2431,6 +2448,10 @@ test('Contract renewal talks and offers without active talks extract and render 
   const value = await render(snapshot);
   assert.match(value, /Contract renewal at AC Milan/);
   assert.doesNotMatch(value, /→|Move: permanent/);
+  const extensionText = await render(extensionPayload.snapshot);
+  assert.match(extensionText, /Contract renewal at Manchester United/);
+  assert.match(extensionText, /Contract expires: June 2028/);
+  assert.doesNotMatch(extensionText, /no active talks/);
 
   const offer = await render({
     ...brunoOffer,
@@ -2449,6 +2470,50 @@ test('Contract renewal talks and offers without active talks extract and render 
     'Contract expires: 2029-06-30',
     `[${preferredSource.display_name}](${postUrl})`,
   ]);
+});
+
+test('Completed Chelsea signing is eligible without a reported current club', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const code = (name) => workflow.nodes.find((node) => node.name === name).parameters.jsCode;
+  const postUrl = 'https://x.com/FabrizioRomano/status/2126320442260554053';
+  const request = { json: {
+    raw_post_id: '2', external_post_id: '2126320442260554053', post_url: postUrl,
+    posted_at: '2026-11-27T14:21:13Z', source: source('FabrizioRomano'),
+    body: { messages: [{ role: 'user', content: 'Chelsea are signing Burkina Faso midfielder Mohamed Zongo, no longer joining Strasbourg but straight to Chelsea when he turns 18. All completed and set to be confirmed when Zongo turns 18.' }] },
+  } };
+  const extracted = evidenceReport({
+    player_name: 'Mohamed Zongo', current_club_name: null, destination_club_name: 'Chelsea',
+    classification: 'official_confirmed', stage_signal: 'done', completion_claim: 'reporter_done',
+  });
+  const validate = new AsyncFunction('$input', '$', code('Validate extraction response'));
+  const reports = await validate({ all: () => [{
+    json: { choices: [{ message: { content: JSON.stringify({ transfer_related: true, reports: [extracted] }) } }] },
+  }] }, () => ({ all: () => [request] }));
+  const merge = new AsyncFunction('$input', code('Merge extracted reports'));
+  const [merged] = await merge({ all: () => reports });
+  const { snapshot } = JSON.parse(merged.json.params[0]);
+  assert.equal(snapshot.current_club_name, null);
+
+  const preferred_source = request.json.source;
+  const candidates = [
+    { ...snapshot, revision_id: '1', post_url: postUrl, preferred_source },
+    { ...snapshot, revision_id: '2', player_name: 'Ordinary Rumor', classification: 'rumor', stage_signal: 'interest', completion_claim: 'none', preferred_source },
+    { ...snapshot, revision_id: '3', player_name: 'Unknown Destination', destination_club_name: null, preferred_source },
+    { ...snapshot, revision_id: '4', player_name: 'Low Profile', is_digest_worthy: false, preferred_source },
+  ];
+  const runDigest = new AsyncFunction('$input', code('Build bounded Discord digest'));
+  const [output] = await runDigest({ all: () => candidates.map((report) => ({ json: {
+    row_type: 'candidate',
+    payload: { snapshot: report, revision_id: report.revision_id, post_url: report.post_url, source_name: preferred_source.display_name },
+  } })) });
+  const digest = JSON.parse(output.json.params[0]).discord_payload;
+  assert.deepEqual(digest, buildDiscordDigest(candidates));
+  const fields = digest.embeds[0].fields;
+  assert.equal(fields.length, 1);
+  assert.match(fields[0].name, /Mohamed Zongo/);
+  assert.match(fields[0].value, /^Joining Chelsea\nDeal reported complete/m);
+  assert.doesNotMatch(fields[0].value, /Strasbourg|null →/);
 });
 
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {

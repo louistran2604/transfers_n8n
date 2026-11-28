@@ -65,7 +65,7 @@
           "release_clause_amount": { "type": ["number", "null"], "minimum": 0 },
           "release_clause_currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
           "contract_length_months": { "type": ["integer", "null"], "minimum": 1 },
-          "contract_expires_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+          "contract_expires_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01]))?$" },
           "loan_ends_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
           "has_option_to_buy": { "type": ["boolean", "null"] },
           "has_obligation_to_buy": { "type": ["boolean", "null"] },
