@@ -1134,8 +1134,14 @@ function withPresentationCurrentClub(report, entityAliases) {
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
   const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed'].includes(report.classification);
   if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan') return report;
-  if (equivalentClub(profileClub, report.destination_club_name, entityAliases)) return report;
+  const nameKey = normalizeText(profile.canonical_name);
+  const profileName = normalizeText(entityAliases.players[nameKey] ?? profile.canonical_name);
+  if (!profileName || profileName !== normalizeText(report.player_name)) return { ...report, enrichment: null };
   if (equivalentClub(profileClub, report.current_club_name, entityAliases)) return report;
+  if (hasNamedClub(report.current_club_name)) {
+    return { ...report, current_club_name: null, current_club_conflict: true, enrichment: null };
+  }
+  if (equivalentClub(profileClub, report.destination_club_name, entityAliases)) return report;
   return { ...report, current_club_name: profileClub };
 }
 
@@ -1179,7 +1185,7 @@ function digestPlayerConflict(left, right, entityAliases) {
 function isDigestEligible(report) {
   return report.is_digest_worthy === true
     && hasNamedClub(report.destination_club_name)
-    && (hasNamedClub(report.current_club_name) || (report.classification === 'official_confirmed'
+    && (hasNamedClub(report.current_club_name) || report.current_club_conflict || report.classification === 'rejected_failed' || (report.classification === 'official_confirmed'
       && ['reporter_done', 'official_announcement'].includes(report.completion_claim)));
 }
 
@@ -1227,7 +1233,8 @@ function storySections(report) {
     && report.completion_claim === 'reporter_done';
   const offerWithoutTalks = renewal && report.agreement_status === 'offered_no_talks';
   const clubDirection = renewal ? `Contract renewal at ${report.destination_club_name}`
-    : hasCurrentClub ? `${report.current_club_name} → ${report.destination_club_name}` : `Joining ${report.destination_club_name}`;
+    : hasCurrentClub ? `${report.current_club_name} → ${report.destination_club_name}`
+      : report.classification === 'official_confirmed' ? `Joining ${report.destination_club_name}` : `${report.destination_club_name} link`;
   const feeComparison = feeContextLine(report);
   const details = [
     offerWithoutTalks ? 'Offered · no active talks' : renewal ? '**Contract details**' : '**Transfer details**',

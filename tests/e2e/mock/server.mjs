@@ -201,7 +201,7 @@ createServer(async (request, response) => {
       posts: available ? [{
         source_id: String(available.source_id), username: String(available.username), x_user_id: String(available.x_user_id),
         external_post_id: '900000000000000201', post_url: `https://x.com/${available.username}/status/900000000000000201`,
-        content: 'Mock twscrape transfer report\n\nQuoted post:\nMock quoted transfer report', posted_at: '2026-07-27T00:00:00.000Z', is_quote: true,
+        content: 'Mock twscrape transfer report: Mock Player of Mock FC is in advanced talks with Test United.\n\nQuoted post:\nMock quoted transfer report', posted_at: '2026-07-27T00:00:00.000Z', is_quote: true,
         raw_payload: { id: '900000000000000201', id_str: '900000000000000201' },
       }, {
         source_id: String(available.source_id), username: String(available.username), x_user_id: String(available.x_user_id),

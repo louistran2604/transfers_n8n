@@ -1533,11 +1533,22 @@ ${forMonitor ? `    const error = item.json.error ?? response?.error;
   }
   if (!parsed.transfer_related) return [{ json: { valid: true, ignored: true, raw_post_id: request.raw_post_id, params: [request.raw_post_id] } }];
   const post = request.body?.messages?.find((message) => message.role === 'user')?.content ?? '';
+  const clubKey = (value) => value.normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, ' ').trim();
+  const clubEvidence = ' ' + clubKey(post.replace(/https?:\\/\\/\\S+/gi, ' ')) + ' ';
+  const clubMentioned = (name) => {
+    if (!name) return false;
+    const key = clubKey(name);
+    return Boolean(key && clubEvidence.includes(' ' + key + ' '))
+      || Object.entries(entityAliases.clubs).some(([alias, canonical]) => canonical === name && clubEvidence.includes(' ' + alias + ' '));
+  };
   const exercisedOption = /\\bconfirm(?:s|ed)? (?:that )?(?:they |it )?(?:activate[ds]?|exercise[ds]?) (?:the |an )?option to extend\\b/i.test(post);
   const singleContractReport = parsed.reports.length === 1
     && (exercisedOption || /\\b(?:new contract|contract (?:renewal|extension)|(?:renew|extend)(?:s|ed|ing)? (?:his |the )?contract)\\b/i.test(post));
   const evidenceFields = ${JSON.stringify(['stage_signal', 'claim_stance', 'wording_strength', 'club_agreement_state', 'personal_terms_state', 'completion_claim', 'attribution_kind', 'named_originator', 'extraction_confidence'])};
   return parsed.reports.map((extracted, reportIndex) => {
+    for (const field of ['current_club_name', 'former_club_name', 'destination_club_name']) {
+      if (!clubMentioned(extracted[field])) extracted[field] = null;
+    }
     const club = normalizeAlias(extracted.current_club_name);
     const sameClubContract = singleContractReport && club && club === normalizeAlias(extracted.destination_club_name)
       && extracted.move_type !== 'loan' && !['loan', 'rejected_failed'].includes(extracted.classification);
@@ -2127,11 +2138,18 @@ const withPresentationCurrentClub = (report) => {
   const profile = report.enrichment?.profile;
   const profileClub = namedEnrichmentValue(profile?.current_club_name);
   const allowedClassification = ['rumor', 'advanced_negotiations', 'rejected_failed'].includes(report.classification);
-  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan' || equivalentClub(profileClub, report.destination_club_name) || equivalentClub(profileClub, report.current_club_name)) return report;
+  if (!profileClub || profile?.stale !== false || !allowedClassification || report.move_type === 'loan') return report;
+  const profileName = normalizeAlias(canonicalEntity(profile.canonical_name, entityAliases.players));
+  if (!profileName || profileName !== normalizeAlias(report.player_name)) return { ...report, enrichment: null };
+  if (equivalentClub(profileClub, report.current_club_name)) return report;
+  if (hasNamedClub(report.current_club_name)) {
+    return { ...report, current_club_name: null, current_club_conflict: true, enrichment: null };
+  }
+  if (equivalentClub(profileClub, report.destination_club_name)) return report;
   return { ...report, current_club_name: profileClub };
 };
 const isDigestEligible = (report) => report.is_digest_worthy === true && hasNamedClub(report.destination_club_name)
-  && (hasNamedClub(report.current_club_name) || (report.classification === 'official_confirmed'
+  && (hasNamedClub(report.current_club_name) || report.current_club_conflict || report.classification === 'rejected_failed' || (report.classification === 'official_confirmed'
     && ['reporter_done', 'official_announcement'].includes(report.completion_claim)));
 const digestHistoryKey = (report) => [report.player_name, report.destination_club_name].map(normalizeAlias).join('|');
 const configuredSiblingPair = (left, right) => {
@@ -2217,7 +2235,8 @@ for (const report of selected) {
   const offerWithoutTalks = renewal && report.agreement_status === 'offered_no_talks';
   const transferLines = [
     renewal ? 'Contract renewal at ' + report.destination_club_name
-      : hasCurrentClub ? report.current_club_name + ' → ' + report.destination_club_name : 'Joining ' + report.destination_club_name,
+      : hasCurrentClub ? report.current_club_name + ' → ' + report.destination_club_name
+        : report.classification === 'official_confirmed' ? 'Joining ' + report.destination_club_name : report.destination_club_name + ' link',
     reportedSigning ? 'Deal reported complete' : null,
     offerWithoutTalks ? 'Offered · no active talks' : renewal ? '**Contract details**' : '**Transfer details**',
     renewal || reportedSigning ? null : 'Classification: ' + report.classification.replaceAll('_', ' '),

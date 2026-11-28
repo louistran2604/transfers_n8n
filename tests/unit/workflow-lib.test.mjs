@@ -98,6 +98,7 @@ const source = (username, account_type = 'individual') => {
 
 const richEnrichment = (overrides = {}) => ({
   profile: {
+    canonical_name: 'Kylian Mbappé',
     current_club_name: 'Real Madrid',
     nationality: 'France',
     date_of_birth: '1998-12-20',
@@ -1258,7 +1259,7 @@ test('digest uses fresh active profile club only as a bounded presentation fallb
   const fallback = {
     ...validReport({ current_club_name: null, destination_club_name: 'Chelsea', classification: 'rumor' }),
     preferred_source: source('someone'),
-    enrichment: { profile: { current_club_name: 'Real Madrid', stale: false } },
+    enrichment: { profile: { canonical_name: 'Álvaro Test', current_club_name: 'Real Madrid', stale: false } },
   };
   const digest = buildDiscordDigest([fallback], { entityAliases });
   assert.match(digest.embeds[0].fields[0].value, /^Real Madrid → Chelsea/m);
@@ -1266,28 +1267,28 @@ test('digest uses fresh active profile club only as a bounded presentation fallb
   for (const overrides of [
     { classification: 'official_confirmed' },
     { move_type: 'loan' },
-    { enrichment: { profile: { current_club_name: 'Real Madrid', stale: true } } },
-    { enrichment: { profile: { current_club_name: 'Chelsea FC', stale: false } } },
+    { enrichment: { profile: { canonical_name: 'Álvaro Test', current_club_name: 'Real Madrid', stale: true } } },
+    { enrichment: { profile: { canonical_name: 'Álvaro Test', current_club_name: 'Chelsea FC', stale: false } } },
     { pending_idempotency_key: 'pending' },
   ]) {
     assert.equal(selectDigestReports([{ ...fallback, ...overrides }], { entityAliases }).length, 0);
   }
-  const sourceWins = { ...fallback, current_club_name: 'Palmeiras' };
-  assert.match(buildDiscordDigest([sourceWins], { entityAliases }).embeds[0].fields[0].value, /^Real Madrid → Chelsea/m);
+  const conflict = { ...fallback, current_club_name: 'Palmeiras' };
+  assert.match(buildDiscordDigest([conflict], { entityAliases }).embeds[0].fields[0].value, /^Chelsea link/m);
 });
 
 test('digest keeps distinct destinations from one post and uses the fresh profile club', () => {
-  const enrichment = { profile: { current_club_name: 'Chelsea', stale: false } };
+  const enrichment = { profile: { canonical_name: 'Nicolas Jackson', current_club_name: 'Chelsea', stale: false } };
   const reports = [
     {
-      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Aston Villa', confidence: 0.9 }),
+      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: null, destination_club_name: 'Aston Villa', confidence: 0.9 }),
       preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
       sources: [{ post_url: 'https://x.com/FabrizioRomano/status/1' }],
       revision_id: 'jackson-villa',
       enrichment,
     },
     {
-      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: 'Atlético Madrid', destination_club_name: 'Atlético Madrid', confidence: 0.95 }),
+      ...validReport({ player_name: 'Nicolas Jackson', current_club_name: null, destination_club_name: 'Atlético Madrid', confidence: 0.95 }),
       preferred_source: { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' },
       sources: [{ post_url: 'https://x.com/FabrizioRomano/status/1' }],
       revision_id: 'jackson-atleti',
@@ -1450,7 +1451,7 @@ test('generated digest applies presentation fallback without changing the frozen
   const snapshot = validReport({ player_name: 'Endrick', current_club_name: null, destination_club_name: 'Chelsea' });
   const output = await runDigest({ all: () => [{ json: { row_type: 'candidate', payload: {
     revision_id: 'fallback', snapshot,
-    enrichment: { profile: { current_club_name: 'Real Madrid', stale: false } },
+    enrichment: { profile: { canonical_name: 'Endrick', current_club_name: 'Real Madrid', stale: false } },
     post_url: 'https://example.test/endrick', priority_rank: '2', reliability_score: '0.95',
     source_username: 'David_Ornstein', source_name: 'David Ornstein',
   } } }] });
@@ -1570,7 +1571,8 @@ test('digest renders fresh same-currency fee context compactly and fails open ot
 test('digest separates transfer details, enrichment, and transfer assessment', () => {
   const report = {
     ...validReport({
-      player_name: 'Future Move',
+      player_name: 'Kylian Mbappé',
+      current_club_name: 'Real Madrid',
       move_effective_on: '2027-06',
       fee_amount: 55000000,
       fee_currency: 'EUR',
@@ -1637,7 +1639,7 @@ test('fee context alone does not make a delivered report material', () => {
 test('digest appends rich enrichment in whole groups and keeps the journalist link last', () => {
   const postUrl = 'https://x.com/David_Ornstein/status/999000000000000002';
   const report = {
-    ...validReport({ player_name: 'Kylian Mbappé' }),
+    ...validReport({ player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid' }),
     preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
     sources: [{ post_url: postUrl }],
     enrichment: richEnrichment({
@@ -1701,7 +1703,7 @@ test('goalkeeper statistics render only for goalkeeper profiles in library and g
     }
     const postUrl = `https://x.com/David_Ornstein/status/${999000000000000500n + BigInt(index)}`;
     const report = {
-      ...validReport({ player_name: `Position ${index}` }),
+      ...validReport({ player_name: profile.canonical_name, current_club_name: profile.current_club_name }),
       revision_id: `position-${index}`,
       dedupe_key: `position-${index}|test-fc|destination-fc`,
       preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
@@ -1806,7 +1808,7 @@ test('digest renders null or failed enrichment as the unchanged transfer-only st
 
 test('digest enrichment budget tries the compact profile when the statistics group does not fit', () => {
   const base = {
-    ...validReport({ player_name: 'Budget Test' }),
+    ...validReport({ player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid' }),
     preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
     enrichment: richEnrichment(),
   };
@@ -1853,7 +1855,7 @@ test('digest admits only fully budgeted enriched stories under the 6,000-charact
 test('generated digest renders the same rich enrichment labels within Discord limits', async () => {
   const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
   const digestNode = workflow.nodes.find((node) => node.name === 'Build bounded Discord digest');
-  const snapshot = { ...validReport({ player_name: 'Kylian Mbappé' }), dedupe_key: 'kylian-mbappe|real-madrid|liverpool' };
+  const snapshot = { ...validReport({ player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid' }), dedupe_key: 'kylian-mbappe|real-madrid|liverpool' };
   const input = [{ json: {
     row_type: 'candidate',
     payload: {
@@ -1882,7 +1884,7 @@ test('generated digest renders the same rich enrichment labels within Discord li
 
 test('digest omits active-season statistics', () => {
   const report = {
-    ...validReport({ player_name: 'Active Season' }),
+    ...validReport({ player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid' }),
     preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
     sources: [{ post_url: 'https://x.com/source/status/999000000000000008' }],
     enrichment: richEnrichment({ statistics: { ...richEnrichment().statistics, season_state: 'active' } }),
@@ -2198,7 +2200,7 @@ test('enrichment response rejects JSON null, duplicate keys, wrong request IDs, 
 test('Discord stale windows, unknown currency, sparse stats context, and zero values are exact', () => {
   const now = Date.parse('2026-07-30T12:00:00Z');
   const base = {
-    ...validReport({ player_name: 'Boundary Player' }),
+    ...validReport({ player_name: 'Kylian Mbappé', current_club_name: 'Real Madrid' }),
     preferred_source: { ...source('David_Ornstein'), display_name: 'David Ornstein' },
     sources: [{ post_url: 'https://x.com/source/status/999000000000000006' }],
   };
@@ -2514,6 +2516,62 @@ test('Completed Chelsea signing is eligible without a reported current club', as
   assert.match(fields[0].name, /Mohamed Zongo/);
   assert.match(fields[0].value, /^Joining Chelsea\nDeal reported complete/m);
   assert.doesNotMatch(fields[0].value, /Strasbourg|null →/);
+});
+
+test('Bassey denial keeps the named destination without inventing an origin club', async () => {
+  const workflow = JSON.parse(await readFile(new URL('../../workflow/football-transfer-monitor.json', import.meta.url), 'utf8'));
+  const backfill = JSON.parse(await readFile(new URL('../../workflow/football-transfer-probability-backfill.json', import.meta.url), 'utf8'));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const code = (definition, name) => definition.nodes.find((node) => node.name === name).parameters.jsCode;
+  const preferredSource = { ...source('FabrizioRomano'), display_name: 'Fabrizio Romano' };
+  const post = 'Álvaro Arbeloa on Bassey and Man United links: Calvin Bassey is NOT for sale in January. He’s a key player for us and there’s no chance for an exit in January. We are working on a new contract.';
+  const extracted = evidenceReport({
+    player_name: 'Calvin Bassey', current_club_name: 'Real Betis', former_club_name: 'Rangers',
+    destination_club_name: 'Manchester United', classification: 'rejected_failed',
+    stage_signal: 'setback', claim_stance: 'contradicts', club_agreement_state: 'not_reported',
+  });
+  let report;
+  for (const [definition, name] of [[workflow, 'Validate extraction response'], [backfill, 'Validate backfill extraction response']]) {
+    const validate = new AsyncFunction('$input', '$', code(definition, name));
+    const parse = async (extraction, content = post) => {
+      const request = { json: { raw_post_id: '1', external_post_id: '1', source: preferredSource, body: {
+        messages: [{ role: 'user', content }],
+      } } };
+      const [output] = await validate({ all: () => [{ json: { choices: [{ message: {
+        content: JSON.stringify({ transfer_related: true, reports: [extraction] }),
+      } }] } }] }, () => ({ all: () => [request] }));
+      return output.json.report;
+    };
+    report = await parse(extracted);
+    assert.equal(report.current_club_name, null);
+    assert.equal(report.former_club_name, null);
+    assert.equal(report.destination_club_name, 'Manchester United');
+    assert.equal((await parse({ ...extracted, destination_club_name: 'Chelsea' })).destination_club_name, null);
+    assert.equal((await parse(extracted, post + ' https://example.test/Real-Betis')).current_club_name, null);
+    assert.equal((await parse({ ...extracted, current_club_name: 'Fulham' }, 'Fulham coach ' + post)).current_club_name, 'Fulham');
+  }
+
+  const digest = new AsyncFunction('$input', code(workflow, 'Build bounded Discord digest'));
+  const profile = (club, name = 'Calvin Bassey') => ({ profile: {
+    current_club_name: club, canonical_name: name, stale: false, retrieved_at: new Date().toISOString(),
+  } });
+  for (const [currentClub, enrichment, expected] of [
+    [null, null, 'Manchester United link'],
+    [null, profile('Fulham'), 'Fulham → Manchester United'],
+    [null, profile('Real Betis', 'Different Player'), 'Manchester United link'],
+    ['Fulham', profile('Real Betis'), 'Manchester United link'],
+    ['Fulham', profile('Fulham FC'), 'Fulham → Manchester United'],
+  ]) {
+    const snapshot = { ...report, current_club_name: currentClub };
+    const [output] = await digest({ all: () => [{ json: { row_type: 'candidate', payload: {
+      snapshot, enrichment, revision_id: '1', source_name: preferredSource.display_name, source_username: preferredSource.username,
+    } } }] });
+    const payload = JSON.parse(output.json.params[0]).discord_payload;
+    assert.deepEqual(payload, buildDiscordDigest([{ ...snapshot, enrichment, preferred_source: preferredSource }], { entityAliases }));
+    const value = payload.embeds[0].fields[0].value;
+    assert.equal(value.split('\n')[0], expected);
+    assert.doesNotMatch(value, /Real Betis|Rangers/);
+  }
 });
 
 test('interrupted sending deliveries become unknown and cannot be automatically resent', () => {
@@ -2855,7 +2913,7 @@ test('generated workflow carries fail-closed shadow and active probability evide
   const runRequest = new AsyncFunction('$input', '$env', '$', requestNode.parameters.jsCode);
   const input = { all: () => [{ json: {
     raw_post_id: '41', external_post_id: '42', post_url: 'https://x.com/test/status/42',
-    posted_at: '2026-08-27T01:02:03.000Z', content: 'fixture', ...source('test'),
+    posted_at: '2026-08-27T01:02:03.000Z', content: 'Álvaro Test of Test FC is linked with Club A and Club B.', ...source('test'),
   } }] };
   const lookup = () => ({ first: () => ({ json: { collection_started_at: '2026-08-27T01:05:00.000Z' } }) });
 
@@ -2934,6 +2992,7 @@ test('generated extraction preserves future effective dates and connected loan s
   const request = { json: {
     raw_post_id: '99', external_post_id: '100', post_url: 'https://x.com/fabrizio/status/100',
     posted_at: '2026-09-01T00:00:00.000Z', source: source('fabrizioromano'),
+    body: { messages: [{ role: 'user', content: 'Atalanta’s Honest Ahanor will join Chelsea next June and go on loan to Crystal Palace in the meantime.' }] },
   } };
   const response = { json: { choices: [{ message: { content: JSON.stringify({
     transfer_related: true,
